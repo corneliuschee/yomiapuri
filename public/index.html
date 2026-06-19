@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Anki Kanji Reader</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="shell" class="shell">
+      <aside id="sidebar" class="sidebar">
+        <div class="side-head">
+          <div class="brand">
+            <span class="brand-mark">AK</span>
+            <span>Anki Reader</span>
+          </div>
+          <button id="collapse-sidebar" class="icon-button hamburger" type="button" title="Hide sidebar" aria-label="Hide sidebar">
+            <span></span><span></span><span></span>
+          </button>
+        </div>
+
+        <nav class="nav-list" aria-label="App pages">
+          <button class="nav-item" type="button" data-page="books-page">Books</button>
+          <button class="nav-item active" type="button" data-page="reader-page">Reader</button>
+          <button class="nav-item" type="button" data-page="wordbank-page">Word Bank</button>
+          <button class="nav-item" type="button" data-page="insights-page">Insights</button>
+          <button class="nav-item" type="button" data-page="trash-page">Trash</button>
+          <button class="nav-item" type="button" data-page="integrations-page">Integrations</button>
+        </nav>
+
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <button id="show-sidebar" class="icon-button hamburger hidden" type="button" title="Show sidebar" aria-label="Show sidebar">
+            <span></span><span></span><span></span>
+          </button>
+          <div>
+            <p class="eyebrow" id="page-eyebrow">Reader</p>
+            <h1 id="page-title">Choose a book</h1>
+          </div>
+          <div id="known-count" class="stat">0 known terms</div>
+        </header>
+
+        <section id="books-page" class="page">
+          <div class="library-toolbar">
+            <form id="library-book-form" class="import-row">
+              <label class="file-button">
+                <input name="book" type="file" accept=".pdf,.epub,.txt" multiple required />
+                Import
+              </label>
+            </form>
+            <label class="library-search" title="Search library">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg>
+              <input id="library-search" type="search" placeholder="Search library" />
+            </label>
+            <div id="library-notice" class="library-notice" role="status" aria-live="polite"></div>
+          </div>
+          <div id="books-grid" class="books-grid"></div>
+        </section>
+
+        <section id="reader-page" class="page active">
+          <div class="reader-actions">
+            <form id="book-form" class="import-row">
+              <label class="file-button">
+                <input name="book" type="file" accept=".pdf,.epub,.txt" multiple required />
+                Import
+              </label>
+            </form>
+            <div class="reader-tools">
+              <button id="select-tool" class="tool-button icon-tool active" type="button" title="Select text" aria-label="Select text">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3 19 13l-7 1.5L8.5 21z"/><path d="m12 14.5 4 6"/></svg>
+              </button>
+              <button id="highlight-tool" class="tool-button icon-tool" type="button" title="Highlight selection" aria-label="Highlight selection">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16"/><path d="m14 4 6 6-9 9H5v-6z"/><path d="m13 5 6 6"/></svg>
+              </button>
+              <label class="color-wheel" title="Highlight color" aria-label="Highlight color">
+                <input id="highlight-color" type="color" value="#f6c453" />
+              </label>
+              <button id="eraser-tool" class="tool-button icon-tool" type="button" title="Erase highlights" aria-label="Erase highlights">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 21-5-5L14 4l7 7-9 9H7z"/><path d="m11 8 7 7"/><path d="M2 21h20"/></svg>
+              </button>
+              <button id="undo-highlight" class="tool-button icon-tool" type="button" title="Undo highlight change" aria-label="Undo highlight change">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-2"/></svg>
+              </button>
+              <button id="redo-highlight" class="tool-button icon-tool" type="button" title="Redo highlight change" aria-label="Redo highlight change">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h2"/></svg>
+              </button>
+              <button id="refresh-reader" class="tool-button icon-tool" type="button" title="Refresh reader page" aria-label="Refresh reader page">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-14.5-4L4 9"/><path d="M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 14.5 4L20 15"/><path d="M20 20v-5h-5"/></svg>
+              </button>
+              <button id="bookmark-page" class="tool-button bookmark-button" type="button">Bookmark current page</button>
+              <span id="bookmark-feedback" class="tool-feedback" aria-live="polite"></span>
+            </div>
+            <label class="zoom-control" title="Reader zoom">
+              <span id="zoom-label" class="zoom-field">100%</span>
+              <input id="reader-zoom" class="zoom-field" type="range" min="75" max="175" step="5" value="100" />
+              <button id="toggle-zoom" class="tool-button icon-tool zoom-toggle" type="button" title="Show or hide zoom slider" aria-label="Show or hide zoom slider">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/><path d="M10.5 7.5v6"/><path d="M7.5 10.5h6"/></svg>
+              </button>
+            </label>
+            <div class="segmented">
+              <button id="mode-scroll" type="button" class="active">Scroll</button>
+              <button id="mode-paged" type="button">Pages</button>
+            </div>
+          </div>
+
+          <div id="reader-layout" class="reader-layout">
+            <article id="reader" class="reader">
+              <p class="empty">Import or select a book. Unknown kanji vocabulary will show furigana.</p>
+            </article>
+            <aside id="chapter-panel" class="chapter-panel">
+              <div class="chapter-panel-head">
+                <div class="panel-tabs" role="tablist" aria-label="Reader side panel">
+                  <button id="chapters-tab" class="panel-tab active" type="button" data-panel-tab="chapters">Chapters</button>
+                  <button id="bookmarks-tab" class="panel-tab" type="button" data-panel-tab="bookmarks">Bookmarks</button>
+                </div>
+                <button id="hide-chapters" class="icon-button hamburger" type="button" title="Hide chapters" aria-label="Hide chapters">
+                  <span></span><span></span><span></span>
+                </button>
+              </div>
+              <div id="chapter-list" class="chapter-list panel-list active">
+                <p class="empty">Open a book to show chapters.</p>
+              </div>
+              <div id="bookmark-list" class="bookmark-list panel-list">
+                <p class="empty">No bookmarks yet.</p>
+              </div>
+            </aside>
+          </div>
+
+          <footer class="reader-footer">
+            <div class="pager">
+              <button id="show-chapters" class="icon-button hamburger hidden" type="button" title="Show chapters" aria-label="Show chapters">
+                <span></span><span></span><span></span>
+              </button>
+              <button id="prev-page" type="button" disabled>Previous</button>
+              <button id="next-page" type="button" disabled>Next</button>
+              <span id="page-label" class="page-status">Pages <span class="status-pill">1</span> / 1 <span class="status-gap"></span> Chapters <span class="status-pill">1</span> / 1</span>
+              <form id="page-jump-form" class="page-jump" autocomplete="off">
+                <label for="page-jump-input">Jump</label>
+                <input id="page-jump-input" name="page" type="number" min="1" value="1" />
+              </form>
+            </div>
+            <div class="progress-wrap">
+              <span id="progress-label">0%</span>
+              <progress id="progress-bar" max="100" value="0"></progress>
+            </div>
+          </footer>
+
+          <details class="drawer" id="mining-drawer">
+            <summary>Sentence mining candidates</summary>
+            <div id="candidate-list" class="candidate-list"></div>
+          </details>
+        </section>
+
+        <section id="wordbank-page" class="page">
+          <div class="page-card">
+            <div class="page-card-head">
+              <div>
+                <h2>Imported Vocabulary</h2>
+                <p>Vocabulary imported from Anki reviews or manual files.</p>
+              </div>
+              <div class="wordbank-controls">
+                <input id="wordbank-search" type="search" placeholder="Search word bank" />
+                <select id="wordbank-dictionary" aria-label="Word Bank meaning dictionary"></select>
+                <label class="sort-control" title="Sort word bank">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h18"/><path d="M6 12h12"/><path d="M10 17h4"/></svg>
+                  <select id="wordbank-sort" aria-label="Sort word bank">
+                    <option value="gojuon">Japanese A-Z</option>
+                    <option value="gojuon-desc">Japanese Z-A</option>
+                    <option value="added-desc">Date added newest</option>
+                    <option value="added-asc">Date added oldest</option>
+                    <option value="length-asc">Shortest first</option>
+                    <option value="length-desc">Longest first</option>
+                  </select>
+                </label>
+                <button id="wordbank-sync-anki" type="button">Sync Anki</button>
+                <button id="wordbank-delete" class="wordbank-delete hidden" type="button">Delete</button>
+                <button id="wordbank-delete-all" class="wordbank-delete-all" type="button">Delete all</button>
+              </div>
+            </div>
+            <div id="wordbank-list" class="wordbank-list"></div>
+            <nav id="wordbank-pagination" class="wordbank-pagination" aria-label="Word bank pages"></nav>
+          </div>
+        </section>
+
+        <section id="insights-page" class="page">
+          <div class="insights-layout">
+            <section class="page-card insights-analytics-card">
+              <div class="page-card-head">
+                <div>
+                  <h2>Learning Analytics <span class="help-dot" tabindex="0" data-tooltip="Summarizes local learning signals from imported books, Word Bank size, sentence-mining previews, Anki exports, lookups, and progress events.">?</span></h2>
+                  <p>Local metrics derived from reading, lookups, Word Bank changes, and Anki exports.</p>
+                </div>
+                <button id="refresh-insights" type="button">Refresh</button>
+              </div>
+              <div id="ml-metrics" class="ml-metrics"></div>
+              <div id="ml-document-list" class="ml-document-list"></div>
+            </section>
+
+            <section class="page-card">
+              <div class="page-card-head">
+                <div>
+                  <h2>Semantic Index <span class="help-dot" tabindex="0" data-tooltip="A rebuildable local LanceDB search index made from your imported book sentences and mined Anki cards. Rebuild after importing new books or many new cards.">?</span></h2>
+                  <p>Rebuildable local LanceDB index for search and cited retrieval.</p>
+                </div>
+                <button id="ml-rebuild-index" type="button">Rebuild index</button><span class="help-dot" tabindex="0" data-tooltip="Recreates the local vector/search index from current books and mined cards. This can take a short while for large libraries.">?</span>
+              </div>
+              <div id="ml-index-status" class="meta-box">Index status not loaded.</div>
+              <form id="semantic-search-form" class="ml-search-form">
+                <input id="semantic-search-input" type="search" placeholder="Search your books and mined cards" />
+                <button type="submit">Search</button>
+                <span class="help-dot" tabindex="0" data-tooltip="Finds relevant local sentences/cards using hybrid retrieval: exact Japanese text matching plus local vector similarity.">?</span>
+              </form>
+              <div id="semantic-search-results" class="ml-results"></div>
+            </section>
+
+            <section class="page-card">
+              <div class="page-card-head">
+                <div>
+                  <h2>Cited Study Assistant <span class="help-dot" tabindex="0" data-tooltip="Retrieves relevant local evidence for your question and shows citations. It is a RAG foundation, not a full LLM answer generator yet.">?</span></h2>
+                  <p>Answers are grounded in retrieved local sentences.</p>
+                </div>
+              </div>
+              <form id="rag-form" class="ml-search-form">
+                <input id="rag-question" type="search" placeholder="Ask about a word, sentence, or recap" />
+                <button type="submit">Ask</button>
+                <span class="help-dot" tabindex="0" data-tooltip="Use this to ask for examples, sentence evidence, or recaps from indexed local books/cards. Answers show the retrieved source text.">?</span>
+              </form>
+              <div id="rag-answer" class="ml-results"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="trash-page" class="page">
+          <div class="page-card trash-card">
+            <div class="page-card-head">
+              <div>
+                <h2>Trash</h2>
+                <p>Restore deleted books and vocabulary.</p>
+              </div>
+              <div class="trash-controls">
+                <div class="segmented">
+                  <button id="trash-books-tab" class="active" type="button">Books</button>
+                  <button id="trash-words-tab" type="button">Words</button>
+                </div>
+                <button id="trash-restore-words" class="wordbank-delete hidden" type="button">Restore</button>
+                <button id="trash-delete-words" class="trash-delete hidden" type="button">Delete</button>
+                <button id="trash-delete-all" class="trash-delete" type="button">Delete all</button>
+              </div>
+            </div>
+            <div id="trash-books" class="books-grid trash-panel active"></div>
+            <div id="trash-words" class="wordbank-list trash-panel"></div>
+          </div>
+        </section>
+
+        <section id="integrations-page" class="page">
+          <div id="settings-grid" class="settings-grid">
+            <section class="page-card">
+              <div class="page-card-head">
+                <div>
+                  <h2>Anki</h2>
+                  <p>Use Anki Desktop with AnkiConnect. Sync Anki Desktop to AnkiWeb after export.</p>
+                </div>
+                <span id="anki-status" class="status">Not connected</span>
+              </div>
+              <form id="anki-settings-form" class="stack">
+                <label>
+                  AnkiConnect URL
+                  <input name="connectUrl" type="url" placeholder="http://127.0.0.1:8765" />
+                </label>
+                <label class="toggle-row anki-auto-launch-row">
+                  <input id="anki-auto-launch" type="checkbox" />
+                  Open Anki automatically when needed
+                </label>
+                <label class="anki-path-row">
+                  Anki executable
+                  <input id="anki-executable-path" type="text" placeholder="Detecting Anki..." />
+                </label>
+                <div class="button-row">
+                  <button id="connect-anki" type="button">Connect</button>
+                </div>
+                <div id="anki-connected-area" class="anki-connected-area hidden">
+                  <div class="target-grid">
+                    <div class="target-column">
+                      <label>
+                        Deck
+                        <select id="deck-select" name="deckName"></select>
+                      </label>
+                      <div class="target-save-row">
+                        <button id="save-deck" type="button">Save deck</button>
+                        <span id="selected-deck-label" class="saved-target-label">Current Selected Deck: None</span>
+                      </div>
+                    </div>
+                    <div class="target-column">
+                      <label>
+                        Note type
+                        <select id="model-select" name="modelName"></select>
+                      </label>
+                      <div class="target-save-row">
+                        <button id="save-note" type="button">Save note</button>
+                        <span id="selected-note-label" class="saved-target-label">Current Selected Note: None</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </form>
+              <div id="anki-field-status" class="mapping-status meta-box hidden">Connect to Anki to inspect note fields.</div>
+              <form id="anki-import-form" class="stack hidden">
+                <label>
+                  Reviewed vocabulary import
+                  <select name="preset">
+                    <option value="reviewed-once">Cards reviewed at least once</option>
+                    <option value="reviewed">Cards reviewed in the last year</option>
+                    <option value="mature">Mature cards only</option>
+                    <option value="all">All cards in selected deck</option>
+                  </select>
+                </label>
+                <p id="anki-import-deck" class="import-context">Importing from: No deck selected</p>
+                <button id="anki-import-button" type="submit">Import vocabulary from Anki</button>
+              </form>
+              <div id="anki-import-notice" class="library-notice integration-notice" role="status" aria-live="polite"></div>
+            </section>
+
+            <section class="page-card">
+              <div class="page-card-head">
+                <div>
+                  <h2>Media</h2>
+                  <p>Generate local audio and mnemonic images for Anki fields.</p>
+                </div>
+                <span class="status-with-help"><span id="media-status" class="status">Not loaded</span><span class="help-dot" tabindex="0" data-tooltip="Off means both local audio and local image generation are disabled. Changes save automatically when you edit these controls.">?</span></span>
+              </div>
+              <form id="media-settings-form" class="stack media-settings-form">
+                <label class="toggle-row">
+                  <input id="media-audio-enabled" name="audioEnabled" type="checkbox" />
+                  Local sentence audio
+                  <span class="help-dot" tabindex="0" data-tooltip="When enabled, Anki exports generate an audio file from the mined sentence and fill audio fields like SentenceAudio or Audio.">?</span>
+                </label>
+                <label class="media-select-row">
+                  <span>Voice</span>
+                  <select id="media-voice-select" name="voiceName"></select>
+                </label>
+                <label>
+                  Test sentence
+                  <textarea id="media-test-text" name="testText" rows="2" placeholder="&#22259;&#26360;&#39208;&#12408;&#34892;&#12365;&#12414;&#12377;&#12290;"></textarea>
+                </label>
+                <label>
+                  Speed
+                  <input id="media-rate" name="rate" type="range" min="-4" max="4" step="1" value="0" />
+                </label>
+                <label class="toggle-row">
+                  <input id="media-image-enabled" name="imageEnabled" type="checkbox" />
+                  Local mnemonic image
+                  <span class="help-dot" tabindex="0" data-tooltip="When enabled, Anki exports generate a small local SVG mnemonic image and fill image fields like Picture or Image.">?</span>
+                </label>
+                <div class="button-row">
+                  <button id="test-media-audio" type="button">Test voice</button><span class="help-dot" tabindex="0" data-tooltip="If a voice is selected, this plays that app voice and may generate a cached sample file. With no selected voice, it reads immediately through the browser.">?</span>
+                  <button id="test-media-image" type="button">Test image</button><span class="help-dot" tabindex="0" data-tooltip="Generates a sample mnemonic image using the saved image setting. It does not use a paid AI image API.">?</span>
+                </div>
+              </form>
+              <form id="voice-model-form" class="stack voice-model-form">
+                <label>
+                  Import voice model
+                  <input id="voice-model-url" name="url" type="url" placeholder="https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-JP" />
+                </label>
+                <div class="button-row">
+                  <button id="import-voice-model" type="submit">Import voice model</button><span class="help-dot" tabindex="0" data-tooltip="Registers a Hugging Face voice model for future local runtime support. It does not download large model files automatically.">?</span>
+                </div>
+                <div id="voice-model-list" class="voice-model-list"></div>
+              </form>
+              <div id="media-preview" class="media-preview meta-box">Local media is disabled by default.</div>
+            </section>
+
+            <section class="page-card">
+              <div class="page-card-head">
+                <div>
+                  <h2>Dictionary</h2>
+                  <p>Manage Word Bank meanings, reader lookup dictionaries, and frequency dictionaries.</p>
+                </div>
+              </div>
+              <div class="dictionary-controls">
+                <label class="toggle-row">
+                  <input id="dictionary-prefix-toggle" type="checkbox" />
+                  Prefix wildcard lookup
+                </label>
+                <label class="toggle-row">
+                  <input id="instant-anki-toggle" type="checkbox" />
+                  Instant Anki export
+                </label>
+              </div>
+              <p class="dictionary-help">Switches control which dictionaries appear in reader lookup. Order controls lookup priority and frequency badge order.</p>
+              <form id="dictionary-form" class="stack">
+                <input name="name" type="text" placeholder="Dictionary name" />
+                <label class="file-button wide">
+                  <input id="dictionary-file" name="dictionary" type="file" accept=".zip,.json" multiple required />
+                  Choose dictionary ZIP or JSON
+                </label>
+                <div id="dictionary-attachment" class="file-attachment hidden" aria-live="polite"></div>
+                <button id="dictionary-import-button" type="submit">Import dictionary</button>
+              </form>
+              <div id="dictionary-notice" class="library-notice integration-notice" role="status" aria-live="polite"></div>
+              <div id="dictionary-list" class="dictionary-list"></div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <template id="candidate-template">
+      <form class="candidate-card">
+        <div>
+          <strong class="expression"></strong>
+          <span class="reading"></span>
+        </div>
+        <p class="sentence"></p>
+        <p class="definition"></p>
+        <div class="candidate-actions">
+          <button class="speak" type="button">Audio</button>
+          <input name="meaning" type="text" placeholder="Override meaning" />
+          <button type="submit">Preview Anki</button>
+        </div>
+      </form>
+    </template>
+
+    <div id="confirm-dialog" class="dialog-backdrop hidden" role="presentation">
+      <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h2 id="confirm-title">Delete book?</h2>
+        <p id="confirm-message"></p>
+        <div class="confirm-actions">
+          <button id="confirm-cancel" type="button">Cancel</button>
+          <button id="confirm-delete" class="danger" type="button">Delete</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="card-dialog" class="dialog-backdrop hidden" role="presentation">
+      <section class="card-dialog" role="dialog" aria-modal="true" aria-labelledby="card-dialog-title">
+        <form id="card-preview-form">
+          <div class="dialog-head">
+            <div>
+              <h2 id="card-dialog-title">Review Anki card</h2>
+              <p id="card-status">Check the fields before export.</p>
+            </div>
+          </div>
+          <div id="card-dictionary" class="meta-box"></div>
+          <div id="card-fields" class="card-fields"></div>
+          <div class="confirm-actions">
+            <button id="card-cancel" type="button">Cancel</button>
+            <button id="card-export" type="submit">Export to Anki</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <div id="dictionary-lookup" class="lookup-popover hidden" role="dialog" aria-live="polite"></div>
+
+    <script src="/vendor/pdfjs/pdf.js"></script>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

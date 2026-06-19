@@ -1,0 +1,20 @@
+{
+  "name": "anki-kanji-reader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server/index.js",
+    "start": "node server/index.js",
+    "test": "node scripts/anki-service-test.js && node scripts/dictionary-service-test.js && node scripts/media-provider-test.js && node scripts/ml-service-test.js && node scripts/smoke-test.js"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.30.0",
+    "adm-zip": "^0.5.16",
+    "express": "^5.1.0",
+    "kuromoji": "^0.1.2",
+    "multer": "^2.0.2",
+    "pdf-parse": "^1.1.1",
+    "xml2js": "^0.6.2"
+  }
+}
