@@ -202,9 +202,20 @@ export function createAnkiService({
       if (isEmptyFieldPayload(fields)) {
         throw Object.assign(new Error("Reviewed Anki fields are empty. Check the note field mapping before exporting."), { status: 422 });
       }
+      const fieldMap = fieldMapForModel(settings, modelName, Object.keys(fields));
+      await ensureHighlightedSentenceFields({
+        fields,
+        fieldMap,
+        sentence: input.sentence ?? "",
+        target: input.surface || expression || dictionaryForm,
+        renderSentenceHtml,
+        reading: input.reading ?? "",
+        expression,
+        dictionaryForm
+      });
       const mediaFill = await fillGeneratedMediaFields({
         fields,
-        fieldMap: fieldMapForModel(settings, modelName, Object.keys(fields)),
+        fieldMap,
         mediaProvider,
         expression,
         reading: input.reading ?? "",
@@ -212,6 +223,9 @@ export function createAnkiService({
         meaning: input.meaning ?? "",
         source: document.title
       });
+      if (mediaFill.skippedAudioFields.length > 0) {
+        throw Object.assign(new Error(`Audio generation failed for ${mediaFill.skippedAudioFields.join(", ")}. Check the selected voice in Media settings.`), { status: 502 });
+      }
       const storedMedia = await mediaProvider.storeMediaFiles(connect, fields);
 
       const noteId = await connect("addNote", {
@@ -355,7 +369,7 @@ export function inferCanonicalField(fieldName = "") {
   if (/(audio|sound|voice)/.test(normalized)) return "Audio";
   if (/(primary.*def|primarydefinition|primary_definition|first.*def)/.test(normalized)) return "PrimaryDefinition";
   if (/(secondary.*def|secondarydefinition|secondary_definition|second.*def)/.test(normalized)) return "SecondaryDefinition";
-  if (/(extra.*def|extradefinitions|extradefinition|extradefition|extra_definition|additional.*def|other.*def)/.test(normalized)) return "ExtraDefinition";
+  if (/(extra.*def|extra.*dict|extradefinitions|extradefinition|extradefition|extradictionary|extra_definition|extra_dictionary|additional.*def|other.*def)/.test(normalized)) return "ExtraDefinition";
   if (/(meaning|definition|english|gloss|back)/.test(normalized)) return "Meaning";
   if (/(wordreadinghiragana|word_reading_hiragana)/.test(normalized)) return "WordReadingHiragana";
   if (/(wordreading|word_reading)/.test(normalized)) return "WordReading";
@@ -398,6 +412,7 @@ function isProtectedExactField(fieldName = "", canonical = "") {
     "secondarydefinition",
     "extradefinition",
     "extradefinitions",
+    "extradictionary",
     "wordaudio",
     "sentenceaudio"
   ].includes(normalized) && CANONICAL_CARD_FIELDS.includes(canonical);
@@ -435,24 +450,66 @@ async function fillGeneratedMediaFields({
   reading = "",
   sentence = "",
   meaning = "",
-  source = ""
+  source = "",
 } = {}) {
   const fieldNames = Object.keys(fields);
   const skippedAudioFields = [];
+  const fillTasks = [];
   for (const fieldName of fieldNames) {
     if (stripHtml(String(fields[fieldName] ?? "")).trim()) continue;
     const canonical = canonicalFieldForAnkiField(fieldName, fieldMap);
-    if (["Audio", "WordAudio", "SentenceAudio"].includes(canonical)) {
-      fields[fieldName] = await mediaProvider.createAudio(audioPayloadForField(fieldName, { expression, sentence }), { generate: true });
-      if (!fields[fieldName]) skippedAudioFields.push(fieldName);
+    if (["Audio", "WordAudio"].includes(canonical)) {
+      fillTasks.push((async () => {
+        fields[fieldName] = await mediaProvider.createAudio(vocabAudioPayload(expression), { generate: true });
+        if (!fields[fieldName]) skippedAudioFields.push(fieldName);
+      })());
     } else if (canonical === "Image") {
-      fields[fieldName] = await mediaProvider.createImage({ expression, reading, meaning, source });
+      fillTasks.push((async () => {
+        fields[fieldName] = await mediaProvider.createImage({ expression, reading, meaning, source });
+      })());
     }
   }
+  await Promise.all(fillTasks);
   return { skippedAudioFields };
 }
 
-function audioPayloadForField(fieldName = "", { expression = "", sentence = "" } = {}) {
+async function ensureHighlightedSentenceFields({
+  fields = {},
+  fieldMap = {},
+  sentence = "",
+  target = "",
+  renderSentenceHtml = null,
+  reading = "",
+  expression = "",
+  dictionaryForm = ""
+} = {}) {
+  if (!sentence || !target) return;
+  let rendered = "";
+  for (const fieldName of Object.keys(fields)) {
+    const canonical = canonicalFieldForAnkiField(fieldName, fieldMap);
+    if (!["Sentence", "SentenceReading"].includes(canonical)) continue;
+    const value = String(fields[fieldName] ?? "");
+    if (hasTargetHighlight(value)) continue;
+    if (!rendered) {
+      rendered = await renderCardSentenceHtml(sentence, target, renderSentenceHtml, {
+        reading,
+        expression,
+        dictionaryForm
+      });
+    }
+    fields[fieldName] = rendered;
+  }
+}
+
+function hasTargetHighlight(value = "") {
+  return /#ff5a3d|color:\s*rgb\(\s*255\s*,\s*90\s*,\s*61\s*\)|font-weight:\s*700/i.test(String(value));
+}
+
+function vocabAudioPayload(expression = "") {
+  return { expression, sentence: "" };
+}
+
+function unusedLegacyAudioPayloadForField(fieldName = "", { expression = "", sentence = "" } = {}) {
   const normalized = fieldName.toLowerCase();
   if (/word|vocab|expression|term/.test(normalized) && !/sentence/.test(normalized)) {
     return { expression, sentence: "" };
@@ -465,12 +522,26 @@ function audioPayloadForField(fieldName = "", { expression = "", sentence = "" }
 
 function definitionSlotsFromDictionaryEntries(dictionaryEntries = [], fallbackMeaning = "") {
   const blocks = groupedDictionaryDefinitionBlocks(dictionaryEntries);
+  const extraBlocks = extraDictionaryDefinitionBlocks(blocks, dictionaryEntries);
   const fallback = String(fallbackMeaning ?? "").trim();
   return {
     PrimaryDefinition: blocks[0] || fallback,
     SecondaryDefinition: blocks[1] || "",
-    ExtraDefinition: blocks.slice(2).join("\n\n")
+    ExtraDefinition: extraBlocks.join("\n\n")
   };
+}
+
+function extraDictionaryDefinitionBlocks(blocks = [], dictionaryEntries = []) {
+  if (blocks.length > 2) return blocks.slice(2);
+  const entryBlocks = dictionaryEntries
+    .map((entry) => formatDictionaryDefinitionBlock({
+      dictionary: entry.dictionary,
+      definitions: entry.definitions
+    }))
+    .filter(Boolean);
+  return entryBlocks.slice(2).filter((block, index, list) =>
+    index === list.findIndex((candidate) => candidate.toLowerCase() === block.toLowerCase())
+  );
 }
 
 function groupedDictionaryDefinitionBlocks(dictionaryEntries = []) {

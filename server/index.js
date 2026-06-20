@@ -86,6 +86,11 @@ let state = structuredClone(initialState);
 let tokenizerPromise;
 let saveStateQueue = Promise.resolve();
 const documentResponseCache = new Map();
+let learnedVariantCacheKey = "";
+let learnedVariantCache = null;
+const normalizationDictionaryCache = new Map();
+const readerTokenCache = new Map();
+let normalizationDictionarySignatureCache = "";
 
 await ensureStorage();
 await loadState();
@@ -766,7 +771,7 @@ function rubyToMarker(match = "") {
 }
 
 function authorRubyHtml(surface = "", reading = "") {
-  return `<ruby class="author-ruby" data-author-ruby="true" data-reading="${escapeHtml(reading)}">${escapeHtml(surface)}<rt>${escapeHtml(reading)}</rt></ruby>`;
+  return `<ruby class="author-ruby" data-author-ruby="true" data-base="${escapeHtml(surface)}" data-reading="${escapeHtml(reading)}">${escapeHtml(surface)}<rt>${escapeHtml(reading)}</rt></ruby>`;
 }
 
 function blocksToText(blocks = []) {
@@ -1340,6 +1345,31 @@ function learnedSet() {
   return new Set(state.knownTerms.map((term) => normalizeJapaneseTerm(term)));
 }
 
+async function learnedVariantSet() {
+  const key = state.knownTerms.map((term) => normalizeJapaneseTerm(term)).sort().join("\u0000");
+  if (learnedVariantCache && learnedVariantCacheKey === key) return learnedVariantCache;
+  const known = new Set();
+  let tokenizer = null;
+  for (const term of state.knownTerms.map(normalizeJapaneseTerm).filter(Boolean)) {
+    known.add(term);
+    if (!hasJapaneseText(term) || term.length > 80) continue;
+    try {
+      tokenizer ??= await getTokenizer();
+      for (const token of tokenizer.tokenize(term)) {
+        const surface = normalizeJapaneseTerm(token.surface_form);
+        const base = tokenBase(token);
+        if (surface) known.add(surface);
+        if (base) known.add(base);
+      }
+    } catch {
+      // Keep direct known terms even if tokenizer setup fails.
+    }
+  }
+  learnedVariantCacheKey = key;
+  learnedVariantCache = known;
+  return known;
+}
+
 function tokenBase(token) {
   const base = token.basic_form && token.basic_form !== "*" ? token.basic_form : token.surface_form;
   return normalizeJapaneseTerm(base);
@@ -1361,10 +1391,8 @@ async function dictionaryLookupTerms(term = "") {
   addTerm(normalized);
   if (!normalized || !hasJapaneseText(normalized) || normalized.length > 80) return terms;
 
-  const tokenizer = await getTokenizer();
-  for (const token of tokenizer.tokenize(normalized)) {
-    addTerm(tokenBase(token), true);
-    addTerm(token.surface_form, true);
+  for (const token of await analyzeReaderTokenStream(normalized)) {
+    for (const term of tokenLookupVariants(token)) addTerm(term, true);
   }
   return terms;
 }
@@ -1522,13 +1550,13 @@ async function analyzeTextLegacy(text = "") {
   const candidatesByKey = new Map();
   for (const token of analyzed) {
     if (!token.eligible) continue;
-    const key = token.base || token.surface;
+    const key = token.dictionaryForm || token.base || token.surface;
     if (!candidatesByKey.has(key)) {
       candidatesByKey.set(key, {
-        expression: token.base || token.surface,
+        expression: token.dictionaryForm || token.base || token.surface,
         surface: token.surface,
-        dictionaryForm: token.base,
-        reading: token.reading,
+        dictionaryForm: token.dictionaryForm || token.base,
+        reading: token.dictionaryReading || token.reading,
         partOfSpeech: token.pos,
         sentence: token.sentence
       });
@@ -1551,13 +1579,13 @@ async function analyzeText(text = "") {
   const candidatesByKey = new Map();
   for (const token of analyzed) {
     if (!token.eligible) continue;
-    const key = token.base || token.surface;
+    const key = token.dictionaryForm || token.base || token.surface;
     if (!candidatesByKey.has(key)) {
       candidatesByKey.set(key, {
-        expression: token.base || token.surface,
+        expression: token.dictionaryForm || token.base || token.surface,
         surface: token.surface,
-        dictionaryForm: token.base,
-        reading: token.reading,
+        dictionaryForm: token.dictionaryForm || token.base,
+        reading: token.dictionaryReading || token.reading,
         partOfSpeech: token.pos,
         sentence: token.sentence
       });
@@ -1574,8 +1602,9 @@ async function analyzeDocument(document) {
 function renderRuby(tokens) {
   return tokens
     .map((token) => {
-      if (!token.eligible || !token.reading) return escapeHtml(token.surface);
-      return `<ruby data-base="${escapeHtml(token.base)}" data-reading="${escapeHtml(token.reading)}">${escapeHtml(token.surface)}<rt>${escapeHtml(token.reading)}</rt></ruby>`;
+      const reading = primaryReading(token.displayReading || token.reading || token.dictionaryReading || "");
+      if (!token.eligible || !reading) return escapeHtml(token.surface);
+      return `<ruby data-base="${escapeHtml(token.dictionaryForm || token.base)}" data-reading="${escapeHtml(reading)}">${escapeHtml(token.surface)}<rt>${escapeHtml(reading)}</rt></ruby>`;
     })
     .join("");
 }
@@ -1605,7 +1634,7 @@ function targetTokenIndexes(tokens = [], target = "") {
 
   for (let start = 0; start < tokens.length; start += 1) {
     const token = tokens[start];
-    if ([token.surface, token.base].map(normalizeJapaneseTerm).includes(normalizedTarget)) {
+    if (tokenLookupVariants(token).includes(normalizedTarget)) {
       indexes.add(start);
       continue;
     }
@@ -1630,10 +1659,10 @@ function targetTokenIndexes(tokens = [], target = "") {
 function tokenToAnkiHtml(token, forceRuby = false, fallbackReading = "") {
   if (token.html) return token.html;
   const surface = token.surface ?? "";
-  const reading = primaryReading(token.reading) || primaryReading(fallbackReading);
+  const reading = primaryReading(token.displayReading || token.reading) || primaryReading(fallbackReading);
   const shouldShowRuby = Boolean(reading && hasKanji(surface) && (forceRuby || token.eligible));
   if (!shouldShowRuby) return escapeHtml(surface);
-  return `<ruby data-base="${escapeHtml(token.base || surface)}" data-reading="${escapeHtml(reading)}">${escapeHtml(surface)}<rt>${escapeHtml(reading)}</rt></ruby>`;
+  return `<ruby data-base="${escapeHtml(token.dictionaryForm || token.base || surface)}" data-reading="${escapeHtml(reading)}">${escapeHtml(surface)}<rt>${escapeHtml(reading)}</rt></ruby>`;
 }
 
 function highlightPlainSentenceTarget(sentence = "", target = "") {
@@ -1670,18 +1699,165 @@ function renderRubyLines(tokens) {
 
 function tokenToHtml(token) {
   if (token.html) return token.html;
-  if (!token.eligible || !token.reading) {
-    if (hasJapaneseText(token.surface) && token.pos !== "記号") {
-      return `<span class="lookup-token" data-base="${escapeHtml(token.base || token.surface)}">${escapeHtml(token.surface)}</span>`;
+  const normalizedReading = primaryReading(token.displayReading || token.reading || token.dictionaryReading || "");
+  const normalizedBase = token.dictionaryForm || token.base || token.surface;
+  if (!token.eligible || !normalizedReading) {
+    if (hasJapaneseText(token.surface) && token.pos !== "\u8a18\u53f7") {
+      return `<span class="lookup-token" data-base="${escapeHtml(normalizedBase)}" data-reading="${escapeHtml(normalizedReading)}">${escapeHtml(token.surface)}</span>`;
     }
     return escapeHtml(token.surface);
   }
-  const reading = primaryReading(token.reading);
-  return `<ruby data-base="${escapeHtml(token.base)}" data-reading="${escapeHtml(reading)}">${escapeHtml(token.surface)}<rt>${escapeHtml(reading)}</rt></ruby>`;
+  return `<ruby data-base="${escapeHtml(normalizedBase)}" data-reading="${escapeHtml(normalizedReading)}">${escapeHtml(token.surface)}<rt>${escapeHtml(normalizedReading)}</rt></ruby>`;
 }
 
 function primaryReading(reading = "") {
   return String(reading).split("/")[0].trim();
+}
+
+function uniqueNormalizedTerms(values = []) {
+  const seen = new Set();
+  const terms = [];
+  for (const value of values.flat()) {
+    const term = normalizeJapaneseTerm(String(value ?? ""));
+    if (!term || seen.has(term)) continue;
+    seen.add(term);
+    terms.push(term);
+  }
+  return terms;
+}
+
+function tokenLookupVariants(token = {}) {
+  return uniqueNormalizedTerms([
+    token.surface,
+    token.base,
+    token.dictionaryForm,
+    token.displayReading,
+    token.dictionaryReading,
+    token.lookupTerms ?? []
+  ]).filter((term) => hasJapaneseText(term));
+}
+
+function isBoundaryToken(token = {}) {
+  return !token.surface || /[\u3002\u3001\uff01\uff1f!?\s]/u.test(token.surface);
+}
+
+function dictionaryNormalizationSignature() {
+  const signature = createHash("sha1")
+    .update(JSON.stringify((state.dictionaries ?? []).map((dictionary) => ({
+      id: dictionary.id,
+      type: dictionary.type,
+      enabledForLookup: dictionary.enabledForLookup,
+      sortOrder: dictionary.sortOrder,
+      entriesCount: dictionary.entriesCount ?? dictionary.entries?.length ?? 0,
+      importedAt: dictionary.importedAt ?? "",
+      updatedAt: dictionary.updatedAt ?? ""
+    }))))
+    .digest("hex");
+  if (signature !== normalizationDictionarySignatureCache) {
+    normalizationDictionaryCache.clear();
+    readerTokenCache.clear();
+    normalizationDictionarySignatureCache = signature;
+  }
+  return signature;
+}
+
+function readerTokenCacheKey(text = "") {
+  return createHash("sha1")
+    .update(dictionaryNormalizationSignature())
+    .update("\u0000")
+    .update(text)
+    .digest("hex");
+}
+
+function rememberReaderTokens(key, tokens) {
+  readerTokenCache.set(key, tokens);
+  if (readerTokenCache.size > 1500) {
+    const firstKey = readerTokenCache.keys().next().value;
+    if (firstKey) readerTokenCache.delete(firstKey);
+  }
+}
+
+function exactDictionaryEntry(term = "") {
+  const normalized = normalizeJapaneseTerm(term);
+  if (!normalized) return null;
+  dictionaryNormalizationSignature();
+  if (normalizationDictionaryCache.has(normalized)) return normalizationDictionaryCache.get(normalized);
+  const entry = dictionaryService.exactTerm(normalized);
+  normalizationDictionaryCache.set(normalized, entry ?? null);
+  return entry ?? null;
+}
+
+function canonicalDictionaryMatch(terms = []) {
+  for (const term of uniqueNormalizedTerms(terms)) {
+    const entry = exactDictionaryEntry(term);
+    if (!entry) continue;
+    const redirectEntry = (entry.redirectTargets ?? [])
+      .map((target) => exactDictionaryEntry(target))
+      .find(Boolean);
+    const canonical = redirectEntry ?? entry;
+    return {
+      matchedInput: term,
+      entry,
+      canonical,
+      term: normalizeJapaneseTerm(canonical.term || entry.term || term),
+      reading: primaryReading(canonical.reading || entry.reading || "")
+    };
+  }
+  return null;
+}
+
+function learnedByTokenVariants(token = {}, known = learnedSet()) {
+  return tokenLookupVariants(token).some((term) => known.has(term));
+}
+
+function normalizeReaderToken(token = {}, known = learnedSet()) {
+  const surface = normalizeJapaneseTerm(token.surface ?? "");
+  if (!surface) return token;
+  if (token.authorRuby) {
+    const lookupTerms = uniqueNormalizedTerms([surface, token.base, token.reading]);
+    return {
+      ...token,
+      surface,
+      base: normalizeJapaneseTerm(token.base || surface),
+      dictionaryForm: normalizeJapaneseTerm(token.dictionaryForm || token.base || surface),
+      displayReading: primaryReading(token.reading),
+      dictionaryReading: primaryReading(token.dictionaryReading || token.reading),
+      lookupTerms,
+      eligible: false,
+      learned: true
+    };
+  }
+
+  const base = normalizeJapaneseTerm(token.base || surface);
+  const canonical = canonicalDictionaryMatch([surface, base]);
+  const dictionaryForm = canonical?.term || base || surface;
+  const dictionaryReading = primaryReading(canonical?.reading || token.dictionaryReading || "");
+  const displayReading = primaryReading(token.displayReading || token.reading || (canonical?.matchedInput === surface ? dictionaryReading : ""));
+  const lookupTerms = uniqueNormalizedTerms([
+    surface,
+    base,
+    dictionaryForm,
+    canonical?.entry?.term,
+    canonical?.canonical?.term,
+    canonical?.entry?.redirectTargets ?? [],
+    dictionaryReading
+  ]);
+  const next = {
+    ...token,
+    surface,
+    base: dictionaryForm,
+    dictionaryForm,
+    reading: displayReading || dictionaryReading,
+    displayReading: displayReading || dictionaryReading,
+    dictionaryReading,
+    lookupTerms
+  };
+  const learned = learnedByTokenVariants(next, known);
+  return {
+    ...next,
+    learned,
+    eligible: hasKanji(surface) && !learned && token.pos !== "\u8a18\u53f7"
+  };
 }
 
 function mergeDictionaryCompounds(tokens = [], known = learnedSet()) {
@@ -1733,6 +1909,53 @@ function bestDictionaryMatch(term = "") {
   return matches.find((entry) => normalizeJapaneseTerm(entry.term) === normalizeJapaneseTerm(term) && entry.reading) ?? matches.find((entry) => entry.reading);
 }
 
+function dictionaryAwareTokenStream(tokens = [], known = learnedSet()) {
+  const merged = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.authorRuby || !hasKanji(token.surface)) {
+      merged.push(normalizeReaderToken(token, known));
+      continue;
+    }
+
+    let best = null;
+    let surface = "";
+    for (let end = index; end < Math.min(tokens.length, index + 6); end += 1) {
+      const candidate = tokens[end];
+      if (candidate.authorRuby || isBoundaryToken(candidate)) break;
+      surface += candidate.surface;
+      if (end === index || !hasKanji(surface)) continue;
+      const match = canonicalDictionaryMatch([surface]);
+      if (match?.reading) best = { end, surface, match };
+    }
+
+    if (best) {
+      const dictionaryForm = best.match.term || best.surface;
+      const compound = normalizeReaderToken({
+        surface: best.surface,
+        base: dictionaryForm,
+        dictionaryForm,
+        reading: primaryReading(best.match.reading),
+        displayReading: primaryReading(best.match.reading),
+        dictionaryReading: primaryReading(best.match.reading),
+        lookupTerms: uniqueNormalizedTerms([best.surface, dictionaryForm, best.match.entry?.term, best.match.canonical?.term]),
+        pos: token.pos,
+        posDetail1: token.posDetail1 ?? "",
+        posDetail2: token.posDetail2 ?? "",
+        posDetail3: token.posDetail3 ?? "",
+        start: token.start,
+        end: tokens[best.end]?.end ?? token.end
+      }, known);
+      merged.push(compound);
+      index = best.end;
+      continue;
+    }
+
+    merged.push(normalizeReaderToken(token, known));
+  }
+  return merged;
+}
+
 function renderRubyPages(tokens, charLimit = 850) {
   const pages = [];
   let html = "";
@@ -1779,57 +2002,24 @@ function renderRubyLinePages(tokens, charLimit = 850) {
 }
 
 async function renderTextBlock(text) {
-  const tokenizer = await getTokenizer();
-  const known = learnedSet();
-  
-  // Use the exact matching rules from requirement 3
-  const tokens = tokenizer.tokenize(text).map((token) => {
-    const surface = normalizeJapaneseTerm(token.surface_form);
-    const base = tokenBase(token);
-    const reading = tokenReading(token);
-    const learned = isLearnedToken(token, known);
-    
-    return {
-      surface,
-      base,
-      reading,
-      // Eligible means it contains Kanji, is NOT known in Anki, and isn't punctuation
-      eligible: hasKanji(surface) && !learned && token.pos !== "記号"
-    };
-  });
-  
-  return tokens.map(tokenToHtml).join("");
+  const normalizedTokens = await analyzeReaderTokenStream(text);
+  return normalizedTokens.map(tokenToHtml).join("");
 }
 
 async function renderTextLinesBlock(text) {
   if (!hasJapaneseText(text)) return renderPlainTextLines(text);
-
-  const tokenizer = await getTokenizer();
-  const known = learnedSet();
-  const tokens = tokenizer.tokenize(text).map((token) => {
-    const surface = normalizeJapaneseTerm(token.surface_form);
-    const base = tokenBase(token);
-    const reading = tokenReading(token);
-    const learned = isLearnedToken(token, known);
-    return {
-      surface,
-      base,
-      reading,
-      eligible: hasKanji(surface) && !learned && token.pos !== "記号"
-    };
-  });
-
-  const lines = [];
-  let line = "";
-  for (const token of tokens) {
-    line += tokenToHtml(token);
-    if (/[。！？!?\n]/u.test(token.surface)) {
-      if (line.trim()) lines.push(`<p class="book-line">${line}</p>`);
-      line = "";
+  const normalizedTokens = await analyzeReaderTokenStream(text);
+  const normalizedLines = [];
+  let normalizedLine = "";
+  for (const token of normalizedTokens) {
+    normalizedLine += tokenToHtml(token);
+    if (/[\u3002\uff01\uff1f!?\n]/u.test(token.surface)) {
+      if (normalizedLine.trim()) normalizedLines.push(`<p class="book-line">${normalizedLine}</p>`);
+      normalizedLine = "";
     }
   }
-  if (line.trim()) lines.push(`<p class="book-line">${line}</p>`);
-  return lines.join("");
+  if (normalizedLine.trim()) normalizedLines.push(`<p class="book-line">${normalizedLine}</p>`);
+  return normalizedLines.join("");
 }
 
 function renderPlainTextLines(text = "") {
@@ -1843,8 +2033,26 @@ function renderPlainTextLines(text = "") {
 
 async function analyzeReaderTokenStream(text) {
   const tokenizer = await getTokenizer();
-  const known = learnedSet();
-  return mergeDictionaryCompounds(readerRenderTokens(text, tokenizer, known), known);
+  const known = await learnedVariantSet();
+  const key = readerTokenCacheKey(text);
+  let normalizedTokens = readerTokenCache.get(key);
+  if (!normalizedTokens) {
+    normalizedTokens = dictionaryAwareTokenStream(readerRenderTokens(text, tokenizer, new Set()), new Set());
+    rememberReaderTokens(key, normalizedTokens);
+  }
+  return applyLearnedState(normalizedTokens, known);
+}
+
+function applyLearnedState(tokens = [], known = learnedSet()) {
+  return tokens.map((token) => {
+    if (token.authorRuby) return { ...token, learned: true, eligible: false };
+    const learned = learnedByTokenVariants(token, known);
+    return {
+      ...token,
+      learned,
+      eligible: hasKanji(token.surface) && !learned && token.pos !== "\u8a18\u53f7"
+    };
+  });
 }
 
 async function renderReaderTextLines(text) {
@@ -2363,7 +2571,7 @@ app.get("/api/documents/:id", async (req, res, next) => {
             if (includeHeading) headingPlaced = true;
             return wrapReaderPage(pageHtml, chapterTitle, includeHeading);
           });
-          const rawHtml = chapterText.length > 30000 && !chapterHasPageBlocks && !chapterHasImageBlocks ? rawPages.slice(0, 3).join("") : await renderStructuredBlocks(renderBlocks);
+          const rawHtml = rawPages.join("");
           const html = `${chapterHeadingHtml(chapterTitle)}${rawHtml}`;
           renderedChapters.push({
             id: chapter.id || `chapter-${index + 1}`,
@@ -2377,8 +2585,12 @@ app.get("/api/documents/:id", async (req, res, next) => {
         const fallbackHtml = visibleChapters.length > 0 ? "" : renderRuby((await getAnalysis()).tokens);
         responseChapters = visibleChapters.length > 0 ? visibleChapters : [{ id: "chapter-1", title: "Document", html: fallbackHtml, pages: renderRubyPages(analysis.tokens) }];
       }
-      const contentHtml = responseChapters.map((chapter) => `<section class="book-chapter" data-chapter-id="${escapeHtml(chapter.id)}"><h2>${escapeHtml(chapter.title)}</h2>${chapter.html}</section>`).join("");
-      const missingFrontImages = (await frontImagePaths(document)).filter((imagePath) => !contentHtml.includes(imagePath));
+      const missingFrontImages = (await frontImagePaths(document)).filter((imagePath) =>
+        !responseChapters.some((chapter) =>
+          String(chapter.html ?? "").includes(imagePath) ||
+          (chapter.pages ?? []).some((pageHtml) => String(pageHtml ?? "").includes(imagePath))
+        )
+      );
       const frontImageHtml = missingFrontImages.map((imagePath) => renderImageFigure(imagePath, document.title)).join("");
       const pages = [
         ...missingFrontImages.map((imagePath) => ({
@@ -2396,9 +2608,9 @@ app.get("/api/documents/:id", async (req, res, next) => {
         createdAt: document.createdAt,
         coverPath: document.coverPath ?? "",
         sourcePath: document.sourcePath ?? "",
-        html: `${frontImageHtml}${contentHtml}`,
+        html: frontImageHtml,
         pages,
-        chapters: responseChapters.map(({ id, title, href, html }) => ({ id, title, href: href ?? "", html })),
+        chapters: responseChapters.map(({ id, title, href }) => ({ id, title, href: href ?? "" })),
         textLength: document.text.length
       };
       documentResponseCache.set(cacheKey, cached);

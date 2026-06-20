@@ -989,7 +989,6 @@ async function exportPreviewDirectly(preview, candidate, node) {
     if (!node && elements.dictionaryLookup) {
       elements.dictionaryLookup.insertAdjacentHTML("beforeend", `<p class="empty">Exported ${escapeHtml(exported.expression || candidate.expression || "card")} to Anki.</p>`);
     }
-    await loadModelFields();
     if (node) {
       await loadState();
       await refreshActiveDocumentForKnownTerms();
@@ -1115,7 +1114,6 @@ async function exportReviewedCard(event) {
     const exportedCandidate = state.activeCardCandidate;
     state.activeCandidateNode?.remove();
     closeCardPreview();
-    await loadModelFields();
     if (exportedFromLookup) {
       await refreshStateMetadataOnly();
       await refreshLookupAfterAnkiExport({ expression: exportedCandidate?.expression }, exportedCandidate);

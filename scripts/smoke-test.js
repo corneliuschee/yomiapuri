@@ -61,6 +61,9 @@ try {
   const compoundCandidate = readingAlignmentData.candidates.find((candidate) => candidate.expression === "\u5f8c\u8f2a");
   assert(compoundCandidate?.reading === "\u3053\u3046\u308a\u3093", "Sentence mining should use the same compound reading as reader furigana.");
   assert(readingAlignmentData.pages[0]?.html?.includes('data-base="\u5f8c\u8f2a" data-reading="\u3053\u3046\u308a\u3093"'), "Reader furigana should use the compound dictionary reading.");
+  const redirectedVerbCandidate = readingAlignmentData.candidates.find((candidate) => candidate.expression === "\u53d6\u308a\u4ed8\u3051\u308b");
+  assert(redirectedVerbCandidate?.dictionaryForm === "\u53d6\u308a\u4ed8\u3051\u308b", "Sentence mining should canonicalize redirected verb forms.");
+  assert(redirectedVerbCandidate?.reading === "\u3068\u308a\u3064\u3051\u308b", "Canonical redirected verb should use dictionary-form reading.");
   await assertWordCardCss();
 
   const card = await postJson("/api/cards", {
@@ -179,7 +182,9 @@ async function writeConjugationDictionaryFixture() {
 async function writeReadingAlignmentDictionaryFixture() {
   const fixturePath = path.join(dataDir, "reading-alignment-dictionary.json");
   await fs.writeFile(fixturePath, JSON.stringify([
-    ["\u5f8c\u8f2a", "\u3053\u3046\u308a\u3093", "n", "", 0, ["rear wheel"]]
+    ["\u5f8c\u8f2a", "\u3053\u3046\u308a\u3093", "n", "", 0, ["rear wheel"]],
+    ["\u53d6\u308a\u3064\u3051\u308b", "\u3068\u308a\u3064\u3051\u308b", "v1", "", 0, ["\u53d6\u308a\u4ed8\u3051\u308b; redirected from"]],
+    ["\u53d6\u308a\u4ed8\u3051\u308b", "\u3068\u308a\u3064\u3051\u308b", "v1", "", 0, ["to install", "to attach"]]
   ]));
   return path.relative(rootDir, fixturePath);
 }

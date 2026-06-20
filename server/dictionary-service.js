@@ -83,8 +83,22 @@ export function createDictionaryService({ store, normalizeJapaneseTerm, repairMo
       const prefix = Boolean(options.prefix && state.dictionarySettings?.prefixWildcardSearch);
       const termDictionaries = orderedDictionaries(state.dictionaries).filter((dictionary) => dictionary.type === "term" && dictionary.enabledForLookup);
       const entries = lookupTermDictionaries(termDictionaries, normalized, { prefix, indexCache }).slice(0, 24);
-      const frequencies = lookupFrequencyDictionaries(state.dictionaries, normalized, { indexCache }).slice(0, 24);
+      const frequencies = options.includeFrequencies === false
+        ? []
+        : lookupFrequencyDictionaries(state.dictionaries, normalized, { indexCache }).slice(0, 24);
       return { entries, frequencies };
+    },
+
+    exactTerm(term) {
+      const state = getState();
+      repairDictionaryState(state, { normalizeJapaneseTerm });
+      const normalized = normalizeJapaneseTerm(term);
+      if (!normalized) return null;
+      for (const dictionary of orderedDictionaries(state.dictionaries).filter((item) => item.type === "term" && item.enabledForLookup)) {
+        const entry = exactTermDictionaryEntry(dictionary, normalized, { indexCache });
+        if (entry) return entry;
+      }
+      return null;
     },
 
     lookupWordBank(term, dictionaryId = "") {
@@ -546,6 +560,20 @@ function termLookupEntries(dictionary, normalized, { prefix, indexCache }) {
 function frequencyLookupEntries(dictionary, normalized, { indexCache }) {
   const index = dictionaryIndex(dictionary, indexCache).frequencies;
   return index.get(normalized) ?? [];
+}
+
+function exactTermDictionaryEntry(dictionary, normalized, { indexCache }) {
+  const index = dictionaryIndex(dictionary, indexCache);
+  const entry = (index.terms.get(normalized) ?? []).find((item) => item.reading) ?? (index.terms.get(normalized) ?? [])[0];
+  if (!entry) return null;
+  return {
+    term: entry.term,
+    reading: entry.reading,
+    redirectTargets: redirectTargetsFromEntry(entry),
+    dictionary: dictionary.name,
+    dictionaryId: dictionary.id,
+    sortOrder: dictionary.sortOrder
+  };
 }
 
 function dictionaryIndex(dictionary, indexCache) {

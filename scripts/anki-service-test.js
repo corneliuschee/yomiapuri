@@ -77,7 +77,7 @@ assert.equal(mapped.values.Word, "図書館");
 assert.equal(mapped.values.Definition, "library");
 
 const definitionMapped = buildAnkiFields(
-  ["Expression", "PrimaryDefinition", "SecondaryDefinition", "ExtraDefition"],
+  ["Expression", "PrimaryDefinition", "SecondaryDefinition", "ExtraDefinition", "ExtraDefition", "ExtraDictionary"],
   {
     Expression: "åŽŸå› ",
     PrimaryDefinition: "Jitendex.org [2024-05-20]: cause; origin",
@@ -88,7 +88,9 @@ const definitionMapped = buildAnkiFields(
 );
 assert.equal(definitionMapped.values.PrimaryDefinition, "Jitendex.org [2024-05-20]: cause; origin");
 assert.equal(definitionMapped.values.SecondaryDefinition, "æ–°å’Œè‹±: cause; reason");
+assert.equal(definitionMapped.values.ExtraDefinition, "JMdict_english: source");
 assert.equal(definitionMapped.values.ExtraDefition, "JMdict_english: source");
+assert.equal(definitionMapped.values.ExtraDictionary, "JMdict_english: source");
 
 const jpMiningDetectedMap = fieldMapForModel(
   {
@@ -185,11 +187,12 @@ const exported = await service.exportCard({
   reading: "としょかん",
   sentence: "図書館へ行く。",
   meaning: "library",
-  fields: { Word: "図書館", Definition: "library" },
-  fieldMapUpdates: { Expression: "Word", Meaning: "Definition" }
+  fields: { Word: "図書館", Sentence: "図書館へ行く。", Definition: "library" },
+  fieldMapUpdates: { Expression: "Word", Sentence: "Sentence", Meaning: "Definition" }
 });
 assert.equal(exported.ankiNoteId, 12345);
 assert.equal(state.cards[0].fields.Word, "図書館");
+assert.match(state.cards[0].fields.Sentence, /<span style="color:#ff5a3d;font-weight:700;">/);
 assert.equal(state.anki.modelFieldMaps["Custom Mining"].Expression, "Word");
 assert.equal(saved > 0, true);
 assert.equal(ankiCalls.some((call) => call.action === "addNote"), true);
@@ -204,6 +207,7 @@ const generatedAudioExportService = createAnkiService({
     }),
     createAudio: async (payload, options) => {
       audioCalls.push({ payload, options });
+      if (!options?.generate) return "";
       return payload.sentence ? "[sound:sentence-audio.wav]" : "[sound:word-audio.wav]";
     },
     createImage: async () => "",
@@ -238,11 +242,51 @@ const generatedAudioExport = await generatedAudioExportService.exportCard({
 });
 const generatedAudioAddNote = ankiCalls.slice(callCountBeforeGeneratedAudioExport).find((call) => call.action === "addNote");
 assert.equal(generatedAudioAddNote.params.note.fields.WordAudio, "[sound:word-audio.wav]");
-assert.equal(generatedAudioAddNote.params.note.fields.SentenceAudio, "[sound:sentence-audio.wav]");
+assert.equal(generatedAudioAddNote.params.note.fields.SentenceAudio, "");
+assert.equal(ankiCalls.slice(callCountBeforeGeneratedAudioExport).some((call) => call.action === "updateNoteFields"), false);
 assert.deepEqual(generatedAudioExport.media.skippedAudioFields, []);
-assert.deepEqual(audioCalls.map((call) => call.options), [{ generate: true }, { generate: true }]);
+assert.deepEqual(audioCalls.map((call) => call.options), [{ generate: true }]);
 assert.deepEqual(audioCalls[0].payload, { expression: "fast-word", sentence: "" });
-assert.deepEqual(audioCalls[1].payload, { expression: "fast-word", sentence: "This is the full sentence." });
+
+const concurrentAudioEvents = [];
+const concurrentAudioService = createAnkiService({
+  store,
+  mediaProvider: {
+    status: () => ({
+      audio: { configured: true, label: "Local audio enabled" },
+      image: { configured: false, label: "Local image disabled" }
+    }),
+    createAudio: async (payload, options) => {
+      if (!options?.generate) return "";
+      concurrentAudioEvents.push(`start:${payload.sentence ? "sentence" : "word"}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      concurrentAudioEvents.push(`end:${payload.sentence ? "sentence" : "word"}`);
+      return payload.sentence ? "[sound:concurrent-sentence.wav]" : "[sound:concurrent-word.wav]";
+    },
+    createImage: async () => "",
+    storeMediaFiles: async () => []
+  },
+  lookupDictionary: () => [],
+  normalizeJapaneseTerm: (value = "") => value.normalize("NFKC").trim(),
+  extractTermsFromNotes: () => [],
+  mergeKnownTerms: (terms) => terms,
+  clearDocumentCache: () => {},
+  crypto
+});
+await concurrentAudioService.exportCard({
+  documentId: "doc-1",
+  expression: "parallel-word",
+  dictionaryForm: "parallel-word",
+  reading: "parallel-reading",
+  sentence: "Parallel sentence.",
+  meaning: "parallel meaning",
+  fields: {
+    Word: "parallel-word",
+    WordAudio: "",
+    SentenceAudio: ""
+  }
+});
+assert.deepEqual(concurrentAudioEvents, ["start:word", "end:word"]);
 
 const mediaExportService = createAnkiService({
   store,

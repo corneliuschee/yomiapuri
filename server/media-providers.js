@@ -250,7 +250,8 @@ async function synthesizeLiquidAiSpeech({ text, filePath, model, pythonPath, scr
   const response = await fetch(`http://127.0.0.1:${port}/tts`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, out: filePath, max_new_tokens: maxNewTokens, rate: Number(rate) || 0 })
+    body: JSON.stringify({ text, out: filePath, max_new_tokens: maxNewTokens, rate: Number(rate) || 0 }),
+    signal: AbortSignal.timeout(120000)
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.ok === false) throw new Error(payload.error || `LiquidAI TTS request failed with ${response.status}`);
