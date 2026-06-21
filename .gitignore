@@ -2,8 +2,14 @@ node_modules/
 data/
 .tmp/
 .venv-liquidai/
+.venv/
+venv/
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.example
+*.log
+.python-version
 .DS_Store
 Thumbs.db
