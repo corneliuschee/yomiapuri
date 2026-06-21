@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { createSyncService, defaultSyncSettings, buildPushPayload } from "../server/sync-service.js";
+
+const mediaDir = await fs.mkdtemp(path.join(os.tmpdir(), "kanji-reader-sync-media-"));
+await fs.mkdir(path.join(mediaDir, "epub-assets", "doc-1"), { recursive: true });
+await fs.writeFile(path.join(mediaDir, "epub-assets", "doc-1", "cover.jpg"), Buffer.from("cover"));
+await fs.writeFile(path.join(mediaDir, "epub-assets", "doc-1", "image001.png"), Buffer.from("image"));
 
 const state = {
   documents: [{
@@ -8,8 +16,9 @@ const state = {
     filename: "book.epub",
     type: "epub",
     createdAt: "2026-01-01T00:00:00.000Z",
+    coverPath: "/media/epub-assets/doc-1/cover.jpg",
     text: "図書館へ行く。",
-    chapters: [{ id: "ch-1", title: "Chapter 1", blocks: [{ type: "text", text: "図書館へ行く。" }] }]
+    chapters: [{ id: "ch-1", title: "Chapter 1", blocks: [{ type: "image", src: "/media/epub-assets/doc-1/image001.png", alt: "front" }, { type: "text", text: "図書館へ行く。" }] }]
   }],
   progress: {
     "doc-1": {
@@ -52,15 +61,17 @@ const eventLog = {
   appendImported: async (event) => importedEvents.push(event)
 };
 
-const payload = await buildPushPayload(state, { ...state.sync, userId: "user-1", userEmail: "test@example.com" }, "", eventLog);
+const payload = await buildPushPayload(state, { ...state.sync, userId: "user-1", userEmail: "test@example.com" }, mediaDir, eventLog);
 assert.equal(payload.documents[0].content.text, "図書館へ行く。");
 assert.equal(payload.documents.some((row) => Object.hasOwn(row, "deleted_at")), false);
+assert.equal(payload.documentFiles.length, 2);
+assert.equal(payload.documentFiles.some((row) => row.filename === "epub-assets/doc-1/cover.jpg"), true);
 assert.equal(payload.knownTerms.length, 2);
 assert.equal(payload.settings.find((item) => item.key === "dictionariesMetadata").value[0].entries, undefined);
 assert.equal(JSON.stringify(payload).includes("vector-index"), false);
 
 state.trash.knownTerms.push({ term: state.knownTerms[0], meta: {}, deletedAt: "2025-12-01T00:00:00.000Z" });
-const duplicatePayload = await buildPushPayload(state, { ...state.sync, userId: "user-1", userEmail: "test@example.com" }, "", eventLog);
+const duplicatePayload = await buildPushPayload(state, { ...state.sync, userId: "user-1", userEmail: "test@example.com" }, mediaDir, eventLog);
 assert.equal(duplicatePayload.knownTerms.filter((row) => row.term === state.knownTerms[0]).length, 1);
 
 const tables = new Map();
@@ -148,7 +159,7 @@ const createClient = () => ({
 const service = createSyncService({
   getState: () => state,
   saveState: async () => { saved += 1; },
-  mediaDir: "",
+  mediaDir,
   eventLog,
   createClient,
   platform: "test"

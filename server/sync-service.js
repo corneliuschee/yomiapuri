@@ -170,7 +170,7 @@ export function createSyncService({
     }], "user_id,device_id");
     const purged = await purgeRemoteDeletedDocuments(client, sync.userId);
     await maybeUploadDocumentFiles(client, payload.documentFiles);
-    await upsertRows(client, "document_files", payload.documentFiles.map(({ bytes, ...row }) => row), "user_id,file_hash");
+    await upsertRows(client, "document_files", payload.documentFiles.map(({ bytes, local_path, ...row }) => row), "user_id,file_hash");
     await upsertRows(client, "documents", payload.documents, "user_id,id");
     await upsertRows(client, "reading_progress", payload.progress, "user_id,document_id");
     await upsertRows(client, "reader_annotations", payload.annotations, "user_id,document_id,kind");
@@ -214,9 +214,10 @@ export function createSyncService({
     const sync = settings();
     const now = new Date().toISOString();
     const remote = {};
-    for (const table of SYNC_TABLES.filter((table) => table !== "profiles" && table !== "devices" && table !== "document_files" && table !== "sync_state")) {
+    for (const table of SYNC_TABLES.filter((table) => table !== "profiles" && table !== "devices" && table !== "sync_state")) {
       remote[table] = await selectRows(client, table, sync.userId);
     }
+    const restoredFiles = await restoreRemoteMediaFiles(client, remote.document_files ?? [], mediaDir);
     applyRemoteRows(state, remote);
     state.sync = normalizeSyncSettings({
       ...state.sync,
@@ -232,6 +233,7 @@ export function createSyncService({
     return publicStatus({
       pulled: {
         documents: remote.documents?.length ?? 0,
+        files: restoredFiles,
         progress: remote.reading_progress?.length ?? 0,
         annotations: remote.reader_annotations?.length ?? 0,
         knownTerms: remote.known_terms?.length ?? 0,
@@ -313,8 +315,9 @@ export async function buildPushPayload(state, sync, mediaDir, eventLog) {
 
   for (const item of activeDocuments) {
     const { document, orderIndex } = item;
-    const fileRecord = await documentFileRecord(sync.userId, document, mediaDir);
-    if (fileRecord) documentFiles.push(fileRecord);
+    const fileRecords = await documentFileRecordsForDocument(sync.userId, document, mediaDir);
+    documentFiles.push(...fileRecords);
+    const sourceFileRecord = fileRecords.find((record) => record.local_path === document.sourcePath);
     documents.push({
       user_id: sync.userId,
       id: document.id,
@@ -324,7 +327,7 @@ export async function buildPushPayload(state, sync, mediaDir, eventLog) {
       order_index: orderIndex,
       cover_path: document.coverPath ?? "",
       source_path: document.sourcePath ?? "",
-      file_hash: fileRecord?.file_hash ?? contentHash(document.text ?? document.id),
+      file_hash: sourceFileRecord?.file_hash ?? contentHash(document.text ?? document.id),
       content: {
         text: document.text ?? "",
         chapters: document.chapters ?? []
@@ -411,7 +414,7 @@ export async function buildPushPayload(state, sync, mediaDir, eventLog) {
 
   const knownTerms = dedupeRowsByFields([...activeTerms, ...trashTerms], ["user_id", "term"]);
 
-  return { documents, documentFiles, progress, annotations, knownTerms, cards, settings, events };
+  return { documents, documentFiles: dedupeRowsByFields(documentFiles, ["user_id", "storage_path"]), progress, annotations, knownTerms, cards, settings, events };
 }
 
 function applyRemoteRows(state, remote) {
@@ -632,19 +635,56 @@ async function maybeUploadDocumentFiles(client, files = []) {
   }
 }
 
-async function documentFileRecord(userId, document, mediaDir) {
-  const localPath = localMediaPath(mediaDir, document.sourcePath);
+async function restoreRemoteMediaFiles(client, files = [], mediaDir) {
+  const bucket = client.storage?.from?.(BOOK_BUCKET);
+  if (!bucket || !mediaDir) return 0;
+  let restored = 0;
+  for (const file of files) {
+    const relativePath = mediaRelativePathFromRecord(file);
+    if (!relativePath || !file.storage_path) continue;
+    const targetPath = path.join(mediaDir, relativePath);
+    if (existsSync(targetPath)) continue;
+    const { data, error } = await bucket.download(file.storage_path);
+    if (error) throw syncError(`book download: ${error.message}`);
+    if (!data) continue;
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, await blobToBuffer(data));
+    restored += 1;
+  }
+  return restored;
+}
+
+async function blobToBuffer(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (typeof value.arrayBuffer === "function") return Buffer.from(await value.arrayBuffer());
+  return Buffer.from(String(value));
+}
+
+async function documentFileRecordsForDocument(userId, document, mediaDir) {
+  const records = [];
+  for (const publicPath of documentMediaPaths(document)) {
+    const record = await documentFileRecord(userId, document, mediaDir, publicPath);
+    if (record) records.push(record);
+  }
+  return records;
+}
+
+async function documentFileRecord(userId, document, mediaDir, publicPath) {
+  const localPath = localMediaPath(mediaDir, publicPath);
   if (!localPath || !existsSync(localPath)) return null;
   const bytes = await fs.readFile(localPath);
   const fileHash = contentHash(bytes);
-  const ext = path.extname(document.filename || localPath) || ".bin";
+  const relativePath = mediaRelativePath(publicPath);
+  const ext = path.extname(localPath) || path.extname(document.filename || "") || ".bin";
   return {
     user_id: userId,
     file_hash: fileHash,
-    filename: document.filename || path.basename(localPath),
-    storage_path: `${userId}/${fileHash}${ext}`,
+    filename: relativePath || document.filename || path.basename(localPath),
+    storage_path: `${userId}/media/${relativePath || `${fileHash}${ext}`}`,
     content_type: contentTypeForExt(ext),
     size_bytes: bytes.length,
+    local_path: publicPath,
     bytes,
     created_at: new Date().toISOString()
   };
@@ -653,6 +693,36 @@ async function documentFileRecord(userId, document, mediaDir) {
 function localMediaPath(mediaDir, sourcePath = "") {
   if (!sourcePath || !sourcePath.startsWith("/media/")) return "";
   return path.join(mediaDir, sourcePath.replace(/^\/media\//, ""));
+}
+
+function mediaRelativePath(sourcePath = "") {
+  if (!sourcePath || !sourcePath.startsWith("/media/")) return "";
+  return sourcePath.replace(/^\/media\//, "").replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function mediaRelativePathFromRecord(file = {}) {
+  const filename = String(file.filename ?? "");
+  if (filename && !path.isAbsolute(filename) && !filename.includes("..")) return filename.replace(/\\/g, "/");
+  const storagePath = String(file.storage_path ?? "");
+  const match = storagePath.match(/\/media\/(.+)$/);
+  return match?.[1] ?? "";
+}
+
+function documentMediaPaths(document = {}) {
+  const paths = new Set();
+  if (document.sourcePath) paths.add(document.sourcePath);
+  if (document.coverPath) paths.add(document.coverPath);
+  for (const chapter of document.chapters ?? []) collectBlockMediaPaths(chapter.blocks ?? [], paths);
+  return [...paths].filter((value) => typeof value === "string" && value.startsWith("/media/"));
+}
+
+function collectBlockMediaPaths(blocks = [], paths = new Set()) {
+  for (const block of blocks ?? []) {
+    if (!block || typeof block !== "object") continue;
+    if (block.type === "image" && block.src) paths.add(block.src);
+    if (Array.isArray(block.blocks)) collectBlockMediaPaths(block.blocks, paths);
+  }
+  return paths;
 }
 
 function sanitizeAnkiSettings(anki = {}) {
@@ -698,6 +768,11 @@ function contentTypeForExt(ext = "") {
   if (normalized === ".pdf") return "application/pdf";
   if (normalized === ".epub") return "application/epub+zip";
   if (normalized === ".txt") return "text/plain; charset=utf-8";
+  if (normalized === ".jpg" || normalized === ".jpeg") return "image/jpeg";
+  if (normalized === ".png") return "image/png";
+  if (normalized === ".gif") return "image/gif";
+  if (normalized === ".webp") return "image/webp";
+  if (normalized === ".svg") return "image/svg+xml";
   return "application/octet-stream";
 }
 
