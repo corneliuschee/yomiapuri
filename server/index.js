@@ -2491,7 +2491,7 @@ function logLearningEvent(type, payload = {}) {
 }
 
 function syncDiagnostics() {
-  const documents = [...(state.documents ?? []), ...(state.trash?.documents ?? [])];
+  const documents = state.documents ?? [];
   let uploadableFiles = 0;
   let missingFiles = 0;
   for (const document of documents) {
@@ -2601,6 +2601,16 @@ app.post("/api/sync/pull", async (req, res, next) => {
 app.post("/api/sync/run", async (req, res, next) => {
   try {
     res.json(await syncService.syncNow());
+  } catch (error) {
+    state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
+    await saveState();
+    next(error);
+  }
+});
+
+app.post("/api/sync/cleanup-deleted", async (req, res, next) => {
+  try {
+    res.json(await syncService.cleanupDeletedRemoteItems());
   } catch (error) {
     state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
     await saveState();

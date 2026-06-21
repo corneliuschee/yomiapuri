@@ -54,6 +54,7 @@ const eventLog = {
 
 const payload = await buildPushPayload(state, { ...state.sync, userId: "user-1", userEmail: "test@example.com" }, "", eventLog);
 assert.equal(payload.documents[0].content.text, "図書館へ行く。");
+assert.equal(payload.documents.some((row) => Object.hasOwn(row, "deleted_at")), false);
 assert.equal(payload.knownTerms.length, 2);
 assert.equal(payload.settings.find((item) => item.key === "dictionariesMetadata").value[0].entries, undefined);
 assert.equal(JSON.stringify(payload).includes("vector-index"), false);
@@ -87,6 +88,36 @@ const createClient = () => ({
     signOut: async () => ({ error: null })
   },
   from(name) {
+    const queryForRows = (rows) => ({
+      range: async (from, to) => ({
+        data: rows.slice(from, to + 1),
+        error: null
+      }),
+      then(resolve, reject) {
+        return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
+      },
+      not(field, operator, value) {
+        const filtered = rows.filter((row) => operator === "is" && value === null ? row[field] !== null && row[field] !== undefined : true);
+        return queryForRows(filtered);
+      },
+      in(field, values) {
+        const set = new Set(values);
+        return queryForRows(rows.filter((row) => set.has(row[field])));
+      }
+    });
+    const deleteQuery = (rows) => ({
+      eq(field, value) {
+        return deleteQuery(rows.filter((row) => row[field] === value));
+      },
+      in(field, values) {
+        const set = new Set(values);
+        const ids = new Set(rows.filter((row) => set.has(row[field])).map((row) => row));
+        const current = table(name);
+        const before = current.length;
+        tables.set(name, current.filter((row) => !ids.has(row)));
+        return Promise.resolve({ data: null, error: null, count: before - table(name).length });
+      }
+    });
     return {
       upsert: async (rows) => {
         for (const row of rows) {
@@ -98,14 +129,12 @@ const createClient = () => ({
         return {
           eq(_field, value) {
             const rows = table(name).filter((row) => row.user_id === value);
-            return {
-              range: async (from, to) => ({
-                data: rows.slice(from, to + 1),
-                error: null
-              })
-            };
+            return queryForRows(rows);
           }
         };
+      },
+      delete() {
+        return deleteQuery(table(name));
       }
     };
   },
@@ -127,8 +156,37 @@ const service = createSyncService({
 
 await service.signIn({ email: "test@example.com", password: "secret" });
 assert.equal(state.sync.userId, "user-1");
+table("documents").push({
+  user_id: "user-1",
+  id: "deleted-doc",
+  title: "Deleted Remote",
+  deleted_at: "2026-01-01T00:00:00.000Z"
+});
+table("reading_progress").push({
+  user_id: "user-1",
+  document_id: "deleted-doc",
+  updated_at: "2026-01-01T00:00:00.000Z"
+});
+table("cards").push({
+  user_id: "user-1",
+  id: "deleted-card",
+  document_id: "deleted-doc",
+  payload: { expression: "削除" },
+  updated_at: "2026-01-01T00:00:00.000Z"
+});
+table("cards").push({
+  user_id: "user-1",
+  id: "orphan-card",
+  document_id: "missing-doc",
+  payload: { expression: "孤立" },
+  updated_at: "2026-01-01T00:00:00.000Z"
+});
 await service.push();
 assert.equal(table("documents").some((row) => row.id === "doc-1"), true);
+assert.equal(table("documents").some((row) => row.id === "deleted-doc"), false);
+assert.equal(table("reading_progress").some((row) => row.document_id === "deleted-doc"), false);
+assert.equal(table("cards").some((row) => row.id === "deleted-card"), false);
+assert.equal(table("cards").some((row) => row.id === "orphan-card"), false);
 assert.equal(table("known_terms").some((row) => row.term === "図書館" && row.deleted_at === null), true);
 
 table("documents").push({

@@ -168,6 +168,7 @@ export function createSyncService({
       platform,
       last_seen_at: now
     }], "user_id,device_id");
+    const purged = await purgeRemoteDeletedDocuments(client, sync.userId);
     await maybeUploadDocumentFiles(client, payload.documentFiles);
     await upsertRows(client, "document_files", payload.documentFiles.map(({ bytes, ...row }) => row), "user_id,file_hash");
     await upsertRows(client, "documents", payload.documents, "user_id,id");
@@ -197,6 +198,7 @@ export function createSyncService({
       pushed: {
         documents: payload.documents.length,
         files: payload.documentFiles.length,
+        purgedDeletedBooks: purged.documents,
         progress: payload.progress.length,
         annotations: payload.annotations.length,
         knownTerms: payload.knownTerms.length,
@@ -244,6 +246,22 @@ export function createSyncService({
     return pull();
   }
 
+  async function cleanupDeletedRemoteItems() {
+    const client = await authedClient();
+    const state = getState();
+    const sync = settings();
+    const purged = await purgeRemoteDeletedDocuments(client, sync.userId);
+    const now = new Date().toISOString();
+    state.sync = normalizeSyncSettings({
+      ...state.sync,
+      lastSyncAt: now,
+      lastError: "",
+      status: "synced"
+    });
+    await saveState();
+    return publicStatus({ purged });
+  }
+
   async function registerDevice() {
     const client = await authedClient();
     const sync = settings();
@@ -285,17 +303,16 @@ export function createSyncService({
     return client;
   }
 
-  return { status: publicStatus, updateSettings, signIn, signOut, push, pull, syncNow };
+  return { status: publicStatus, updateSettings, signIn, signOut, push, pull, syncNow, cleanupDeletedRemoteItems };
 }
 
 export async function buildPushPayload(state, sync, mediaDir, eventLog) {
   const documents = [];
   const documentFiles = [];
   const activeDocuments = (state.documents ?? []).map((document, index) => ({ document, orderIndex: index, deleted: false }));
-  const trashedDocuments = (state.trash?.documents ?? []).map((document, index) => ({ document, orderIndex: index, deleted: true }));
 
-  for (const item of [...activeDocuments, ...trashedDocuments]) {
-    const { document, orderIndex, deleted } = item;
+  for (const item of activeDocuments) {
+    const { document, orderIndex } = item;
     const fileRecord = await documentFileRecord(sync.userId, document, mediaDir);
     if (fileRecord) documentFiles.push(fileRecord);
     documents.push({
@@ -312,13 +329,13 @@ export async function buildPushPayload(state, sync, mediaDir, eventLog) {
         text: document.text ?? "",
         chapters: document.chapters ?? []
       },
-      deleted_at: deleted ? (document.deletedAt ?? new Date().toISOString()) : null,
       created_at: document.createdAt ?? new Date().toISOString(),
-      updated_at: document.updatedAt ?? document.deletedAt ?? document.createdAt ?? new Date().toISOString()
+      updated_at: document.updatedAt ?? document.createdAt ?? new Date().toISOString()
     });
   }
 
-  const progress = Object.entries(state.progress ?? {}).map(([documentId, value]) => ({
+  const activeDocumentIds = new Set(activeDocuments.map(({ document }) => document.id).filter(Boolean));
+  const progress = Object.entries(state.progress ?? {}).filter(([documentId]) => activeDocumentIds.has(documentId)).map(([documentId, value]) => ({
     user_id: sync.userId,
     document_id: documentId,
     page: Number(value.page) || 0,
@@ -330,7 +347,7 @@ export async function buildPushPayload(state, sync, mediaDir, eventLog) {
     updated_at: value.updatedAt ?? new Date().toISOString()
   }));
 
-  const annotations = Object.entries(state.progress ?? {}).map(([documentId, value]) => ({
+  const annotations = Object.entries(state.progress ?? {}).filter(([documentId]) => activeDocumentIds.has(documentId)).map(([documentId, value]) => ({
     user_id: sync.userId,
     document_id: documentId,
     kind: "reader_state",
@@ -408,8 +425,8 @@ function applyRemoteRows(state, remote) {
 function applyDocuments(state, rows) {
   if (rows.length === 0) return;
   const active = [];
-  const trash = [];
   for (const row of rows.sort((a, b) => Number(a.order_index) - Number(b.order_index))) {
+    if (row.deleted_at) continue;
     const document = {
       id: row.id,
       title: row.title,
@@ -422,12 +439,9 @@ function applyDocuments(state, rows) {
       text: row.content?.text ?? "",
       chapters: row.content?.chapters ?? []
     };
-    if (row.deleted_at) trash.push({ ...document, deletedAt: row.deleted_at });
-    else active.push(document);
+    active.push(document);
   }
   state.documents = mergeByNewest(state.documents ?? [], active, "id", "updatedAt");
-  state.trash ??= { documents: [], knownTerms: [] };
-  state.trash.documents = mergeByNewest(state.trash.documents ?? [], trash, "id", "deletedAt");
 }
 
 function applyProgress(state, progressRows, annotationRows) {
@@ -509,6 +523,73 @@ async function upsertRows(client, table, rows, onConflict = "id") {
     const { error } = await client.from(table).upsert(batch, { onConflict });
     if (error) throw syncError(`${table}: ${error.message}`);
   }
+}
+
+async function purgeRemoteDeletedDocuments(client, userId) {
+  let data = [];
+  const result = await client
+    .from("documents")
+    .select("id")
+    .eq("user_id", userId)
+    .not("deleted_at", "is", null);
+  if (result.error) {
+    if (!isMissingDeletedAtColumn(result.error)) throw syncError(`documents cleanup: ${result.error.message}`);
+  } else {
+    data = result.data ?? [];
+  }
+
+  const documentIds = [...new Set((data ?? []).map((row) => row.id).filter(Boolean))];
+  if (documentIds.length === 0) {
+    return { documents: 0, progress: 0, annotations: 0, cards: await purgeRemoteOrphanCards(client, userId) };
+  }
+
+  let progress = 0;
+  let annotations = 0;
+  let cards = 0;
+  for (const ids of chunk(documentIds, 100)) {
+    const progressResult = await client.from("reading_progress").delete().eq("user_id", userId).in("document_id", ids);
+    if (progressResult.error) throw syncError(`reading_progress cleanup: ${progressResult.error.message}`);
+    progress += progressResult.count ?? ids.length;
+
+    const annotationResult = await client.from("reader_annotations").delete().eq("user_id", userId).in("document_id", ids);
+    if (annotationResult.error) throw syncError(`reader_annotations cleanup: ${annotationResult.error.message}`);
+    annotations += annotationResult.count ?? ids.length;
+
+    const cardResult = await client.from("cards").delete().eq("user_id", userId).in("document_id", ids);
+    if (cardResult.error) throw syncError(`cards cleanup: ${cardResult.error.message}`);
+    cards += cardResult.count ?? ids.length;
+  }
+
+  const documentResult = await client.from("documents").delete().eq("user_id", userId).in("id", documentIds);
+  if (documentResult.error) throw syncError(`documents cleanup: ${documentResult.error.message}`);
+
+  cards += await purgeRemoteOrphanCards(client, userId);
+  return { documents: documentResult.count ?? documentIds.length, progress, annotations, cards };
+}
+
+async function purgeRemoteOrphanCards(client, userId) {
+  const [documents, cards] = await Promise.all([
+    selectRows(client, "documents", userId),
+    selectRows(client, "cards", userId)
+  ]);
+  const activeDocumentIds = new Set(documents.filter((document) => !document.deleted_at).map((document) => document.id).filter(Boolean));
+  const orphanCardIds = cards
+    .filter((card) => card.document_id && !activeDocumentIds.has(card.document_id))
+    .map((card) => card.id)
+    .filter(Boolean);
+  if (orphanCardIds.length === 0) return 0;
+  let deleted = 0;
+  for (const ids of chunk([...new Set(orphanCardIds)], 100)) {
+    const result = await client.from("cards").delete().eq("user_id", userId).in("id", ids);
+    if (result.error) throw syncError(`orphan cards cleanup: ${result.error.message}`);
+    deleted += result.count ?? ids.length;
+  }
+  return deleted;
+}
+
+function isMissingDeletedAtColumn(error = {}) {
+  const message = String(error.message ?? "");
+  return error.code === "42703" || /deleted_at.*does not exist|column.*deleted_at/i.test(message);
 }
 
 function dedupeRowsByFields(rows = [], fields = []) {
