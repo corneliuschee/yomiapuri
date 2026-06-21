@@ -27,6 +27,25 @@ export function createLearningEventLog({ eventsPath }) {
     return event;
   }
 
+  async function appendImported(event = {}) {
+    if (!event?.id || !event?.type || !event?.createdAt) return null;
+    await ensureDir();
+    const existing = await readAll(MAX_RECENT_EVENTS);
+    if (existing.some((item) => item.id === event.id)) return event;
+    const normalized = {
+      id: String(event.id),
+      type: String(event.type),
+      payload: event.payload && typeof event.payload === "object" ? event.payload : {},
+      createdAt: String(event.createdAt)
+    };
+    await fs.appendFile(eventsPath, `${JSON.stringify(normalized)}\n`, "utf8");
+    if (recentCache) {
+      recentCache.push(normalized);
+      if (recentCache.length > MAX_RECENT_EVENTS) recentCache = recentCache.slice(-MAX_RECENT_EVENTS);
+    }
+    return normalized;
+  }
+
   async function recent(limit = 500) {
     const normalizedLimit = Math.max(1, Math.min(MAX_RECENT_EVENTS, Number(limit) || 500));
     if (!recentCache) recentCache = await readAll(MAX_RECENT_EVENTS);
@@ -48,5 +67,5 @@ export function createLearningEventLog({ eventsPath }) {
     }
   }
 
-  return { append, recent, readAll };
+  return { append, appendImported, recent, readAll };
 }

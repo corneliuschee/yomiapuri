@@ -4,6 +4,7 @@ const state = {
   dictionarySettings: { prefixWildcardSearch: false },
   media: { audio: { enabled: false, provider: "local-system-tts", voiceName: "", rate: 0 }, image: { enabled: false, provider: "local-mnemonic" } },
   mediaProviders: { voices: [], status: null },
+  sync: { enabled: false, configured: false, signedIn: false, status: "disabled" },
   cards: [],
   progress: {},
   trash: { documents: [], knownTerms: [] },
@@ -174,6 +175,21 @@ const elements = {
   dictionaryPrefixToggle: $("#dictionary-prefix-toggle"),
   instantAnkiToggle: $("#instant-anki-toggle"),
   dictionaryLookup: $("#dictionary-lookup"),
+  syncSettingsForm: $("#sync-settings-form"),
+  syncStatus: $("#sync-status"),
+  syncUrl: $("#sync-url"),
+  syncAnonKey: $("#sync-anon-key"),
+  syncDeviceName: $("#sync-device-name"),
+  syncEnabled: $("#sync-enabled"),
+  syncEmail: $("#sync-email"),
+  syncPassword: $("#sync-password"),
+  syncSaveSettings: $("#sync-save-settings"),
+  syncSignIn: $("#sync-sign-in"),
+  syncSignOut: $("#sync-sign-out"),
+  syncPush: $("#sync-push"),
+  syncPull: $("#sync-pull"),
+  syncNow: $("#sync-now"),
+  syncSummary: $("#sync-summary"),
   cardDialog: $("#card-dialog"),
   cardForm: $("#card-preview-form"),
   cardStatus: $("#card-status"),
@@ -208,6 +224,7 @@ async function loadState() {
   state.trash = snapshot.trash ?? { documents: [], knownTerms: [] };
   state.anki = snapshot.anki;
   state.media = snapshot.media ?? state.media;
+  state.sync = snapshot.sync ?? state.sync;
   state.knownTermsCount = snapshot.knownTermsCount ?? 0;
   elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
   elements.knownCount.classList.add("hidden");
@@ -218,6 +235,7 @@ async function loadState() {
   renderBooksGrid();
   renderDictionaries();
   renderAnkiSummary();
+  renderSyncStatus();
   await loadMediaProviders();
   updateAnkiConnectionUi(false);
   renderTrash();
@@ -1835,6 +1853,97 @@ function renderAnkiSummary() {
     return;
   }
   elements.retentionSummary.textContent = `${stats.importedTerms.toLocaleString()} terms imported from ${stats.cards.toLocaleString()} cards. Query: ${stats.query}`;
+}
+
+function renderSyncStatus(extra = "") {
+  if (!elements.syncSummary) return;
+  const sync = state.sync ?? {};
+  if (elements.syncStatus) {
+    elements.syncStatus.textContent = sync.signedIn ? "Connected" : sync.configured ? "Configured" : "Off";
+  }
+  if (elements.syncUrl) elements.syncUrl.value = sync.supabaseUrl ?? "";
+  if (elements.syncAnonKey) elements.syncAnonKey.value = sync.hasAnonKey ? "********" : "";
+  if (elements.syncDeviceName) elements.syncDeviceName.value = sync.deviceName ?? "";
+  if (elements.syncEnabled) elements.syncEnabled.checked = Boolean(sync.enabled);
+  const rows = [
+    `Status: ${sync.status || "disabled"}`,
+    `Signed in: ${sync.userEmail || "No"}`,
+    `Device: ${sync.deviceName || "Local device"}`,
+    `Last sync: ${sync.lastSyncAt ? formatDateTime(sync.lastSyncAt) : "Never"}`,
+    sync.lastError ? `Last error: ${sync.lastError}` : "",
+    extra
+  ].filter(Boolean);
+  elements.syncSummary.textContent = rows.join("\n");
+}
+
+function syncSettingsPayload() {
+  const anonKey = elements.syncAnonKey?.value?.trim() ?? "";
+  return {
+    supabaseUrl: elements.syncUrl?.value?.trim() ?? "",
+    ...(anonKey && anonKey !== "********" ? { supabaseAnonKey: anonKey } : {}),
+    deviceName: elements.syncDeviceName?.value?.trim() ?? "",
+    enabled: Boolean(elements.syncEnabled?.checked)
+  };
+}
+
+async function saveSyncSettings() {
+  const result = await api("/api/sync/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(syncSettingsPayload())
+  });
+  state.sync = result;
+  renderSyncStatus("Sync settings saved.");
+}
+
+async function signInSync() {
+  await saveSyncSettings();
+  const result = await api("/api/sync/sign-in", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: elements.syncEmail?.value?.trim() ?? "",
+      password: elements.syncPassword?.value ?? "",
+      ...syncSettingsPayload()
+    })
+  });
+  state.sync = result;
+  if (elements.syncPassword) elements.syncPassword.value = "";
+  renderSyncStatus("Signed in to Supabase.");
+}
+
+async function runSyncAction(action, label) {
+  setSyncLoading(true, label);
+  try {
+    const result = await api(`/api/sync/${action}`, { method: "POST" });
+    state.sync = result;
+    if (action === "pull" || action === "run") await loadState();
+    renderSyncStatus(syncResultSummary(result));
+  } catch (error) {
+    renderSyncStatus(error.message);
+  } finally {
+    setSyncLoading(false);
+  }
+}
+
+function syncResultSummary(result = {}) {
+  const payload = result.pushed ?? result.pulled;
+  if (!payload) return "Sync complete.";
+  return Object.entries(payload)
+    .map(([key, value]) => `${key}: ${Number(value).toLocaleString()}`)
+    .join(" | ");
+}
+
+function setSyncLoading(loading, label = "Syncing") {
+  for (const button of [elements.syncSaveSettings, elements.syncSignIn, elements.syncSignOut, elements.syncPush, elements.syncPull, elements.syncNow]) {
+    if (button) button.disabled = loading;
+  }
+  if (loading && elements.syncSummary) elements.syncSummary.textContent = `${label}...`;
+}
+
+function formatDateTime(value = "") {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function syncAnkiLaunchControls() {
@@ -3488,6 +3597,31 @@ elements.mediaImageEnabled?.addEventListener("change", queueSaveMediaSettings);
 elements.voiceModelForm?.addEventListener("submit", importVoiceModel);
 elements.testMediaAudio?.addEventListener("click", () => testMedia("audio"));
 elements.testMediaImage?.addEventListener("click", () => testMedia("image"));
+elements.syncSaveSettings?.addEventListener("click", async () => {
+  try {
+    await saveSyncSettings();
+  } catch (error) {
+    renderSyncStatus(error.message);
+  }
+});
+elements.syncSignIn?.addEventListener("click", async () => {
+  try {
+    await signInSync();
+  } catch (error) {
+    renderSyncStatus(error.message);
+  }
+});
+elements.syncSignOut?.addEventListener("click", async () => {
+  try {
+    state.sync = await api("/api/sync/sign-out", { method: "POST" });
+    renderSyncStatus("Signed out.");
+  } catch (error) {
+    renderSyncStatus(error.message);
+  }
+});
+elements.syncPush?.addEventListener("click", () => runSyncAction("push", "Pushing local data"));
+elements.syncPull?.addEventListener("click", () => runSyncAction("pull", "Pulling remote data"));
+elements.syncNow?.addEventListener("click", () => runSyncAction("run", "Syncing"));
 elements.cardForm?.addEventListener("submit", exportReviewedCard);
 elements.cardCancel?.addEventListener("click", closeCardPreview);
 elements.cardDialog?.addEventListener("click", (event) => {

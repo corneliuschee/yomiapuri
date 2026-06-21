@@ -401,6 +401,55 @@
               <div id="dictionary-notice" class="library-notice integration-notice" role="status" aria-live="polite"></div>
               <div id="dictionary-list" class="dictionary-list"></div>
             </section>
+
+            <section class="page-card">
+              <div class="page-card-head">
+                <div>
+                  <h2>Sync</h2>
+                  <p>Optional Supabase source-data sync for books, progress, Word Bank, and settings.</p>
+                </div>
+                <span id="sync-status" class="status">Offline</span>
+              </div>
+              <form id="sync-settings-form" class="stack sync-settings-form">
+                <label>
+                  Supabase URL
+                  <input id="sync-url" name="supabaseUrl" type="url" placeholder="https://project.supabase.co" />
+                </label>
+                <label>
+                  Supabase publishable key
+                  <input id="sync-anon-key" name="supabaseAnonKey" type="password" autocomplete="off" placeholder="sb_publishable_..." />
+                </label>
+                <label>
+                  Device name
+                  <input id="sync-device-name" name="deviceName" type="text" placeholder="Desktop" />
+                </label>
+                <label class="toggle-row">
+                  <input id="sync-enabled" name="enabled" type="checkbox" />
+                  Enable sync
+                </label>
+                <div class="two-col">
+                  <label>
+                    Email
+                    <input id="sync-email" name="email" type="email" autocomplete="email" />
+                  </label>
+                  <label>
+                    Password
+                    <input id="sync-password" name="password" type="password" autocomplete="current-password" />
+                  </label>
+                </div>
+                <div class="button-row">
+                  <button id="sync-save-settings" type="button">Save sync settings</button>
+                  <button id="sync-sign-in" type="button">Sign in</button>
+                  <button id="sync-sign-out" type="button">Sign out</button>
+                </div>
+                <div class="button-row">
+                  <button id="sync-push" type="button">Push local data</button>
+                  <button id="sync-pull" type="button">Pull remote data</button>
+                  <button id="sync-now" type="button">Sync now</button>
+                </div>
+              </form>
+              <div id="sync-summary" class="meta-box">Sync is optional and disabled by default.</div>
+            </section>
           </div>
         </section>
       </main>

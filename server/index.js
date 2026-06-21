@@ -1,7 +1,7 @@
 import AdmZip from "adm-zip";
 import express from "express";
 import fs from "node:fs/promises";
-import { createWriteStream, existsSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
@@ -15,9 +15,11 @@ import { createJsonStateStore } from "./json-state-store.js";
 import { createLearningEventLog } from "./learning-events.js";
 import { createMlService } from "./ml-service.js";
 import { createLocalMediaProvider, defaultMediaSettings, normalizeMediaSettings } from "./media-providers.js";
+import { createSyncService, defaultSyncSettings, normalizeSyncSettings, publicSyncSettings } from "./sync-service.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
+loadDotEnv(path.join(rootDir, ".env"));
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(rootDir, "data");
 const mediaDir = path.join(dataDir, "media");
 const eventsPath = path.join(dataDir, "events.jsonl");
@@ -38,6 +40,19 @@ app.use(express.static(publicDir));
 
 const detectedAnkiExecutablePath = detectAnkiExecutablePath();
 
+function loadDotEnv(envPath) {
+  if (!existsSync(envPath)) return;
+  const raw = readFileSync(envPath, "utf8");
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+    const index = trimmed.indexOf("=");
+    const key = trimmed.slice(0, index).trim();
+    const value = trimmed.slice(index + 1).trim().replace(/^["']|["']$/g, "");
+    if (key && process.env[key] === undefined) process.env[key] = value;
+  }
+}
+
 const initialState = {
   documents: [],
   knownTerms: [],
@@ -51,6 +66,7 @@ const initialState = {
     prefixWildcardSearch: false
   },
   media: defaultMediaSettings(),
+  sync: defaultSyncSettings(),
   progress: {},
   cards: [],
   anki: {
@@ -116,6 +132,13 @@ const dictionaryService = createDictionaryService({
   crypto
 });
 const eventLog = createLearningEventLog({ eventsPath });
+const syncService = createSyncService({
+  getState: () => state,
+  saveState,
+  mediaDir,
+  eventLog,
+  clearDocumentCache
+});
 const mlService = createMlService({
   getState: () => state,
   vectorDir,
@@ -177,6 +200,7 @@ async function loadState() {
     ...(state.trash ?? {})
   };
   state.media = normalizeMediaSettings(state.media);
+  state.sync = normalizeSyncSettings(state.sync);
   if (repairDictionaryState(state, { normalizeJapaneseTerm })) repaired = true;
   const legacyBaseTime = Date.parse("2020-01-01T00:00:00.000Z");
   for (const [index, term] of state.knownTerms.entries()) {
@@ -237,6 +261,7 @@ async function saveState() {
 function mainStateSnapshot() {
   return {
     ...state,
+    sync: normalizeSyncSettings(state.sync),
     dictionaries: state.dictionaries.map(dictionaryPublicStorageRecord)
   };
 }
@@ -2462,6 +2487,7 @@ app.get("/api/state", (req, res) => {
     cards: state.cards,
     anki: state.anki,
     media: state.media,
+    sync: publicSyncSettings(state.sync),
     templates: state.templates
   });
 });
@@ -2479,6 +2505,66 @@ app.get("/api/known-terms", (req, res) => {
     .map((term) => ({ term, dictionaryEntries: dictionaryService.lookupWordBank(term, dictionaryId) }));
 
   res.json({ total: filtered.length, allTotal: state.knownTerms.length, offset, limit, sort, terms });
+});
+
+app.get("/api/sync/status", (req, res) => {
+  res.json(syncService.status());
+});
+
+app.post("/api/sync/settings", async (req, res, next) => {
+  try {
+    res.json(await syncService.updateSettings(req.body ?? {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/sync/sign-in", async (req, res, next) => {
+  try {
+    res.json(await syncService.signIn(req.body ?? {}));
+  } catch (error) {
+    state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
+    await saveState();
+    next(error);
+  }
+});
+
+app.post("/api/sync/sign-out", async (req, res, next) => {
+  try {
+    res.json(await syncService.signOut());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/sync/push", async (req, res, next) => {
+  try {
+    res.json(await syncService.push());
+  } catch (error) {
+    state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
+    await saveState();
+    next(error);
+  }
+});
+
+app.post("/api/sync/pull", async (req, res, next) => {
+  try {
+    res.json(await syncService.pull());
+  } catch (error) {
+    state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
+    await saveState();
+    next(error);
+  }
+});
+
+app.post("/api/sync/run", async (req, res, next) => {
+  try {
+    res.json(await syncService.syncNow());
+  } catch (error) {
+    state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
+    await saveState();
+    next(error);
+  }
 });
 
 app.post("/api/documents", upload.single("book"), async (req, res, next) => {

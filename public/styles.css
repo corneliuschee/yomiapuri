@@ -2228,6 +2228,17 @@ progress {
   font-size: 12px;
 }
 
+.sync-settings-form input {
+  overflow-wrap: anywhere;
+}
+
+#sync-summary {
+  color: var(--muted);
+  min-height: 74px;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
 .compact-empty {
   margin: 0;
 }
