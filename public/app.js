@@ -1870,6 +1870,8 @@ function renderSyncStatus(extra = "") {
     `Signed in: ${sync.userEmail || "No"}`,
     `Device: ${sync.deviceName || "Local device"}`,
     `Last sync: ${sync.lastSyncAt ? formatDateTime(sync.lastSyncAt) : "Never"}`,
+    sync.diagnostics ? `Book files: ${Number(sync.diagnostics.uploadableFiles ?? 0).toLocaleString()} uploadable / ${Number(sync.diagnostics.documents ?? 0).toLocaleString()} total${sync.diagnostics.missingFiles ? ` (${Number(sync.diagnostics.missingFiles).toLocaleString()} missing original files)` : ""}` : "",
+    sync.diagnostics?.vectorIndexStale ? "Vector index: rebuild needed after pull" : "",
     sync.lastError ? `Last error: ${sync.lastError}` : "",
     extra
   ].filter(Boolean);

@@ -1129,6 +1129,15 @@ async function writePdfSource(documentId, buffer) {
   return `/media/pdf-files/${documentId}/${filename}`;
 }
 
+async function writeOriginalBookSource(documentId, filename, buffer) {
+  const ext = path.extname(filename || "") || ".txt";
+  const sourceDir = path.join(mediaDir, "book-files", documentId);
+  await fs.mkdir(sourceDir, { recursive: true });
+  const sourceName = `original${ext.toLowerCase()}`;
+  await fs.writeFile(path.join(sourceDir, sourceName), buffer);
+  return `/media/book-files/${documentId}/${sourceName}`;
+}
+
 async function extractPdfDocument(file, documentId) {
   const filename = repairMojibake(decodeUploadName(file.originalname));
   const sourcePath = await writePdfSource(documentId, file.buffer);
@@ -1187,11 +1196,19 @@ async function extractDocument(file, documentId) {
   }
 
   if (ext === ".epub") {
-    return extractEpubDocument(file, documentId);
+    const imported = await extractEpubDocument(file, documentId);
+    return {
+      ...imported,
+      sourcePath: imported.sourcePath || await writeOriginalBookSource(documentId, decodeUploadName(file.originalname), file.buffer)
+    };
   }
 
   const text = file.buffer.toString("utf8").replace(/^\uFEFF/, "").trim();
-  return { text, chapters: [{ id: "chapter-1", title: "Document", blocks: splitSentences(text).map((sentence) => ({ type: "text", text: sentence })) }] };
+  return {
+    sourcePath: await writeOriginalBookSource(documentId, decodeUploadName(file.originalname), file.buffer),
+    text,
+    chapters: [{ id: "chapter-1", title: "Document", blocks: splitSentences(text).map((sentence) => ({ type: "text", text: sentence })) }]
+  };
 }
 
 function parseKnownTerms(buffer) {
@@ -2473,7 +2490,31 @@ function logLearningEvent(type, payload = {}) {
   });
 }
 
+function syncDiagnostics() {
+  const documents = [...(state.documents ?? []), ...(state.trash?.documents ?? [])];
+  let uploadableFiles = 0;
+  let missingFiles = 0;
+  for (const document of documents) {
+    if (!document.sourcePath) {
+      missingFiles += 1;
+      continue;
+    }
+    if (document.sourcePath.startsWith("/media/")) {
+      const localPath = path.join(mediaDir, document.sourcePath.replace(/^\/media\//, ""));
+      if (existsSync(localPath)) uploadableFiles += 1;
+      else missingFiles += 1;
+    }
+  }
+  return {
+    documents: documents.length,
+    uploadableFiles,
+    missingFiles,
+    vectorIndexStale: Boolean(state.ml?.indexStale)
+  };
+}
+
 app.get("/api/state", (req, res) => {
+  const sync = publicSyncSettings(state.sync);
   res.json({
     documents: state.documents.map(({ text, chapters, ...document }) => document),
     knownTermsCount: state.knownTerms.length,
@@ -2487,7 +2528,7 @@ app.get("/api/state", (req, res) => {
     cards: state.cards,
     anki: state.anki,
     media: state.media,
-    sync: publicSyncSettings(state.sync),
+    sync: { ...sync, diagnostics: syncDiagnostics() },
     templates: state.templates
   });
 });
@@ -2508,7 +2549,7 @@ app.get("/api/known-terms", (req, res) => {
 });
 
 app.get("/api/sync/status", (req, res) => {
-  res.json(syncService.status());
+  res.json({ ...syncService.status(), diagnostics: syncDiagnostics() });
 });
 
 app.post("/api/sync/settings", async (req, res, next) => {
