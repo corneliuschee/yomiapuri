@@ -651,15 +651,16 @@ function renderReader(progress = {}) {
         margin: 0 auto;
         border-radius: 2px;
         height: auto;
-        max-height: none;
+        max-height: var(--reader-zoom-height, none);
         object-fit: contain;
-        max-width: none;
-        width: calc(100% * var(--reader-zoom, 1));
+        max-width: var(--reader-zoom-width, none);
+        width: min(100%, var(--reader-zoom-width, 100%));
       }
       #reader .reader-page-frame.image-only .book-image img {
-        max-height: 100%;
-        max-width: 100%;
-        width: auto;
+        height: var(--reader-zoom-height, 100%);
+        max-height: none;
+        max-width: none;
+        width: var(--reader-zoom-width, 100%);
       }
       ruby { padding: 0 2px; margin: 0 1px; }
       rt { font-size: 0.65rem; color: #f59e0b; font-weight: normal; user-select: none; }
@@ -673,8 +674,10 @@ function renderReader(progress = {}) {
   state.activeChapterId = page?.chapterId || state.activeChapterId;
   elements.reader.innerHTML = savedPageHtml(state.currentPage) || page?.html || `<p class="empty">No page text.</p>`;
   elements.reader.classList.toggle("image-page", Boolean(elements.reader.querySelector(".reader-page-frame.image-only")));
+  updateReaderFitVars(state.readerZoom);
   renderChapters();
   requestAnimationFrame(() => {
+    updateReaderFitVars(state.readerZoom);
     if (state.readerMode === "scroll") {
       elements.reader.scrollTop = Math.max(0, Math.min(Number(progress.scrollTop) || 0, elements.reader.scrollHeight - elements.reader.clientHeight));
     } else {
@@ -2323,9 +2326,25 @@ function normalizeZoom(value) {
   return Math.max(75, Math.min(175, Number(value) || 100));
 }
 
+function updateReaderFitVars(zoom = state.readerZoom) {
+  if (!elements.reader) return;
+  const styles = getComputedStyle(elements.reader);
+  const paddingX = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
+  const paddingY = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+  const titleReserve = elements.reader.classList.contains("image-page") ? 48 : 0;
+  const fitWidth = Math.max(260, elements.reader.clientWidth - paddingX);
+  const fitHeight = Math.max(260, elements.reader.clientHeight - paddingY - titleReserve);
+  const scale = normalizeZoom(zoom) / 100;
+  elements.reader.style.setProperty("--reader-fit-width", `${fitWidth}px`);
+  elements.reader.style.setProperty("--reader-fit-height", `${fitHeight}px`);
+  elements.reader.style.setProperty("--reader-zoom-width", `${fitWidth * scale}px`);
+  elements.reader.style.setProperty("--reader-zoom-height", `${fitHeight * scale}px`);
+}
+
 function applyReaderZoom() {
   const zoom = normalizeZoom(state.readerZoom);
   state.readerZoom = zoom;
+  updateReaderFitVars(zoom);
   elements.reader.style.fontSize = `${20 * (zoom / 100)}px`;
   elements.reader.style.setProperty("--reader-zoom", String(zoom / 100));
   elements.readerZoom.value = String(zoom);
@@ -2338,6 +2357,14 @@ function setReaderZoom(value) {
   requestAnimationFrame(applyReaderZoom);
   clearTimeout(zoomSaveTimer);
   zoomSaveTimer = setTimeout(() => saveProgress({ refreshLibrary: false }), 900);
+}
+
+let readerResizeTimer;
+function refreshReaderFitSoon() {
+  clearTimeout(readerResizeTimer);
+  readerResizeTimer = setTimeout(() => {
+    updateReaderFitVars(state.readerZoom);
+  }, 80);
 }
 
 function currentReaderPercentage() {
@@ -3391,6 +3418,7 @@ elements.readerZoom.addEventListener("wheel", (event) => {
 elements.toggleZoom.addEventListener("click", () => {
   document.body.classList.toggle("zoom-collapsed");
 });
+window.addEventListener("resize", refreshReaderFitSoon);
 elements.pageJumpForm.addEventListener("submit", (event) => {
   event.preventDefault();
   jumpToPage(elements.pageJumpInput.value);

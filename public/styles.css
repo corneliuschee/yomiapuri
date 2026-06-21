@@ -838,15 +838,16 @@ h2 {
   align-self: stretch;
   background: var(--paper);
   border: 0;
+  box-sizing: border-box;
   color: var(--paper-text);
   font-family: "Noto Serif JP", "Yu Mincho", serif;
   font-size: 20px;
   line-height: 2.15;
   margin: 0;
   min-height: 0;
-  overflow-x: hidden;
+  overflow-x: auto;
   overflow-y: auto;
-  padding: 46px max(56px, calc((100vw - 1080px) / 2));
+  padding: 34px clamp(18px, 6%, 56px);
   white-space: pre-wrap;
 }
 
@@ -1007,15 +1008,20 @@ h2 {
 }
 
 .reader-page-frame {
+  box-sizing: border-box;
   display: grid;
   gap: 18px;
+  margin: 0 auto;
+  max-width: var(--reader-fit-width, 980px);
   min-height: 100%;
+  width: 100%;
 }
 
 .reader-page-frame.image-only {
   gap: 8px;
   grid-template-rows: 34px minmax(0, 1fr);
-  height: 100%;
+  height: var(--reader-fit-height, 100%);
+  min-height: var(--reader-fit-height, 100%);
 }
 
 .reader-page-title {
@@ -1032,6 +1038,8 @@ h2 {
 
 .reader-page-content {
   min-height: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .reader-chapter-heading {
@@ -1063,6 +1071,7 @@ h2 {
   display: block;
   margin: 0 0 14px;
   line-break: strict;
+  overflow-wrap: anywhere;
   word-break: normal;
   white-space: pre-wrap;
 }
@@ -1071,6 +1080,7 @@ h2 {
   display: block;
   margin: 0 0 14px;
   line-break: strict;
+  overflow-wrap: anywhere;
   word-break: normal;
   white-space: pre-wrap;
 }
@@ -1094,16 +1104,17 @@ h2 {
 .book-image img {
   border-radius: 2px;
   height: auto;
-  max-height: none;
-  max-width: none;
+  max-height: var(--reader-zoom-height, none);
+  max-width: var(--reader-zoom-width, none);
   object-fit: contain;
-  width: calc(100% * var(--reader-zoom, 1));
+  width: min(100%, var(--reader-zoom-width, 100%));
 }
 
 .reader-page-frame.image-only .book-image img {
-  max-height: 100%;
-  max-width: 100%;
-  width: auto;
+  height: var(--reader-zoom-height, 100%);
+  max-height: none;
+  max-width: none;
+  width: var(--reader-zoom-width, 100%);
 }
 
 .pdf-page-render {
