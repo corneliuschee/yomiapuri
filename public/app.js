@@ -80,6 +80,12 @@ const elements = {
   chapterPanel: $("#chapter-panel"),
   chapterList: $("#chapter-list"),
   bookmarkList: $("#bookmark-list"),
+  assistantPanel: $("#assistant-panel"),
+  readerAssistantForm: $("#reader-assistant-form"),
+  readerAssistantTask: $("#reader-assistant-task"),
+  readerAssistantQuestion: $("#reader-assistant-question"),
+  readerAssistantAnswer: $("#reader-assistant-answer"),
+  readerAssistantSubmit: $("#reader-assistant-submit"),
   panelTabs: document.querySelectorAll("[data-panel-tab]"),
   hideChapters: $("#hide-chapters"),
   showChapters: $("#show-chapters"),
@@ -917,6 +923,7 @@ function setPanelTab(tabName) {
   elements.panelTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.panelTab === tabName));
   elements.chapterList.classList.toggle("active", tabName === "chapters");
   elements.bookmarkList.classList.toggle("active", tabName === "bookmarks");
+  elements.assistantPanel?.classList.toggle("active", tabName === "assistant");
 }
 
 function renderCandidates() {
@@ -1401,6 +1408,88 @@ async function askRag(event) {
   } catch (error) {
     elements.ragAnswer.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
   }
+}
+
+function selectedReaderText() {
+  const selection = window.getSelection();
+  if (!selectionInsideReader(selection) || selection.isCollapsed) return "";
+  const clone = selection.getRangeAt(0).cloneContents();
+  clone.querySelectorAll?.("rt, rp").forEach((node) => node.remove());
+  return (clone.textContent || selection.toString() || "").replace(/\s+/g, " ").trim();
+}
+
+function currentReaderPageText() {
+  if (!elements.reader) return "";
+  const frame = elements.reader.querySelector(".reader-page-frame") || elements.reader;
+  const clone = frame.cloneNode(true);
+  clone.querySelectorAll?.("rt, rp, .reader-page-title, .reader-chapter-heading, canvas, img, button").forEach((node) => node.remove());
+  return (clone.textContent || "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+async function askReaderAssistant(event) {
+  event.preventDefault();
+  if (!state.activeDocumentId) {
+    elements.readerAssistantAnswer.innerHTML = `<p class="empty">Open a book before using the assistant.</p>`;
+    return;
+  }
+  const task = elements.readerAssistantTask?.value || "explain";
+  const question = elements.readerAssistantQuestion?.value?.trim() || "";
+  const selection = selectedReaderText();
+  const pageText = currentReaderPageText();
+  const label = task === "translate" ? "Preparing translation context..." : task === "recap" ? "Building recap..." : "Reading current context...";
+  elements.readerAssistantSubmit.disabled = true;
+  elements.readerAssistantAnswer.innerHTML = `<p class="empty">${label}</p>`;
+  try {
+    const result = await api("/api/reader/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        documentId: state.activeDocumentId,
+        page: state.currentPage,
+        task,
+        question,
+        selection,
+        pageText
+      })
+    });
+    renderReaderAssistantAnswer(result);
+  } catch (error) {
+    elements.readerAssistantAnswer.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  } finally {
+    elements.readerAssistantSubmit.disabled = false;
+  }
+}
+
+function renderReaderAssistantAnswer(result = {}) {
+  const terms = result.terms ?? [];
+  const citations = result.citations ?? [];
+  const sourceLabel = result.context?.source === "selection" ? "Selected text" : result.context?.source === "page" ? `Page ${Number(result.context?.page ?? state.currentPage) + 1}` : "Document context";
+  elements.readerAssistantAnswer.innerHTML = `
+    <section class="assistant-answer-block">
+      <div class="assistant-answer-meta">
+        <span>${escapeHtml(sourceLabel)}</span>
+        <span>${escapeHtml(result.status?.ready ? "Index ready" : "Index not rebuilt")}</span>
+      </div>
+      <div class="ml-answer">${escapeHtml(result.answer ?? "").replace(/\n/g, "<br>")}</div>
+    </section>
+    ${terms.length ? `
+      <section class="assistant-terms">
+        <h4>Vocabulary anchors</h4>
+        ${terms.slice(0, 8).map((term) => `
+          <article>
+            <strong>${escapeHtml(term.term)}${term.reading ? ` <span>${escapeHtml(term.reading)}</span>` : ""}</strong>
+            <p>${escapeHtml(term.definitions?.slice(0, 3).join("; ") || "No definition")}</p>
+          </article>
+        `).join("")}
+      </section>
+    ` : ""}
+    ${citations.length ? `
+      <section class="assistant-citations">
+        <h4>Local citations</h4>
+        ${citationRows(citations)}
+      </section>
+    ` : ""}
+  `;
 }
 
 function renderMlResults(container, results = []) {
@@ -3358,6 +3447,7 @@ elements.refreshInsights?.addEventListener("click", loadInsights);
 elements.mlRebuildIndex?.addEventListener("click", rebuildMlIndex);
 elements.semanticSearchForm?.addEventListener("submit", runSemanticSearch);
 elements.ragForm?.addEventListener("submit", askRag);
+elements.readerAssistantForm?.addEventListener("submit", askReaderAssistant);
 elements.panelTabs.forEach((tab) => tab.addEventListener("click", () => setPanelTab(tab.dataset.panelTab)));
 elements.collapseSidebar.addEventListener("click", () => {
   elements.shell.classList.add("sidebar-hidden");

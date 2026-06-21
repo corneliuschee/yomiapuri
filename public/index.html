@@ -114,6 +114,7 @@
                 <div class="panel-tabs" role="tablist" aria-label="Reader side panel">
                   <button id="chapters-tab" class="panel-tab active" type="button" data-panel-tab="chapters">Chapters</button>
                   <button id="bookmarks-tab" class="panel-tab" type="button" data-panel-tab="bookmarks">Bookmarks</button>
+                  <button id="assistant-tab" class="panel-tab" type="button" data-panel-tab="assistant">AI</button>
                 </div>
                 <button id="hide-chapters" class="icon-button hamburger" type="button" title="Hide chapters" aria-label="Hide chapters">
                   <span></span><span></span><span></span>
@@ -124,6 +125,21 @@
               </div>
               <div id="bookmark-list" class="bookmark-list panel-list">
                 <p class="empty">No bookmarks yet.</p>
+              </div>
+              <div id="assistant-panel" class="assistant-panel panel-list">
+                <form id="reader-assistant-form" class="reader-assistant-form">
+                  <select id="reader-assistant-task" aria-label="Assistant task">
+                    <option value="explain">Explain page</option>
+                    <option value="translate">Translate</option>
+                    <option value="recap">Recap</option>
+                    <option value="ask">Ask</option>
+                  </select>
+                  <textarea id="reader-assistant-question" rows="3" placeholder="Ask about the current page or selected text"></textarea>
+                  <button id="reader-assistant-submit" type="submit">Ask assistant</button>
+                </form>
+                <div id="reader-assistant-answer" class="reader-assistant-answer">
+                  <p class="empty">Select text or ask about the current page.</p>
+                </div>
               </div>
             </aside>
           </div>
@@ -443,9 +459,9 @@
                   <button id="sync-sign-out" type="button">Sign out</button>
                 </div>
                 <div class="button-row">
-                  <button id="sync-push" type="button">Push local data</button>
-                  <button id="sync-pull" type="button">Pull remote data</button>
-                  <button id="sync-now" type="button">Sync now</button>
+                  <button id="sync-push" type="button">Push local data</button><span class="help-dot" tabindex="0" data-tooltip="Uploads this device's local books, progress, highlights, bookmarks, Word Bank, cards, settings, and media metadata to Supabase.">?</span>
+                  <button id="sync-pull" type="button">Pull remote data</button><span class="help-dot" tabindex="0" data-tooltip="Downloads Supabase data into this device. Use this on a new device or after another device has pushed changes.">?</span>
+                  <button id="sync-now" type="button">Sync now</button><span class="help-dot" tabindex="0" data-tooltip="Runs a push, then a pull. Use this for normal day-to-day two-way syncing. Same-book edits use newest timestamp conflict rules.">?</span>
                 </div>
               </form>
               <div id="sync-summary" class="meta-box">Sync is optional and disabled by default.</div>

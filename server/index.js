@@ -1383,6 +1383,72 @@ function enrichCandidate(candidate) {
   };
 }
 
+function compactReaderContext(value = "", limit = 5000) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+}
+
+function assistantTermNotes(tokens = []) {
+  const notes = [];
+  const seen = new Set();
+  for (const token of tokens) {
+    const term = normalizeJapaneseTerm(token.dictionaryForm || token.base || token.surface || "");
+    if (!term || seen.has(term) || !hasJapaneseText(term)) continue;
+    seen.add(term);
+    const entries = lookupDictionary(term).slice(0, 3);
+    if (entries.length === 0) continue;
+    const definitions = [...new Set(entries.flatMap((entry) => entry.definitions ?? []).filter(Boolean))].slice(0, 4);
+    notes.push({
+      term,
+      surface: token.surface || term,
+      reading: token.dictionaryReading || token.reading || entries[0]?.reading || "",
+      definitions,
+      dictionaries: [...new Set(entries.map((entry) => entry.dictionary).filter(Boolean))].slice(0, 3)
+    });
+    if (notes.length >= 10) break;
+  }
+  return notes;
+}
+
+function assistantResponseText(task, { contextText, question, termNotes, citations, document }) {
+  const title = document?.title || "the current book";
+  const terms = termNotes.slice(0, 6).map((term) => {
+    const meaning = term.definitions?.slice(0, 2).join("; ") || "no dictionary definition";
+    return `- ${term.term}${term.reading ? ` (${term.reading})` : ""}: ${meaning}`;
+  });
+  if (task === "recap") {
+    const sentences = splitSentences(contextText).slice(0, 5);
+    return [
+      `Recap seed for ${title}:`,
+      sentences.length ? sentences.map((sentence, index) => `${index + 1}. ${sentence}`).join("\n") : "No readable current-page text was available.",
+      citations.length ? "Related local passages are listed below." : "Rebuild the local index to add cross-book citations."
+    ].join("\n\n");
+  }
+  if (task === "translate") {
+    return [
+      "Translation model is not configured yet. This panel is using the local reader/RAG foundation for now.",
+      contextText ? `Current text:\n${contextText.slice(0, 900)}` : "Select text or open a text page before translating.",
+      terms.length ? `Dictionary anchors:\n${terms.join("\n")}` : "No dictionary anchors were found for this context."
+    ].join("\n\n");
+  }
+  if (task === "ask") {
+    return [
+      question ? `Question: ${question}` : "Question: current page",
+      contextText ? `Current context:\n${contextText.slice(0, 900)}` : "No current page context was available.",
+      terms.length ? `Useful terms:\n${terms.join("\n")}` : "No dictionary terms were found.",
+      citations.length ? "Relevant indexed passages are listed below." : "No indexed citations were found. Rebuild the local index after importing books."
+    ].join("\n\n");
+  }
+  return [
+    "Context explanation:",
+    contextText ? contextText.slice(0, 900) : "No readable selected text or page text was available.",
+    terms.length ? `Key vocabulary and dictionary meanings:\n${terms.join("\n")}` : "No dictionary-backed vocabulary notes were found.",
+    citations.length ? "Related passages from your local library are listed below." : "No related indexed passages were found."
+  ].join("\n\n");
+}
+
 function learnedSet() {
   return new Set(state.knownTerms.map((term) => normalizeJapaneseTerm(term)));
 }
@@ -3334,6 +3400,55 @@ app.post("/api/rag/ask", async (req, res, next) => {
   try {
     const result = await mlService.ragAnswer(req.body.question);
     logLearningEvent("rag.asked", { question: req.body.question, citations: result.citations.length });
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/reader/assistant", async (req, res, next) => {
+  try {
+    const document = state.documents.find((item) => item.id === req.body.documentId);
+    const task = ["translate", "recap", "ask"].includes(req.body.task) ? req.body.task : "explain";
+    const question = compactReaderContext(req.body.question, 500);
+    const selection = compactReaderContext(req.body.selection, 2500);
+    const pageText = compactReaderContext(req.body.pageText, 5000);
+    const documentText = compactReaderContext(document?.text, 5000);
+    const contextText = selection || pageText || documentText;
+    const analysis = await analyzeText(contextText);
+    const termNotes = assistantTermNotes(analysis.tokens);
+    const query = compactReaderContext([question, selection || pageText].filter(Boolean).join(" "), 700) || contextText.slice(0, 250);
+    const searchResult = await mlService.search(query, { limit: 6 });
+    const citations = searchResult.results ?? [];
+    const answer = assistantResponseText(task, {
+      contextText,
+      question,
+      termNotes,
+      citations,
+      document
+    });
+    const result = {
+      task,
+      question,
+      answer,
+      terms: termNotes,
+      citations,
+      status: searchResult.status,
+      context: {
+        documentId: document?.id || "",
+        title: document?.title || "",
+        page: Number(req.body.page) || 0,
+        source: selection ? "selection" : pageText ? "page" : document ? "document" : "none"
+      }
+    };
+    logLearningEvent("reader.assistant", {
+      documentId: document?.id,
+      task,
+      page: result.context.page,
+      terms: termNotes.length,
+      citations: citations.length,
+      source: result.context.source
+    });
     res.json(result);
   } catch (error) {
     next(error);

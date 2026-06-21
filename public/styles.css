@@ -883,26 +883,28 @@ h2 {
 .panel-tabs {
   border: 1px solid var(--line);
   border-radius: 4px;
-  display: grid;
-  grid-template-columns: 1fr 1px 1fr;
-  min-width: 196px;
+  display: flex;
+  min-width: 220px;
   overflow: hidden;
 }
 
 .panel-tabs::before {
-  background: var(--line);
-  content: "";
-  grid-column: 2;
-  grid-row: 1;
+  content: none;
 }
 
 .panel-tab {
   border: 0;
+  border-left: 1px solid var(--line);
   border-radius: 0;
   color: var(--muted);
+  flex: 1 1 0;
   font-size: 12px;
   min-height: 30px;
   padding: 0 8px;
+}
+
+.panel-tab:first-child {
+  border-left: 0;
 }
 
 .panel-tab.active {
@@ -919,6 +921,94 @@ h2 {
   display: grid;
   gap: 6px;
   overflow-y: auto;
+}
+
+.assistant-panel.active {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.reader-assistant-form {
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  padding-bottom: 10px;
+}
+
+.reader-assistant-form select,
+.reader-assistant-form textarea {
+  background: #101116;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  min-width: 0;
+  padding: 8px;
+}
+
+.reader-assistant-form textarea {
+  min-height: 78px;
+  resize: vertical;
+}
+
+.reader-assistant-form button {
+  justify-content: center;
+  min-height: 32px;
+}
+
+.reader-assistant-answer {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.assistant-answer-block,
+.assistant-terms,
+.assistant-citations {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.assistant-answer-meta {
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.assistant-terms h4,
+.assistant-citations h4 {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
+}
+
+.assistant-terms article {
+  background: #101116;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+}
+
+.assistant-terms strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.assistant-terms strong span {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.assistant-terms p {
+  color: var(--paper-text);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
 }
 
 .chapter-item,
