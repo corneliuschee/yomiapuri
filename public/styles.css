@@ -986,6 +986,7 @@ h2 {
 
 .reader-assistant-form select {
   appearance: none;
+  background-color: transparent;
   color: #f3f3f3;
   cursor: pointer;
   font-size: 12px;
@@ -1000,6 +1001,11 @@ h2 {
   background-position: calc(100% - 8px) 50%, calc(100% - 4px) 50%;
   background-repeat: no-repeat;
   background-size: 4px 4px, 4px 4px;
+}
+
+.reader-assistant-form select option {
+  background: #2b2b2c;
+  color: #f3f3f3;
 }
 
 .assistant-icon-button,
