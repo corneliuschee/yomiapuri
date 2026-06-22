@@ -1008,7 +1008,6 @@ h2 {
   color: #f3f3f3;
 }
 
-.assistant-icon-button,
 .assistant-send-button {
   align-items: center;
   border: 0;
@@ -1021,11 +1020,6 @@ h2 {
   min-height: 28px;
   padding: 0;
   width: 28px;
-}
-
-.assistant-icon-button {
-  background: transparent;
-  color: #b6b6ba;
 }
 
 .assistant-send-button {

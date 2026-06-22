@@ -85,7 +85,6 @@ const elements = {
   assistantPanel: $("#assistant-panel"),
   readerAssistantForm: $("#reader-assistant-form"),
   readerAssistantTask: $("#reader-assistant-task"),
-  readerAssistantContextButton: $("#reader-assistant-context-button"),
   readerAssistantContext: $("#reader-assistant-context"),
   readerAssistantQuestion: $("#reader-assistant-question"),
   readerAssistantAnswer: $("#reader-assistant-answer"),
@@ -1441,12 +1440,6 @@ function currentReaderPageText() {
   const clone = frame.cloneNode(true);
   clone.querySelectorAll?.("rt, rp, .reader-page-title, .reader-chapter-heading, canvas, img, button").forEach((node) => node.remove());
   return (clone.textContent || "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-function updateReaderAssistantContextLabel() {
-  if (!elements.readerAssistantContext) return;
-  const selection = selectedReaderText();
-  elements.readerAssistantContext.textContent = selection ? "Selected text" : "Current page";
 }
 
 async function askReaderAssistant(event) {
@@ -3609,7 +3602,6 @@ elements.mlRebuildIndex?.addEventListener("click", rebuildMlIndex);
 elements.semanticSearchForm?.addEventListener("submit", runSemanticSearch);
 elements.ragForm?.addEventListener("submit", askRag);
 elements.readerAssistantForm?.addEventListener("submit", askReaderAssistant);
-elements.readerAssistantContextButton?.addEventListener("click", updateReaderAssistantContextLabel);
 elements.panelTabs.forEach((tab) => tab.addEventListener("click", () => setPanelTab(tab.dataset.panelTab)));
 elements.collapseSidebar.addEventListener("click", () => {
   elements.shell.classList.add("sidebar-hidden");
