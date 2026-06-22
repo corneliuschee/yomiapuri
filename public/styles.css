@@ -924,14 +924,14 @@ h2 {
 }
 
 .assistant-panel.active {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .reader-assistant-form {
-  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
   display: grid;
   gap: 8px;
-  padding-bottom: 10px;
+  padding-top: 10px;
 }
 
 .reader-assistant-form select,
@@ -945,7 +945,7 @@ h2 {
 }
 
 .reader-assistant-form textarea {
-  min-height: 78px;
+  min-height: 88px;
   resize: vertical;
 }
 
@@ -963,7 +963,15 @@ h2 {
   gap: 6px;
 }
 
+.assistant-composer-actions {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .reader-assistant-answer {
+  align-content: start;
   display: grid;
   gap: 10px;
   min-height: 0;

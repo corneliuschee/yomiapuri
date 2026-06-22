@@ -1440,7 +1440,7 @@ function assistantResponseText(task, { contextText, question, termNotes, citatio
   if (task === "translate") {
     if (translation?.available && translation.translatedText) {
       return [
-        `Translation (${translation.model?.name ?? "local model"}):`,
+        "Translation:",
         translation.translatedText,
         terms.length ? `Dictionary anchors:\n${terms.join("\n")}` : "",
         citations.length ? "Related local passages are listed below." : ""

@@ -1488,7 +1488,7 @@ function renderReaderAssistantAnswer(result = {}) {
   const sourceLabel = result.context?.source === "selection" ? "Selected text" : result.context?.source === "page" ? `Page ${Number(result.context?.page ?? state.currentPage) + 1}` : "Document context";
   const modelLabel = result.task === "translate"
     ? result.translation?.available
-      ? `Translated with ${result.translation?.model?.name ?? "local model"}`
+      ? "Translation ready"
       : result.translation?.reason ?? "Translation runtime not configured"
     : result.status?.ready ? "Index ready" : "Index not rebuilt";
   elements.readerAssistantAnswer.innerHTML = `
