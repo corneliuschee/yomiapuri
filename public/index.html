@@ -131,18 +131,19 @@
                   <p class="empty">Select text or ask about the current page.</p>
                 </div>
                 <form id="reader-assistant-form" class="reader-assistant-form">
-                  <div class="assistant-help-row">
-                    <span id="reader-assistant-context">Uses selected text when available.</span>
-                  </div>
-                  <textarea id="reader-assistant-question" rows="3" placeholder="Ask about the current page or selected text"></textarea>
+                  <textarea id="reader-assistant-question" rows="3" placeholder="Ask about the current page"></textarea>
                   <div class="assistant-composer-actions">
+                    <div class="assistant-composer-left">
+                      <button id="reader-assistant-context-button" class="assistant-icon-button" type="button" title="Use selected text or current page" aria-label="Use selected text or current page">+</button>
+                      <span id="reader-assistant-context">Current page</span>
+                    </div>
                     <select id="reader-assistant-task" aria-label="Assistant mode">
                       <option value="explain">Explain</option>
                       <option value="translate">Translate</option>
                       <option value="recap">Recap</option>
                       <option value="ask">Ask</option>
                     </select>
-                    <button id="reader-assistant-submit" type="submit">Send</button>
+                    <button id="reader-assistant-submit" class="assistant-send-button" type="submit" aria-label="Send">↑</button>
                   </div>
                 </form>
               </div>

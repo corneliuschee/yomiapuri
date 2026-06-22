@@ -928,46 +928,108 @@ h2 {
 }
 
 .reader-assistant-form {
-  border-top: 1px solid var(--line);
+  background: #2b2b2c;
+  border: 1px solid #343438;
+  border-radius: 18px;
   display: grid;
   gap: 8px;
-  padding-top: 10px;
+  margin-top: 8px;
+  padding: 10px 10px 8px;
 }
 
 .reader-assistant-form select,
 .reader-assistant-form textarea {
-  background: #101116;
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  background: transparent;
+  border: 0;
   color: var(--text);
   min-width: 0;
-  padding: 8px;
 }
 
 .reader-assistant-form textarea {
-  min-height: 88px;
-  resize: vertical;
+  color: var(--text);
+  line-height: 1.45;
+  min-height: 58px;
+  outline: none;
+  padding: 4px 2px;
+  resize: none;
+}
+
+.reader-assistant-form textarea::placeholder {
+  color: #8a8a8f;
 }
 
 .reader-assistant-form button {
   justify-content: center;
-  min-height: 32px;
-}
-
-.assistant-help-row {
-  align-items: center;
-  color: var(--muted);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 12px;
-  gap: 6px;
 }
 
 .assistant-composer-actions {
   align-items: center;
-  display: grid;
+  display: flex;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.assistant-composer-left {
+  align-items: center;
+  color: #b6b6ba;
+  display: flex;
+  flex: 1 1 auto;
+  font-size: 12px;
+  gap: 8px;
+  min-width: 0;
+}
+
+.assistant-composer-left span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-assistant-form select {
+  appearance: none;
+  color: #f3f3f3;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 92px;
+  outline: none;
+  padding: 4px 16px 4px 4px;
+}
+
+.reader-assistant-form select {
+  background-image: linear-gradient(45deg, transparent 50%, #a7a7aa 50%), linear-gradient(135deg, #a7a7aa 50%, transparent 50%);
+  background-position: calc(100% - 8px) 50%, calc(100% - 4px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px, 4px 4px;
+}
+
+.assistant-icon-button,
+.assistant-send-button {
+  align-items: center;
+  border: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 18px;
+  height: 28px;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0;
+  width: 28px;
+}
+
+.assistant-icon-button {
+  background: transparent;
+  color: #b6b6ba;
+}
+
+.assistant-send-button {
+  background: #b9b9bd;
+  color: #242426;
+  font-weight: 700;
+}
+
+.assistant-send-button:disabled {
+  opacity: 0.55;
 }
 
 .reader-assistant-answer {

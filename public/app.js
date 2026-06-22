@@ -85,6 +85,7 @@ const elements = {
   assistantPanel: $("#assistant-panel"),
   readerAssistantForm: $("#reader-assistant-form"),
   readerAssistantTask: $("#reader-assistant-task"),
+  readerAssistantContextButton: $("#reader-assistant-context-button"),
   readerAssistantContext: $("#reader-assistant-context"),
   readerAssistantQuestion: $("#reader-assistant-question"),
   readerAssistantAnswer: $("#reader-assistant-answer"),
@@ -1442,6 +1443,12 @@ function currentReaderPageText() {
   return (clone.textContent || "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function updateReaderAssistantContextLabel() {
+  if (!elements.readerAssistantContext) return;
+  const selection = selectedReaderText();
+  elements.readerAssistantContext.textContent = selection ? "Selected text" : "Current page";
+}
+
 async function askReaderAssistant(event) {
   event.preventDefault();
   if (!state.activeDocumentId) {
@@ -1453,7 +1460,7 @@ async function askReaderAssistant(event) {
   const selection = selectedReaderText();
   const pageText = currentReaderPageText();
   const contextSource = selection ? "selected text" : pageText ? "current page" : "document fallback";
-  if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = `Using ${contextSource}.`;
+  if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = selection ? "Selected text" : "Current page";
   const label = task === "translate"
     ? `Preparing translation from ${contextSource}...`
     : task === "recap"
@@ -3602,6 +3609,7 @@ elements.mlRebuildIndex?.addEventListener("click", rebuildMlIndex);
 elements.semanticSearchForm?.addEventListener("submit", runSemanticSearch);
 elements.ragForm?.addEventListener("submit", askRag);
 elements.readerAssistantForm?.addEventListener("submit", askReaderAssistant);
+elements.readerAssistantContextButton?.addEventListener("click", updateReaderAssistantContextLabel);
 elements.panelTabs.forEach((tab) => tab.addEventListener("click", () => setPanelTab(tab.dataset.panelTab)));
 elements.collapseSidebar.addEventListener("click", () => {
   elements.shell.classList.add("sidebar-hidden");
