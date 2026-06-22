@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --watch server/index.js",
     "start": "node server/index.js",
-    "test": "node scripts/anki-service-test.js && node scripts/dictionary-service-test.js && node scripts/media-provider-test.js && node scripts/ml-service-test.js && node scripts/sync-service-test.js && node scripts/smoke-test.js"
+    "test": "node scripts/anki-service-test.js && node scripts/dictionary-service-test.js && node scripts/media-provider-test.js && node scripts/ai-service-test.js && node scripts/ml-service-test.js && node scripts/sync-service-test.js && node scripts/smoke-test.js"
   },
   "dependencies": {
     "@lancedb/lancedb": "^0.30.0",

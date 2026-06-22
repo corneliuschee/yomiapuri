@@ -134,6 +134,13 @@
                     <option value="recap">Recap</option>
                     <option value="ask">Ask</option>
                   </select>
+                  <div class="assistant-help-row">
+                    <span id="reader-assistant-context">Uses selected text when available.</span>
+                    <span class="help-dot" tabindex="0" data-tooltip="Explain uses current page or selected text, dictionary anchors, and local citations.">?</span>
+                    <span class="help-dot" tabindex="0" data-tooltip="Translate uses the selected local translation model when configured. Otherwise it shows the missing setup step.">?</span>
+                    <span class="help-dot" tabindex="0" data-tooltip="Recap creates a short local recap seed from the current context and related indexed passages.">?</span>
+                    <span class="help-dot" tabindex="0" data-tooltip="Ask lets you type a focused question about the selected text or current page.">?</span>
+                  </div>
                   <textarea id="reader-assistant-question" rows="3" placeholder="Ask about the current page or selected text"></textarea>
                   <button id="reader-assistant-submit" type="submit">Ask assistant</button>
                 </form>
@@ -385,6 +392,45 @@
                 <div id="voice-model-list" class="voice-model-list"></div>
               </form>
               <div id="media-preview" class="media-preview meta-box">Local media is disabled by default.</div>
+            </section>
+
+            <section class="page-card">
+              <div class="page-card-head">
+                <div>
+                  <h2>AI models</h2>
+                  <p>Use local models for reader translation. Assistant explanations use local evidence until a chat model is added.</p>
+                </div>
+                <span class="status-with-help"><span id="ai-status" class="status">Not loaded</span><span class="help-dot" tabindex="0" data-tooltip="Local means the app uses a model or runtime on this computer. No reader text is sent to a cloud API.">?</span></span>
+              </div>
+              <form id="ai-settings-form" class="stack ai-settings-form">
+                <label class="toggle-row">
+                  <input id="ai-translation-enabled" name="translationEnabled" type="checkbox" />
+                  Local translation
+                  <span class="help-dot" tabindex="0" data-tooltip="When enabled, Translate in the reader assistant tries to use the selected local translation model. If no runtime is configured, it falls back with a setup message.">?</span>
+                </label>
+                <label class="media-select-row">
+                  <span>Translation model</span>
+                  <select id="ai-translation-model" name="translationModel"></select>
+                </label>
+                <label>
+                  Test translation
+                  <textarea id="ai-test-text" name="testText" rows="2" placeholder="&#22259;&#26360;&#39208;&#12408;&#34892;&#12365;&#12414;&#12377;&#12290;"></textarea>
+                </label>
+                <div class="button-row">
+                  <button id="test-ai-translation" type="button">Test translation</button><span class="help-dot" tabindex="0" data-tooltip="Tests the selected local translation model. Without a configured runtime command, this reports what is missing instead of calling a cloud service.">?</span>
+                </div>
+              </form>
+              <form id="ai-model-form" class="stack ai-model-form">
+                <label>
+                  Import translation model
+                  <input id="ai-model-url" name="url" type="url" placeholder="https://huggingface.co/LiquidAI/LFM2-350M-ENJP-MT" />
+                </label>
+                <div class="button-row">
+                  <button id="import-ai-model" type="submit">Import model</button><span class="help-dot" tabindex="0" data-tooltip="Registers a Hugging Face translation model for local use. Large model files are not downloaded or committed to Git.">?</span>
+                </div>
+                <div id="ai-model-list" class="voice-model-list"></div>
+              </form>
+              <div id="ai-preview" class="media-preview meta-box">Local AI is disabled by default.</div>
             </section>
 
             <section class="page-card">

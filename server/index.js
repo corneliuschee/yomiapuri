@@ -10,6 +10,7 @@ import kuromoji from "kuromoji";
 import { createHash } from "node:crypto";
 import { createAnkiService } from "./anki-service.js";
 import { createAnkiLauncher, detectAnkiExecutablePath } from "./anki-launcher.js";
+import { createAiService, defaultAiSettings, normalizeAiSettings } from "./ai-service.js";
 import { createDictionaryService, repairDictionaryState } from "./dictionary-service.js";
 import { createJsonStateStore } from "./json-state-store.js";
 import { createLearningEventLog } from "./learning-events.js";
@@ -66,6 +67,7 @@ const initialState = {
     prefixWildcardSearch: false
   },
   media: defaultMediaSettings(),
+  ai: defaultAiSettings(),
   sync: defaultSyncSettings(),
   progress: {},
   cards: [],
@@ -124,6 +126,14 @@ const mediaProvider = createLocalMediaProvider({
   pythonPath: path.join(rootDir, ".venv-liquidai", "Scripts", "python.exe"),
   liquidAiScriptPath: path.join(rootDir, "scripts", "liquidai_tts_server.py"),
   hfHome: path.join(dataDir, "huggingface")
+});
+const aiService = createAiService({
+  getSettings: () => state.ai,
+  saveSettings: async (settings) => {
+    state.ai = normalizeAiSettings(settings);
+    await saveState();
+  },
+  runtimeCommand: String(process.env.LOCAL_TRANSLATION_COMMAND ?? "").trim()
 });
 const dictionaryService = createDictionaryService({
   store: stateStore,
@@ -200,6 +210,7 @@ async function loadState() {
     ...(state.trash ?? {})
   };
   state.media = normalizeMediaSettings(state.media);
+  state.ai = normalizeAiSettings(state.ai);
   state.sync = normalizeSyncSettings(state.sync);
   if (repairDictionaryState(state, { normalizeJapaneseTerm })) repaired = true;
   const legacyBaseTime = Date.parse("2020-01-01T00:00:00.000Z");
@@ -1412,7 +1423,7 @@ function assistantTermNotes(tokens = []) {
   return notes;
 }
 
-function assistantResponseText(task, { contextText, question, termNotes, citations, document }) {
+function assistantResponseText(task, { contextText, question, termNotes, citations, document, translation }) {
   const title = document?.title || "the current book";
   const terms = termNotes.slice(0, 6).map((term) => {
     const meaning = term.definitions?.slice(0, 2).join("; ") || "no dictionary definition";
@@ -1427,8 +1438,16 @@ function assistantResponseText(task, { contextText, question, termNotes, citatio
     ].join("\n\n");
   }
   if (task === "translate") {
+    if (translation?.available && translation.translatedText) {
+      return [
+        `Translation (${translation.model?.name ?? "local model"}):`,
+        translation.translatedText,
+        terms.length ? `Dictionary anchors:\n${terms.join("\n")}` : "",
+        citations.length ? "Related local passages are listed below." : ""
+      ].filter(Boolean).join("\n\n");
+    }
     return [
-      "Translation model is not configured yet. This panel is using the local reader/RAG foundation for now.",
+      `Local translation is not ready yet. ${translation?.reason || "Configure a local translation model in Integrations."}`,
       contextText ? `Current text:\n${contextText.slice(0, 900)}` : "Select text or open a text page before translating.",
       terms.length ? `Dictionary anchors:\n${terms.join("\n")}` : "No dictionary anchors were found for this context."
     ].join("\n\n");
@@ -2594,6 +2613,7 @@ app.get("/api/state", (req, res) => {
     cards: state.cards,
     anki: state.anki,
     media: state.media,
+    ai: state.ai,
     sync: { ...sync, diagnostics: syncDiagnostics() },
     templates: state.templates
   });
@@ -3240,6 +3260,42 @@ app.post("/api/media/voice-models", async (req, res, next) => {
   }
 });
 
+app.get("/api/ai/providers", async (req, res, next) => {
+  try {
+    res.json(await aiService.providers());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/ai/settings", async (req, res, next) => {
+  try {
+    res.json(await aiService.updateSettings(req.body ?? {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/ai/models", async (req, res, next) => {
+  try {
+    res.status(201).json(await aiService.importModel(req.body ?? {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/ai/test-translation", async (req, res, next) => {
+  try {
+    res.json(await aiService.translate({
+      text: req.body.text,
+      sourceLanguage: req.body.sourceLanguage,
+      targetLanguage: req.body.targetLanguage
+    }));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/media/test-audio", async (req, res, next) => {
   try {
     const value = await mediaProvider.createAudio({
@@ -3420,12 +3476,16 @@ app.post("/api/reader/assistant", async (req, res, next) => {
     const query = compactReaderContext([question, selection || pageText].filter(Boolean).join(" "), 700) || contextText.slice(0, 250);
     const searchResult = await mlService.search(query, { limit: 6 });
     const citations = searchResult.results ?? [];
+    const translation = task === "translate"
+      ? await aiService.translate({ text: contextText, sourceLanguage: "ja", targetLanguage: "en" })
+      : null;
     const answer = assistantResponseText(task, {
       contextText,
       question,
       termNotes,
       citations,
-      document
+      document,
+      translation
     });
     const result = {
       task,
@@ -3433,6 +3493,7 @@ app.post("/api/reader/assistant", async (req, res, next) => {
       answer,
       terms: termNotes,
       citations,
+      translation,
       status: searchResult.status,
       context: {
         documentId: document?.id || "",

@@ -4,6 +4,8 @@ const state = {
   dictionarySettings: { prefixWildcardSearch: false },
   media: { audio: { enabled: false, provider: "local-system-tts", voiceName: "", rate: 0 }, image: { enabled: false, provider: "local-mnemonic" } },
   mediaProviders: { voices: [], status: null },
+  ai: { translation: { enabled: false, modelId: "liquidai-lfm2-350m-enjp-mt" }, models: [] },
+  aiProviders: { status: null, models: [] },
   sync: { enabled: false, configured: false, signedIn: false, status: "disabled" },
   cards: [],
   progress: {},
@@ -83,6 +85,7 @@ const elements = {
   assistantPanel: $("#assistant-panel"),
   readerAssistantForm: $("#reader-assistant-form"),
   readerAssistantTask: $("#reader-assistant-task"),
+  readerAssistantContext: $("#reader-assistant-context"),
   readerAssistantQuestion: $("#reader-assistant-question"),
   readerAssistantAnswer: $("#reader-assistant-answer"),
   readerAssistantSubmit: $("#reader-assistant-submit"),
@@ -171,6 +174,17 @@ const elements = {
   saveMediaSettings: $("#save-media-settings"),
   testMediaAudio: $("#test-media-audio"),
   testMediaImage: $("#test-media-image"),
+  aiSettingsForm: $("#ai-settings-form"),
+  aiModelForm: $("#ai-model-form"),
+  aiStatus: $("#ai-status"),
+  aiTranslationEnabled: $("#ai-translation-enabled"),
+  aiTranslationModel: $("#ai-translation-model"),
+  aiTestText: $("#ai-test-text"),
+  aiPreview: $("#ai-preview"),
+  aiModelUrl: $("#ai-model-url"),
+  aiModelList: $("#ai-model-list"),
+  importAiModel: $("#import-ai-model"),
+  testAiTranslation: $("#test-ai-translation"),
   dictionaryForm: $("#dictionary-form"),
   dictionaryFile: $("#dictionary-file"),
   dictionaryAttachment: $("#dictionary-attachment"),
@@ -230,6 +244,7 @@ async function loadState() {
   state.trash = snapshot.trash ?? { documents: [], knownTerms: [] };
   state.anki = snapshot.anki;
   state.media = snapshot.media ?? state.media;
+  state.ai = snapshot.ai ?? state.ai;
   state.sync = snapshot.sync ?? state.sync;
   state.knownTermsCount = snapshot.knownTermsCount ?? 0;
   elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
@@ -243,6 +258,7 @@ async function loadState() {
   renderAnkiSummary();
   renderSyncStatus();
   await loadMediaProviders();
+  await loadAiProviders();
   updateAnkiConnectionUi(false);
   renderTrash();
 }
@@ -1436,7 +1452,13 @@ async function askReaderAssistant(event) {
   const question = elements.readerAssistantQuestion?.value?.trim() || "";
   const selection = selectedReaderText();
   const pageText = currentReaderPageText();
-  const label = task === "translate" ? "Preparing translation context..." : task === "recap" ? "Building recap..." : "Reading current context...";
+  const contextSource = selection ? "selected text" : pageText ? "current page" : "document fallback";
+  if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = `Using ${contextSource}.`;
+  const label = task === "translate"
+    ? `Preparing translation from ${contextSource}...`
+    : task === "recap"
+      ? `Building recap from ${contextSource}...`
+      : `Reading ${contextSource}...`;
   elements.readerAssistantSubmit.disabled = true;
   elements.readerAssistantAnswer.innerHTML = `<p class="empty">${label}</p>`;
   try {
@@ -1464,11 +1486,16 @@ function renderReaderAssistantAnswer(result = {}) {
   const terms = result.terms ?? [];
   const citations = result.citations ?? [];
   const sourceLabel = result.context?.source === "selection" ? "Selected text" : result.context?.source === "page" ? `Page ${Number(result.context?.page ?? state.currentPage) + 1}` : "Document context";
+  const modelLabel = result.task === "translate"
+    ? result.translation?.available
+      ? `Translated with ${result.translation?.model?.name ?? "local model"}`
+      : result.translation?.reason ?? "Translation runtime not configured"
+    : result.status?.ready ? "Index ready" : "Index not rebuilt";
   elements.readerAssistantAnswer.innerHTML = `
     <section class="assistant-answer-block">
       <div class="assistant-answer-meta">
         <span>${escapeHtml(sourceLabel)}</span>
-        <span>${escapeHtml(result.status?.ready ? "Index ready" : "Index not rebuilt")}</span>
+        <span>${escapeHtml(modelLabel)}</span>
       </div>
       <div class="ml-answer">${escapeHtml(result.answer ?? "").replace(/\n/g, "<br>")}</div>
     </section>
@@ -2370,6 +2397,133 @@ function renderMediaTestResult(kind, result = {}) {
 function mediaFilenameFromValue(value = "") {
   const text = String(value ?? "");
   return text.match(/\[sound:([^\]]+)\]/i)?.[1] ?? text.match(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/i)?.[1] ?? "";
+}
+
+async function loadAiProviders() {
+  if (!elements.aiSettingsForm) return;
+  try {
+    const result = await api("/api/ai/providers");
+    state.aiProviders = result;
+    state.ai = result.settings ?? state.ai;
+    renderAiSettings(result);
+  } catch (error) {
+    if (elements.aiStatus) elements.aiStatus.textContent = "Unavailable";
+    if (elements.aiPreview) elements.aiPreview.textContent = error.message;
+  }
+}
+
+function renderAiSettings(result = state.aiProviders) {
+  if (!elements.aiSettingsForm) return;
+  const settings = result.settings ?? state.ai;
+  const models = (result.models ?? settings.models ?? []).filter((model) => model.task === "translation");
+  state.ai = settings;
+  elements.aiTranslationEnabled.checked = Boolean(settings.translation?.enabled);
+  elements.aiTranslationModel.innerHTML = [
+    `<option value="">No translation model selected</option>`,
+    ...models.map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.name)}</option>`)
+  ].join("");
+  elements.aiTranslationModel.value = models.some((model) => model.id === settings.translation?.modelId)
+    ? settings.translation.modelId
+    : "";
+  renderAiModels(models);
+  renderAiStatus(result);
+}
+
+function renderAiStatus(result = state.aiProviders) {
+  if (!elements.aiStatus || !elements.aiPreview) return;
+  const status = result.status ?? {};
+  const translation = status.translation ?? {};
+  elements.aiStatus.textContent = translation.configured ? "Local" : translation.enabled ? "Setup needed" : "Off";
+  elements.aiPreview.textContent = `${translation.label ?? "Local translation disabled"} - ${status.assistant?.label ?? "Assistant uses local evidence"}`;
+}
+
+function renderAiModels(models = []) {
+  if (!elements.aiModelList) return;
+  if (models.length === 0) {
+    elements.aiModelList.innerHTML = `<p class="empty compact-empty">No imported translation models.</p>`;
+    return;
+  }
+  elements.aiModelList.innerHTML = models.map((model) => `
+    <div class="voice-model-row">
+      <div>
+        <strong>${escapeHtml(model.name)}</strong>
+        <span>${escapeHtml(model.status === "ready" ? "Ready - local runtime installed" : model.status === "imported" ? "Imported - runtime required" : model.status)}</span>
+      </div>
+      ${model.url ? `<a href="${escapeHtml(model.url)}" target="_blank" rel="noreferrer">Open</a>` : ""}
+    </div>
+  `).join("");
+}
+
+async function saveAiSettings(event) {
+  event?.preventDefault();
+  if (!elements.aiSettingsForm) return;
+  try {
+    const result = await api("/api/ai/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        translation: {
+          enabled: elements.aiTranslationEnabled.checked,
+          modelId: elements.aiTranslationModel.value,
+          sourceLanguage: "auto",
+          targetLanguage: "en"
+        }
+      })
+    });
+    state.aiProviders = result;
+    state.ai = result.settings;
+    renderAiSettings(result);
+  } catch (error) {
+    elements.aiPreview.textContent = error.message;
+  }
+}
+
+async function importAiModel(event) {
+  event?.preventDefault();
+  const url = elements.aiModelUrl?.value?.trim();
+  if (!url) {
+    elements.aiPreview.textContent = "Enter a Hugging Face translation model URL before importing.";
+    return;
+  }
+  elements.importAiModel.disabled = true;
+  try {
+    const result = await api("/api/ai/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, task: "translation" })
+    });
+    state.aiProviders = result;
+    state.ai = result.settings;
+    elements.aiModelUrl.value = "";
+    renderAiSettings(result);
+    elements.aiPreview.textContent = `${result.model.name} imported. Configure a local runtime before it can translate reader text.`;
+  } catch (error) {
+    elements.aiPreview.textContent = error.message;
+  } finally {
+    elements.importAiModel.disabled = false;
+  }
+}
+
+async function testAiTranslation() {
+  const text = elements.aiTestText?.value?.trim() || "\u56f3\u66f8\u9928\u3078\u884c\u304d\u307e\u3059\u3002";
+  elements.testAiTranslation.disabled = true;
+  elements.aiPreview.textContent = "Testing local translation...";
+  try {
+    await saveAiSettings();
+    const result = await api("/api/ai/test-translation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, sourceLanguage: "ja", targetLanguage: "en" })
+    });
+    await loadAiProviders();
+    elements.aiPreview.textContent = result.available
+      ? result.translatedText
+      : `${result.reason} Selected model: ${result.model?.name ?? "None"}.`;
+  } catch (error) {
+    elements.aiPreview.textContent = error.message;
+  } finally {
+    elements.testAiTranslation.disabled = false;
+  }
 }
 
 function showFloatingTooltip(target) {
@@ -3717,6 +3871,11 @@ elements.mediaImageEnabled?.addEventListener("change", queueSaveMediaSettings);
 elements.voiceModelForm?.addEventListener("submit", importVoiceModel);
 elements.testMediaAudio?.addEventListener("click", () => testMedia("audio"));
 elements.testMediaImage?.addEventListener("click", () => testMedia("image"));
+elements.aiSettingsForm?.addEventListener("submit", (event) => event.preventDefault());
+elements.aiTranslationEnabled?.addEventListener("change", saveAiSettings);
+elements.aiTranslationModel?.addEventListener("change", saveAiSettings);
+elements.aiModelForm?.addEventListener("submit", importAiModel);
+elements.testAiTranslation?.addEventListener("click", testAiTranslation);
 elements.syncSaveSettings?.addEventListener("click", async () => {
   try {
     await saveSyncSettings();

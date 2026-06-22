@@ -954,6 +954,15 @@ h2 {
   min-height: 32px;
 }
 
+.assistant-help-row {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 6px;
+}
+
 .reader-assistant-answer {
   display: grid;
   gap: 10px;
@@ -2038,7 +2047,8 @@ progress {
   margin-bottom: 16px;
 }
 
-.media-settings-form {
+.media-settings-form,
+.ai-settings-form {
   margin-bottom: 12px;
 }
 
@@ -2098,7 +2108,8 @@ progress {
   max-width: 100%;
 }
 
-.voice-model-form {
+.voice-model-form,
+.ai-model-form {
   border-top: 1px solid var(--line);
   margin-top: 4px;
   padding-top: 12px;
