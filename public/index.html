@@ -110,6 +110,7 @@
               <p class="empty">Import or select a book. Unknown kanji vocabulary will show furigana.</p>
             </article>
             <aside id="chapter-panel" class="chapter-panel">
+              <div id="chapter-resize-handle" class="chapter-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize reader side panel" tabindex="0"></div>
               <div class="chapter-panel-head">
                 <div class="panel-tabs" role="tablist" aria-label="Reader side panel">
                   <button id="chapters-tab" class="panel-tab active" type="button" data-panel-tab="chapters">Chapters</button>
@@ -128,19 +129,16 @@
               </div>
               <div id="assistant-panel" class="assistant-panel panel-list">
                 <div id="reader-assistant-answer" class="reader-assistant-answer">
-                  <p class="empty">Select text or ask about the current page.</p>
+                  <p class="empty">Send a message to the assistant.</p>
                 </div>
                 <form id="reader-assistant-form" class="reader-assistant-form">
-                  <textarea id="reader-assistant-question" rows="3" placeholder="Ask about the current page"></textarea>
+                  <textarea id="reader-assistant-question" rows="3" placeholder="Message the assistant"></textarea>
                   <div class="assistant-composer-actions">
                     <div class="assistant-composer-left">
-                      <span id="reader-assistant-context">Current page</span>
+                      <span id="reader-assistant-context">Message only</span>
                     </div>
-                    <select id="reader-assistant-task" aria-label="Assistant mode">
-                      <option value="explain">Explain</option>
-                      <option value="translate">Translate</option>
-                      <option value="recap">Recap</option>
-                      <option value="ask">Ask</option>
+                    <select id="reader-assistant-model" aria-label="Assistant model">
+                      <option value="sugoi-14b-ultra-q4-k-m">Sugoi 14B Ultra Q4_K_M</option>
                     </select>
                     <button id="reader-assistant-submit" class="assistant-send-button" type="submit" aria-label="Send">↑</button>
                   </div>
@@ -396,39 +394,24 @@
               <div class="page-card-head">
                 <div>
                   <h2>AI models</h2>
-                  <p>Use local models for reader translation. Assistant explanations use local evidence until a chat model is added.</p>
+                  <p>Manage local reader assistant models. Reader text stays on this computer.</p>
                 </div>
                 <span class="status-with-help"><span id="ai-status" class="status">Not loaded</span><span class="help-dot" tabindex="0" data-tooltip="Local means the app uses a model or runtime on this computer. No reader text is sent to a cloud API.">?</span></span>
               </div>
-              <form id="ai-settings-form" class="stack ai-settings-form">
-                <label class="toggle-row">
-                  <input id="ai-translation-enabled" name="translationEnabled" type="checkbox" />
-                  Local translation
-                  <span class="help-dot" tabindex="0" data-tooltip="When enabled, Translate in the reader assistant tries to use the selected local translation model. If no runtime is configured, it falls back with a setup message.">?</span>
-                </label>
-                <label class="media-select-row">
-                  <span>Translation model</span>
-                  <select id="ai-translation-model" name="translationModel"></select>
-                </label>
-                <label>
-                  Test translation
-                  <textarea id="ai-test-text" name="testText" rows="2" placeholder="&#22259;&#26360;&#39208;&#12408;&#34892;&#12365;&#12414;&#12377;&#12290;"></textarea>
-                </label>
-                <div class="button-row">
-                  <button id="test-ai-translation" type="button">Test translation</button><span class="help-dot" tabindex="0" data-tooltip="Tests the selected local translation model. Without a configured runtime command, this reports what is missing instead of calling a cloud service.">?</span>
-                </div>
-              </form>
               <form id="ai-model-form" class="stack ai-model-form">
                 <label>
-                  Import translation model
-                  <input id="ai-model-url" name="url" type="url" placeholder="https://huggingface.co/LiquidAI/LFM2-350M-ENJP-MT" />
+                  Import assistant model
+                  <input id="ai-model-url" name="url" type="url" placeholder="https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-HF" />
                 </label>
                 <div class="button-row">
-                  <button id="import-ai-model" type="submit">Import model</button><span class="help-dot" tabindex="0" data-tooltip="Registers a Hugging Face translation model for local use. Large model files are not downloaded or committed to Git.">?</span>
+                  <button id="import-ai-model" type="submit">Import model</button><span class="help-dot" tabindex="0" data-tooltip="Registers model metadata for local use. Large model files are kept outside Git and should be provided as GGUF for llama.cpp.">?</span>
                 </div>
                 <div id="ai-model-list" class="voice-model-list"></div>
               </form>
-              <div id="ai-preview" class="media-preview meta-box">Local AI is disabled by default.</div>
+              <div class="ai-runtime-row">
+                <span id="ai-preview">Runtime: checking</span>
+                <button id="stop-ai-runtime" type="button">Stop runtime</button>
+              </div>
             </section>
 
             <section class="page-card">

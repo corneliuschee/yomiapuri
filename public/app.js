@@ -4,7 +4,7 @@ const state = {
   dictionarySettings: { prefixWildcardSearch: false },
   media: { audio: { enabled: false, provider: "local-system-tts", voiceName: "", rate: 0 }, image: { enabled: false, provider: "local-mnemonic" } },
   mediaProviders: { voices: [], status: null },
-  ai: { translation: { enabled: false, modelId: "liquidai-lfm2-350m-enjp-mt" }, models: [] },
+  ai: { translation: { enabled: true, modelId: "sugoi-14b-ultra-q4-k-m" }, models: [] },
   aiProviders: { status: null, models: [] },
   sync: { enabled: false, configured: false, signedIn: false, status: "disabled" },
   cards: [],
@@ -53,6 +53,9 @@ const pdfDocuments = new Map();
 let hoverLookupTimer;
 let hoverLookupLastTerm = "";
 let hoverLookupRequest = 0;
+let readerAssistantTimer = null;
+let readerAssistantMessageId = 0;
+let readerAssistantHistory = [];
 let shiftLookupAnchorRange = null;
 let shiftHoverAnchorRange = null;
 let lookupPreviewElement = null;
@@ -84,7 +87,7 @@ const elements = {
   bookmarkList: $("#bookmark-list"),
   assistantPanel: $("#assistant-panel"),
   readerAssistantForm: $("#reader-assistant-form"),
-  readerAssistantTask: $("#reader-assistant-task"),
+  readerAssistantModel: $("#reader-assistant-model"),
   readerAssistantContext: $("#reader-assistant-context"),
   readerAssistantQuestion: $("#reader-assistant-question"),
   readerAssistantAnswer: $("#reader-assistant-answer"),
@@ -112,6 +115,7 @@ const elements = {
   undoHighlight: $("#undo-highlight"),
   redoHighlight: $("#redo-highlight"),
   refreshReader: $("#refresh-reader"),
+  chapterResizeHandle: $("#chapter-resize-handle"),
   bookmarkPage: $("#bookmark-page"),
   bookmarkFeedback: $("#bookmark-feedback"),
   candidateList: $("#candidate-list"),
@@ -174,17 +178,13 @@ const elements = {
   saveMediaSettings: $("#save-media-settings"),
   testMediaAudio: $("#test-media-audio"),
   testMediaImage: $("#test-media-image"),
-  aiSettingsForm: $("#ai-settings-form"),
   aiModelForm: $("#ai-model-form"),
   aiStatus: $("#ai-status"),
-  aiTranslationEnabled: $("#ai-translation-enabled"),
-  aiTranslationModel: $("#ai-translation-model"),
-  aiTestText: $("#ai-test-text"),
   aiPreview: $("#ai-preview"),
   aiModelUrl: $("#ai-model-url"),
   aiModelList: $("#ai-model-list"),
   importAiModel: $("#import-ai-model"),
-  testAiTranslation: $("#test-ai-translation"),
+  stopAiRuntime: $("#stop-ai-runtime"),
   dictionaryForm: $("#dictionary-form"),
   dictionaryFile: $("#dictionary-file"),
   dictionaryAttachment: $("#dictionary-attachment"),
@@ -584,7 +584,9 @@ async function deleteDocument(item) {
 }
 
 async function openDocument(id) {
+  const previousDocumentId = state.activeDocumentId;
   state.activeDocumentId = id;
+  if (previousDocumentId !== id) readerAssistantHistory = [];
   setPage("reader-page");
   renderDocuments();
   elements.reader.innerHTML = `<p class="empty">Loading book...</p>`;
@@ -940,6 +942,50 @@ function setPanelTab(tabName) {
   elements.chapterList.classList.toggle("active", tabName === "chapters");
   elements.bookmarkList.classList.toggle("active", tabName === "bookmarks");
   elements.assistantPanel?.classList.toggle("active", tabName === "assistant");
+}
+
+function initReaderSidebarResize() {
+  const savedWidth = Number(localStorage.getItem("readerSideWidth"));
+  if (Number.isFinite(savedWidth)) setReaderSidebarWidth(savedWidth);
+}
+
+function setReaderSidebarWidth(width) {
+  if (!elements.readerLayout) return;
+  const maxWidth = Math.max(260, Math.min(560, Math.floor(window.innerWidth * 0.45)));
+  const nextWidth = Math.max(220, Math.min(maxWidth, Math.round(Number(width) || 280)));
+  elements.readerLayout.style.setProperty("--reader-side-width", `${nextWidth}px`);
+  localStorage.setItem("readerSideWidth", String(nextWidth));
+}
+
+function startReaderSidebarResize(event) {
+  if (!elements.readerLayout || elements.readerLayout.classList.contains("chapters-hidden")) return;
+  event.preventDefault();
+  const pointerId = event.pointerId;
+  elements.chapterResizeHandle?.setPointerCapture?.(pointerId);
+  document.body.classList.add("resizing-reader-sidebar");
+
+  const onPointerMove = (moveEvent) => {
+    const rect = elements.readerLayout.getBoundingClientRect();
+    setReaderSidebarWidth(rect.right - moveEvent.clientX);
+  };
+  const stopResize = () => {
+    document.body.classList.remove("resizing-reader-sidebar");
+    elements.chapterResizeHandle?.releasePointerCapture?.(pointerId);
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", stopResize);
+    window.removeEventListener("pointercancel", stopResize);
+  };
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", stopResize);
+  window.addEventListener("pointercancel", stopResize);
+}
+
+function nudgeReaderSidebarWidth(event) {
+  if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  event.preventDefault();
+  const current = Number(getComputedStyle(elements.readerLayout).getPropertyValue("--reader-side-width").replace("px", "")) || 280;
+  setReaderSidebarWidth(current + (event.key === "ArrowLeft" ? 24 : -24));
 }
 
 function renderCandidates() {
@@ -1448,75 +1494,180 @@ async function askReaderAssistant(event) {
     elements.readerAssistantAnswer.innerHTML = `<p class="empty">Open a book before using the assistant.</p>`;
     return;
   }
-  const task = elements.readerAssistantTask?.value || "explain";
   const question = elements.readerAssistantQuestion?.value?.trim() || "";
-  const selection = selectedReaderText();
-  const pageText = currentReaderPageText();
-  const contextSource = selection ? "selected text" : pageText ? "current page" : "document fallback";
-  if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = selection ? "Selected text" : "Current page";
-  const label = task === "translate"
-    ? `Preparing translation from ${contextSource}...`
-    : task === "recap"
-      ? `Building recap from ${contextSource}...`
-      : `Reading ${contextSource}...`;
+  if (!question) {
+    if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = "Type a message";
+    elements.readerAssistantQuestion?.focus();
+    return;
+  }
+  if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = "Message only";
   elements.readerAssistantSubmit.disabled = true;
-  elements.readerAssistantAnswer.innerHTML = `<p class="empty">${label}</p>`;
+  clearReaderAssistantEmpty();
+  appendReaderAssistantMessage("user", question, "You");
+  const pendingId = appendReaderAssistantMessage("assistant", "Thinking...", "Assistant", "0.0s");
+  const startedAt = performance.now();
+  startReaderAssistantTimer(pendingId, startedAt);
+  elements.readerAssistantQuestion.value = "";
   try {
-    const result = await api("/api/reader/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        documentId: state.activeDocumentId,
-        page: state.currentPage,
-        task,
-        question,
-        selection,
-        pageText
-      })
+    const payload = {
+      documentId: state.activeDocumentId,
+      page: state.currentPage,
+      question,
+      modelId: elements.readerAssistantModel?.value || state.ai?.translation?.modelId || "",
+      history: readerAssistantHistory.slice(-6)
+    };
+    let streamedAnswer = "";
+    let result = null;
+    await streamReaderAssistant(payload, {
+      onDelta: (delta) => {
+        streamedAnswer += delta;
+        updateReaderAssistantMessageText(pendingId, streamedAnswer || "Thinking...");
+      },
+      onDone: (doneResult) => {
+        result = doneResult;
+      }
     });
-    renderReaderAssistantAnswer(result);
+    if (!result) result = { answer: streamedAnswer };
+    if (!result.answer) result.answer = streamedAnswer;
+    renderReaderAssistantAnswer(result, pendingId, elapsedLabel(startedAt));
+    rememberReaderAssistantTurn(question, result.answer ?? "");
   } catch (error) {
-    elements.readerAssistantAnswer.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+    replaceReaderAssistantMessage(pendingId, "assistant", error.message, "Assistant", elapsedLabel(startedAt));
   } finally {
+    stopReaderAssistantTimer();
     elements.readerAssistantSubmit.disabled = false;
+    if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = "Message only";
+    elements.readerAssistantQuestion?.focus();
   }
 }
 
-function renderReaderAssistantAnswer(result = {}) {
-  const terms = result.terms ?? [];
-  const citations = result.citations ?? [];
-  const sourceLabel = result.context?.source === "selection" ? "Selected text" : result.context?.source === "page" ? `Page ${Number(result.context?.page ?? state.currentPage) + 1}` : "Document context";
-  const modelLabel = result.task === "translate"
-    ? result.translation?.available
-      ? "Translation ready"
-      : result.translation?.reason ?? "Translation runtime not configured"
-    : result.status?.ready ? "Index ready" : "Index not rebuilt";
-  elements.readerAssistantAnswer.innerHTML = `
-    <section class="assistant-answer-block">
-      <div class="assistant-answer-meta">
-        <span>${escapeHtml(sourceLabel)}</span>
-        <span>${escapeHtml(modelLabel)}</span>
+async function streamReaderAssistant(payload, handlers = {}) {
+  const response = await fetch("/api/reader/assistant/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Request failed: ${response.status}`);
+  }
+  if (!response.body) throw new Error("Assistant stream was not available.");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split(/\n\n/);
+    buffer = blocks.pop() ?? "";
+    for (const block of blocks) handleAssistantStreamBlock(block, handlers);
+  }
+  if (buffer.trim()) handleAssistantStreamBlock(buffer, handlers);
+}
+
+function handleAssistantStreamBlock(block = "", handlers = {}) {
+  let eventName = "message";
+  const data = [];
+  for (const rawLine of String(block).split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (line.startsWith("event:")) eventName = line.slice(6).trim();
+    if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+  }
+  if (data.length === 0) return;
+  const payload = JSON.parse(data.join("\n"));
+  if (eventName === "delta") handlers.onDelta?.(payload.delta ?? "");
+  else if (eventName === "done") handlers.onDone?.(payload);
+  else if (eventName === "error") throw new Error(payload.error || "Assistant stream failed.");
+  else if (eventName === "meta") handlers.onMeta?.(payload);
+}
+
+function clearReaderAssistantEmpty() {
+  if (elements.readerAssistantAnswer?.querySelector(".empty")) {
+    elements.readerAssistantAnswer.innerHTML = "";
+  }
+}
+
+function appendReaderAssistantMessage(role, text, label, elapsed = "") {
+  const id = `assistant-message-${readerAssistantMessageId += 1}`;
+  elements.readerAssistantAnswer.insertAdjacentHTML("beforeend", readerAssistantMessageHtml({ id, role, text, label, elapsed }));
+  scrollAssistantToBottom();
+  return id;
+}
+
+function replaceReaderAssistantMessage(id, role, text, label, elapsed = "", extraHtml = "") {
+  const node = document.getElementById(id);
+  const html = readerAssistantMessageHtml({ id, role, text, label, elapsed, extraHtml });
+  if (node) node.outerHTML = html;
+  else elements.readerAssistantAnswer.insertAdjacentHTML("beforeend", html);
+  scrollAssistantToBottom();
+}
+
+function updateReaderAssistantMessageText(id, text) {
+  const node = document.querySelector(`#${CSS.escape(id)} .assistant-message-body`);
+  if (!node) return;
+  node.innerHTML = escapeHtml(text ?? "").replace(/\n/g, "<br>");
+  scrollAssistantToBottom();
+}
+
+function readerAssistantMessageHtml({ id, role, text, label, elapsed = "", extraHtml = "" }) {
+  return `
+    <article id="${escapeHtml(id)}" class="assistant-message ${escapeHtml(role)}">
+      <div class="assistant-message-meta">
+        <span>${escapeHtml(label)}</span>
+        ${elapsed ? `<span class="assistant-elapsed">${escapeHtml(elapsed)}</span>` : ""}
       </div>
-      <div class="ml-answer">${escapeHtml(result.answer ?? "").replace(/\n/g, "<br>")}</div>
-    </section>
-    ${terms.length ? `
-      <section class="assistant-terms">
-        <h4>Vocabulary anchors</h4>
-        ${terms.slice(0, 8).map((term) => `
-          <article>
-            <strong>${escapeHtml(term.term)}${term.reading ? ` <span>${escapeHtml(term.reading)}</span>` : ""}</strong>
-            <p>${escapeHtml(term.definitions?.slice(0, 3).join("; ") || "No definition")}</p>
-          </article>
-        `).join("")}
-      </section>
-    ` : ""}
-    ${citations.length ? `
+      <div class="assistant-message-body">${escapeHtml(text ?? "").replace(/\n/g, "<br>")}</div>
+      ${extraHtml}
+    </article>
+  `;
+}
+
+function startReaderAssistantTimer(messageId, startedAt) {
+  stopReaderAssistantTimer();
+  readerAssistantTimer = setInterval(() => {
+    const node = document.querySelector(`#${CSS.escape(messageId)} .assistant-elapsed`);
+    const label = elapsedLabel(startedAt);
+    if (node) node.textContent = label;
+    if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = label;
+  }, 100);
+}
+
+function stopReaderAssistantTimer() {
+  if (readerAssistantTimer) clearInterval(readerAssistantTimer);
+  readerAssistantTimer = null;
+}
+
+function elapsedLabel(startedAt) {
+  return `${((performance.now() - startedAt) / 1000).toFixed(1)}s`;
+}
+
+function scrollAssistantToBottom() {
+  if (!elements.readerAssistantAnswer) return;
+  elements.readerAssistantAnswer.scrollTop = elements.readerAssistantAnswer.scrollHeight;
+}
+
+function rememberReaderAssistantTurn(question = "", answer = "") {
+  const next = [
+    ...readerAssistantHistory,
+    { role: "user", content: question },
+    { role: "assistant", content: answer }
+  ].filter((message) => message.content?.trim());
+  readerAssistantHistory = next.slice(-6);
+}
+
+function renderReaderAssistantAnswer(result = {}, pendingId = "", elapsed = "") {
+  const citations = result.citations ?? [];
+  const extraHtml = `
+    ${result.includeCitations && citations.length ? `
       <section class="assistant-citations">
         <h4>Local citations</h4>
         ${citationRows(citations)}
       </section>
     ` : ""}
   `;
+  replaceReaderAssistantMessage(pendingId, "assistant", result.answer ?? "", "Assistant", elapsed, extraHtml);
 }
 
 function renderMlResults(container, results = []) {
@@ -2400,12 +2551,13 @@ function mediaFilenameFromValue(value = "") {
 }
 
 async function loadAiProviders() {
-  if (!elements.aiSettingsForm) return;
+  if (!elements.aiStatus && !elements.aiModelList) return;
   try {
     const result = await api("/api/ai/providers");
     state.aiProviders = result;
     state.ai = result.settings ?? state.ai;
     renderAiSettings(result);
+    await refreshAiRuntimeStatus();
   } catch (error) {
     if (elements.aiStatus) elements.aiStatus.textContent = "Unavailable";
     if (elements.aiPreview) elements.aiPreview.textContent = error.message;
@@ -2413,34 +2565,43 @@ async function loadAiProviders() {
 }
 
 function renderAiSettings(result = state.aiProviders) {
-  if (!elements.aiSettingsForm) return;
   const settings = result.settings ?? state.ai;
   const models = (result.models ?? settings.models ?? []).filter((model) => model.task === "translation");
   state.ai = settings;
-  elements.aiTranslationEnabled.checked = Boolean(settings.translation?.enabled);
-  elements.aiTranslationModel.innerHTML = [
-    `<option value="">No translation model selected</option>`,
-    ...models.map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.name)}</option>`)
-  ].join("");
-  elements.aiTranslationModel.value = models.some((model) => model.id === settings.translation?.modelId)
-    ? settings.translation.modelId
-    : "";
+  renderReaderAssistantModels(models, settings.translation?.modelId || "");
   renderAiModels(models);
   renderAiStatus(result);
 }
 
+function renderReaderAssistantModels(models = [], selectedModelId = "") {
+  if (!elements.readerAssistantModel) return;
+  const preferredId = "sugoi-14b-ultra-q4-k-m";
+  const currentValue = elements.readerAssistantModel.value || selectedModelId || preferredId;
+  elements.readerAssistantModel.innerHTML = models.map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.name)}</option>`).join("");
+  const nextValue = models.some((model) => model.id === currentValue)
+    ? currentValue
+    : models.some((model) => model.id === preferredId)
+      ? preferredId
+      : models[0]?.id || "";
+  elements.readerAssistantModel.value = nextValue;
+}
+
 function renderAiStatus(result = state.aiProviders) {
-  if (!elements.aiStatus || !elements.aiPreview) return;
+  if (!elements.aiStatus) return;
   const status = result.status ?? {};
   const translation = status.translation ?? {};
-  elements.aiStatus.textContent = translation.configured ? "Local" : translation.enabled ? "Setup needed" : "Off";
-  elements.aiPreview.textContent = `${translation.label ?? "Local translation disabled"} - ${status.assistant?.label ?? "Assistant uses local evidence"}`;
+  elements.aiStatus.textContent = translation.configured ? "Local" : "Setup needed";
+  if (elements.aiPreview && !state.aiRuntime) {
+    elements.aiPreview.textContent = translation.configured
+      ? "Runtime: auto-starts on message"
+      : "Runtime: setup needed";
+  }
 }
 
 function renderAiModels(models = []) {
   if (!elements.aiModelList) return;
   if (models.length === 0) {
-    elements.aiModelList.innerHTML = `<p class="empty compact-empty">No imported translation models.</p>`;
+    elements.aiModelList.innerHTML = `<p class="empty compact-empty">No assistant models available.</p>`;
     return;
   }
   elements.aiModelList.innerHTML = models.map((model) => `
@@ -2454,35 +2615,11 @@ function renderAiModels(models = []) {
   `).join("");
 }
 
-async function saveAiSettings(event) {
-  event?.preventDefault();
-  if (!elements.aiSettingsForm) return;
-  try {
-    const result = await api("/api/ai/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        translation: {
-          enabled: elements.aiTranslationEnabled.checked,
-          modelId: elements.aiTranslationModel.value,
-          sourceLanguage: "auto",
-          targetLanguage: "en"
-        }
-      })
-    });
-    state.aiProviders = result;
-    state.ai = result.settings;
-    renderAiSettings(result);
-  } catch (error) {
-    elements.aiPreview.textContent = error.message;
-  }
-}
-
 async function importAiModel(event) {
   event?.preventDefault();
   const url = elements.aiModelUrl?.value?.trim();
   if (!url) {
-    elements.aiPreview.textContent = "Enter a Hugging Face translation model URL before importing.";
+    elements.aiPreview.textContent = "Enter a Hugging Face model URL before importing.";
     return;
   }
   elements.importAiModel.disabled = true;
@@ -2496,7 +2633,7 @@ async function importAiModel(event) {
     state.ai = result.settings;
     elements.aiModelUrl.value = "";
     renderAiSettings(result);
-    elements.aiPreview.textContent = `${result.model.name} imported. Configure a local runtime before it can translate reader text.`;
+    elements.aiPreview.textContent = `${result.model.name} imported. Configure a local runtime before it can answer in the reader.`;
   } catch (error) {
     elements.aiPreview.textContent = error.message;
   } finally {
@@ -2504,25 +2641,42 @@ async function importAiModel(event) {
   }
 }
 
-async function testAiTranslation() {
-  const text = elements.aiTestText?.value?.trim() || "\u56f3\u66f8\u9928\u3078\u884c\u304d\u307e\u3059\u3002";
-  elements.testAiTranslation.disabled = true;
-  elements.aiPreview.textContent = "Testing local translation...";
+async function refreshAiRuntimeStatus() {
+  if (!elements.aiPreview && !elements.stopAiRuntime) return;
   try {
-    await saveAiSettings();
-    const result = await api("/api/ai/test-translation", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, sourceLanguage: "ja", targetLanguage: "en" })
-    });
-    await loadAiProviders();
-    elements.aiPreview.textContent = result.available
-      ? result.translatedText
-      : `${result.reason} Selected model: ${result.model?.name ?? "None"}.`;
+    const runtime = await api("/api/ai/runtime");
+    state.aiRuntime = runtime;
+    renderAiRuntimeStatus(runtime);
   } catch (error) {
-    elements.aiPreview.textContent = error.message;
-  } finally {
-    elements.testAiTranslation.disabled = false;
+    if (elements.aiPreview) elements.aiPreview.textContent = `Runtime: ${error.message}`;
+    if (elements.stopAiRuntime) elements.stopAiRuntime.disabled = true;
+  }
+}
+
+function renderAiRuntimeStatus(runtime = state.aiRuntime) {
+  if (!elements.aiPreview && !elements.stopAiRuntime) return;
+  const running = Boolean(runtime?.running);
+  const count = Number(runtime?.count || 0);
+  const timeout = Number(runtime?.idleTimeoutSeconds || 0);
+  const timeoutLabel = timeout > 0 ? `${Math.round(timeout / 60)} min idle timeout` : "no idle timeout";
+  if (elements.aiPreview) {
+    elements.aiPreview.textContent = running
+      ? `Runtime: running (${count} model${count === 1 ? "" : "s"}, ${timeoutLabel})`
+      : `Runtime: off (auto-starts on message, ${timeoutLabel})`;
+  }
+  if (elements.stopAiRuntime) elements.stopAiRuntime.disabled = !running;
+}
+
+async function stopAiRuntime() {
+  if (!elements.stopAiRuntime) return;
+  elements.stopAiRuntime.disabled = true;
+  if (elements.aiPreview) elements.aiPreview.textContent = "Runtime: stopping...";
+  try {
+    const result = await api("/api/ai/runtime/stop", { method: "POST" });
+    state.aiRuntime = result;
+    renderAiRuntimeStatus(result);
+  } catch (error) {
+    if (elements.aiPreview) elements.aiPreview.textContent = `Runtime: ${error.message}`;
   }
 }
 
@@ -3602,6 +3756,11 @@ elements.mlRebuildIndex?.addEventListener("click", rebuildMlIndex);
 elements.semanticSearchForm?.addEventListener("submit", runSemanticSearch);
 elements.ragForm?.addEventListener("submit", askRag);
 elements.readerAssistantForm?.addEventListener("submit", askReaderAssistant);
+elements.readerAssistantQuestion?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  elements.readerAssistantForm?.requestSubmit();
+});
 elements.panelTabs.forEach((tab) => tab.addEventListener("click", () => setPanelTab(tab.dataset.panelTab)));
 elements.collapseSidebar.addEventListener("click", () => {
   elements.shell.classList.add("sidebar-hidden");
@@ -3621,6 +3780,8 @@ elements.showChapters.addEventListener("click", () => {
   elements.readerLayout.classList.remove("chapters-hidden");
   elements.showChapters.classList.add("hidden");
 });
+elements.chapterResizeHandle?.addEventListener("pointerdown", startReaderSidebarResize);
+elements.chapterResizeHandle?.addEventListener("keydown", nudgeReaderSidebarWidth);
 elements.bookForm.addEventListener("change", async (event) => {
   if (event.target.name !== "book") return;
   const files = event.target.files;
@@ -3662,7 +3823,10 @@ elements.readerZoom.addEventListener("wheel", (event) => {
 elements.toggleZoom.addEventListener("click", () => {
   document.body.classList.toggle("zoom-collapsed");
 });
-window.addEventListener("resize", refreshReaderFitSoon);
+window.addEventListener("resize", () => {
+  setReaderSidebarWidth(Number(localStorage.getItem("readerSideWidth")) || 280);
+  refreshReaderFitSoon();
+});
 elements.pageJumpForm.addEventListener("submit", (event) => {
   event.preventDefault();
   jumpToPage(elements.pageJumpInput.value);
@@ -3871,11 +4035,8 @@ elements.mediaImageEnabled?.addEventListener("change", queueSaveMediaSettings);
 elements.voiceModelForm?.addEventListener("submit", importVoiceModel);
 elements.testMediaAudio?.addEventListener("click", () => testMedia("audio"));
 elements.testMediaImage?.addEventListener("click", () => testMedia("image"));
-elements.aiSettingsForm?.addEventListener("submit", (event) => event.preventDefault());
-elements.aiTranslationEnabled?.addEventListener("change", saveAiSettings);
-elements.aiTranslationModel?.addEventListener("change", saveAiSettings);
 elements.aiModelForm?.addEventListener("submit", importAiModel);
-elements.testAiTranslation?.addEventListener("click", testAiTranslation);
+elements.stopAiRuntime?.addEventListener("click", stopAiRuntime);
 elements.syncSaveSettings?.addEventListener("click", async () => {
   try {
     await saveSyncSettings();
@@ -4060,6 +4221,7 @@ function cssEscape(value = "") {
 }
 
 loadVoices();
+initReaderSidebarResize();
 window.speechSynthesis.addEventListener?.("voiceschanged", loadVoices);
 loadState().catch((error) => {
   elements.reader.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;

@@ -327,13 +327,16 @@ h2 {
 .candidate-list,
 .wordbank-list,
 .dictionary-list,
-.chapter-list {
+.chapter-list,
+.bookmark-list {
+  align-content: start;
   display: grid;
   gap: 6px;
 }
 
 .book-list,
-.chapter-list {
+.chapter-list,
+.bookmark-list {
   overflow-y: auto;
 }
 
@@ -816,9 +819,10 @@ h2 {
 }
 
 .reader-layout {
+  --reader-side-width: 280px;
   display: grid;
   gap: 0;
-  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, var(--reader-side-width));
   min-height: 0;
   overflow: hidden;
 }
@@ -862,7 +866,40 @@ h2 {
   grid-template-rows: 45px minmax(0, 1fr);
   min-height: 0;
   padding: 0;
+  position: relative;
   transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.chapter-resize-handle {
+  bottom: 0;
+  cursor: col-resize;
+  left: -4px;
+  position: absolute;
+  top: 0;
+  touch-action: none;
+  width: 7px;
+  z-index: 4;
+}
+
+.chapter-resize-handle::after {
+  background: transparent;
+  bottom: 0;
+  content: "";
+  left: 3px;
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+
+.chapter-resize-handle:hover::after,
+.chapter-resize-handle:focus-visible::after,
+body.resizing-reader-sidebar .chapter-resize-handle::after {
+  background: var(--accent);
+}
+
+body.resizing-reader-sidebar {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .chapter-panel-head {
@@ -914,6 +951,7 @@ h2 {
 
 .panel-list {
   display: none;
+  min-width: 0;
   padding: 8px;
 }
 
@@ -924,17 +962,24 @@ h2 {
 }
 
 .assistant-panel.active {
+  box-sizing: border-box;
   grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .reader-assistant-form {
   background: #2b2b2c;
   border: 1px solid #343438;
-  border-radius: 18px;
+  border-radius: 10px;
+  box-sizing: border-box;
   display: grid;
   gap: 8px;
   margin-top: 8px;
+  max-width: 100%;
+  min-width: 0;
   padding: 10px 10px 8px;
+  width: 100%;
 }
 
 .reader-assistant-form select,
@@ -966,13 +1011,15 @@ h2 {
   align-items: center;
   display: flex;
   gap: 8px;
+  min-width: 0;
+  width: 100%;
 }
 
 .assistant-composer-left {
   align-items: center;
   color: #b6b6ba;
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 76px;
   font-size: 12px;
   gap: 8px;
   min-width: 0;
@@ -989,11 +1036,15 @@ h2 {
   background-color: transparent;
   color: #f3f3f3;
   cursor: pointer;
+  flex: 0 1 180px;
   font-size: 12px;
   font-weight: 600;
-  max-width: 92px;
+  margin-left: auto;
+  max-width: min(180px, 48%);
+  min-width: 0;
   outline: none;
   padding: 4px 16px 4px 4px;
+  text-overflow: ellipsis;
 }
 
 .reader-assistant-form select {
@@ -1039,6 +1090,55 @@ h2 {
   min-height: 0;
   overflow-y: auto;
   padding-right: 2px;
+}
+
+.assistant-message {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.assistant-message.user {
+  justify-items: end;
+}
+
+.assistant-message-body {
+  background: #101116;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 9px 10px;
+  white-space: pre-wrap;
+}
+
+.assistant-message.user .assistant-message-body {
+  background: #2b2b2c;
+  border-color: #3a3a3d;
+}
+
+.assistant-message.assistant .assistant-message-body {
+  width: 100%;
+}
+
+.assistant-message-meta {
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  gap: 8px;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.assistant-message.user .assistant-message-meta {
+  justify-content: flex-end;
+}
+
+.assistant-elapsed {
+  font-variant-numeric: tabular-nums;
 }
 
 .assistant-answer-block,
@@ -1106,9 +1206,13 @@ h2 {
 }
 
 .bookmark-item {
+  align-items: center;
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px;
+  height: 56px;
+  min-height: 56px;
   position: relative;
 }
 
@@ -1122,6 +1226,7 @@ h2 {
   min-width: 0;
   padding: 0 22px 0 0;
   text-align: left;
+  width: 100%;
 }
 
 .bookmark-open:hover {
@@ -2117,8 +2222,7 @@ progress {
   margin-bottom: 16px;
 }
 
-.media-settings-form,
-.ai-settings-form {
+.media-settings-form {
   margin-bottom: 12px;
 }
 
@@ -2188,6 +2292,27 @@ progress {
 .voice-model-list {
   display: grid;
   gap: 8px;
+}
+
+.ai-runtime-row {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  gap: 10px;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.ai-runtime-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-runtime-row button {
+  flex: 0 0 auto;
 }
 
 .insights-layout {

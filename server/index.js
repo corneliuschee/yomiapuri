@@ -1439,16 +1439,11 @@ function assistantResponseText(task, { contextText, question, termNotes, citatio
   }
   if (task === "translate") {
     if (translation?.available && translation.translatedText) {
-      return [
-        "Translation:",
-        translation.translatedText,
-        terms.length ? `Dictionary anchors:\n${terms.join("\n")}` : "",
-        citations.length ? "Related local passages are listed below." : ""
-      ].filter(Boolean).join("\n\n");
+      return translation.translatedText;
     }
     return [
-      `Local translation is not ready yet. ${translation?.reason || "Configure a local translation model in Integrations."}`,
-      contextText ? `Current text:\n${contextText.slice(0, 900)}` : "Select text or open a text page before translating.",
+      `Local AI is not ready yet. ${translation?.reason || "Configure a local assistant model in Integrations."}`,
+      contextText ? `Message text:\n${contextText.slice(0, 900)}` : "Type the text you want translated.",
       terms.length ? `Dictionary anchors:\n${terms.join("\n")}` : "No dictionary anchors were found for this context."
     ].join("\n\n");
   }
@@ -1466,6 +1461,182 @@ function assistantResponseText(task, { contextText, question, termNotes, citatio
     terms.length ? `Key vocabulary and dictionary meanings:\n${terms.join("\n")}` : "No dictionary-backed vocabulary notes were found.",
     citations.length ? "Related passages from your local library are listed below." : "No related indexed passages were found."
   ].join("\n\n");
+}
+
+function isTranslationPrompt(value = "") {
+  return /^translate(?:\s+this)?(?:\s+to\s+english)?\s*[:：]/i.test(String(value).trim())
+    || /^translate\s+/i.test(String(value).trim());
+}
+
+function inferAssistantIntent(value = "") {
+  const text = String(value ?? "").trim();
+  const lower = text.toLowerCase();
+  if (isTranslationPrompt(text)) return "translate";
+  if (/\b(recap|summari[sz]e|summary|what happened|so far)\b/.test(lower)) return "recap";
+  if (/\b(explain|break down|grammar|conjugat|nuance|why is|what does .* mean|difference between)\b/.test(lower)) return "explain";
+  if (looksLikeJapanesePassage(text)) return "translate";
+  return "ask";
+}
+
+function assistantWantsLocalCitations(value = "") {
+  const lower = String(value ?? "").toLowerCase();
+  return /\b(citation|citations|source|sources|evidence|quote|quotes|passage|passages|where else|other books?|similar examples?|similar sentences?|cross[- ]book|rag)\b/.test(lower)
+    || /他の本|引用|出典|根拠|似た例|似ている文/.test(String(value ?? ""));
+}
+
+function looksLikeJapanesePassage(value = "") {
+  const text = String(value ?? "").trim();
+  if (!hasJapaneseText(text)) return false;
+  const japanese = (text.match(/[\u3040-\u30ff\u3400-\u9fff]/g) ?? []).length;
+  const latin = (text.match(/[A-Za-z]/g) ?? []).length;
+  return japanese >= 4 && japanese >= latin * 2;
+}
+
+function translationPromptText(value = "") {
+  const text = String(value ?? "").trim();
+  const stripped = text
+    .replace(/^translate(?:\s+this)?(?:\s+to\s+english)?\s*[:：]?\s*/i, "")
+    .trim();
+  return stripped || text;
+}
+
+function normalizeAssistantHistory(history = []) {
+  return (Array.isArray(history) ? history : [])
+    .map((message) => ({
+      role: message?.role === "assistant" ? "assistant" : "user",
+      content: compactReaderContext(message?.content, 900)
+    }))
+    .filter((message) => message.content)
+    .slice(-6);
+}
+
+function previousUserMessage(history = []) {
+  const normalized = normalizeAssistantHistory(history);
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    if (normalized[index].role === "user") return normalized[index].content;
+  }
+  return "";
+}
+
+function assistantContextMessage({ intent, question, contextText, history = [], termNotes, citations, document, page, includeCitations = false }) {
+  const lines = [
+    `Intent: ${intent}`,
+    `Current book: ${document?.title || "unknown"}`,
+    `Current page: ${Number(page) + 1 || "unknown"}`
+  ];
+  const previousUser = previousUserMessage(history);
+  if (previousUser && intent !== "translate") {
+    lines.push(`Immediate previous user message. Use this first for follow-up references like "the second sentence", "previous sentence", or "that grammar point":\n${compactReaderContext(previousUser, 900)}`);
+  }
+  if (intent === "translate") {
+    lines.push("Translate only the user's requested text. Do not translate unrelated page text.");
+  }
+  if (intent === "recap") {
+    lines.push("Use only already-read or supplied local context. Avoid spoilers.");
+  }
+  if (contextText && intent !== "translate") {
+    lines.push(`Reader context:\n${compactReaderContext(contextText, 900)}`);
+  }
+  if (termNotes.length) {
+    lines.push(`Dictionary lookup notes for grounding only. Do not label these as vocabulary anchors in the answer:\n${termNotes.slice(0, 6).map((term) => {
+      const meaning = term.definitions?.slice(0, 2).join("; ") || "no dictionary definition";
+      return `- ${term.term}${term.reading ? ` (${term.reading})` : ""}: ${meaning}`;
+    }).join("\n")}`);
+  }
+  if (includeCitations && citations.length) {
+    lines.push(`Local citations:\n${citations.slice(0, 6).map((item, index) => {
+      const label = `${item.title || "Untitled"}${item.chapterTitle ? `, ${item.chapterTitle}` : ""}${item.page ? `, page ${Number(item.page) + 1}` : ""}`;
+      return `${index + 1}. ${label}: ${compactReaderContext(item.text, 320)}`;
+    }).join("\n")}`);
+  }
+  return compactReaderContext(lines.join("\n\n"), 2600);
+}
+
+function buildAssistantMessages({ intent, question, contextText, history, termNotes, citations, document, page, includeCitations = false }) {
+  const messages = [];
+  const context = assistantContextMessage({ intent, question, contextText, history, termNotes, citations, document, page, includeCitations });
+  if (context) messages.push({ role: "user", content: `App-provided context for this turn:\n${context}` });
+  messages.push(...normalizeAssistantHistory(history));
+  messages.push({ role: "user", content: question });
+  return messages;
+}
+
+function assistantMaxTokens(intent, contextText = "") {
+  if (intent === "translate") return Math.max(96, Math.min(768, Math.ceil(String(contextText).length * 1.8) + 64));
+  if (intent === "explain") return 448;
+  if (intent === "recap") return 512;
+  return 512;
+}
+
+async function aiRuntimeStatus() {
+  const runtimes = await Promise.all(["8093", "8094"].map(aiRuntimeForPort));
+  const active = runtimes.filter((runtime) => runtime.running);
+  const lastActivity = active
+    .map((runtime) => runtime.lastActivity)
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? "";
+  return {
+    running: active.length > 0,
+    count: active.length,
+    runtimes,
+    lastActivity,
+    idleTimeoutSeconds: Math.max(0, Number(process.env.LLAMA_IDLE_TIMEOUT_SECONDS ?? 600) || 0)
+  };
+}
+
+async function aiRuntimeForPort(port) {
+  const pidPath = path.join(dataDir, "llama", `llama-server-${port}.pid`);
+  const activityPath = path.join(dataDir, "llama", `llama-server-${port}.activity`);
+  const pid = await readPidFile(pidPath);
+  const running = pid > 0 && isPidRunning(pid);
+  return {
+    port,
+    pid,
+    running,
+    lastActivity: await readActivityTime(activityPath)
+  };
+}
+
+async function stopAiRuntime() {
+  const runtimes = await aiRuntimeStatus();
+  let stopped = 0;
+  for (const runtime of runtimes.runtimes) {
+    if (!runtime.running || !runtime.pid) continue;
+    try {
+      process.kill(runtime.pid);
+      stopped += 1;
+    } catch {
+      // Process may have exited between status check and kill.
+    }
+  }
+  return stopped;
+}
+
+async function readPidFile(pidPath) {
+  try {
+    const value = Number(String(await fs.readFile(pidPath, "utf8")).trim());
+    return Number.isInteger(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function readActivityTime(activityPath) {
+  try {
+    return new Date((await fs.stat(activityPath)).mtimeMs).toISOString();
+  } catch {
+    return "";
+  }
+}
+
+function isPidRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function learnedSet() {
@@ -3268,6 +3439,23 @@ app.get("/api/ai/providers", async (req, res, next) => {
   }
 });
 
+app.get("/api/ai/runtime", async (req, res, next) => {
+  try {
+    res.json(await aiRuntimeStatus());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/ai/runtime/stop", async (req, res, next) => {
+  try {
+    const stopped = await stopAiRuntime();
+    res.json({ stopped, ...(await aiRuntimeStatus()) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/ai/settings", async (req, res, next) => {
   try {
     res.json(await aiService.updateSettings(req.body ?? {}));
@@ -3465,41 +3653,79 @@ app.post("/api/rag/ask", async (req, res, next) => {
 app.post("/api/reader/assistant", async (req, res, next) => {
   try {
     const document = state.documents.find((item) => item.id === req.body.documentId);
-    const task = ["translate", "recap", "ask"].includes(req.body.task) ? req.body.task : "explain";
-    const question = compactReaderContext(req.body.question, 500);
-    const selection = compactReaderContext(req.body.selection, 2500);
-    const pageText = compactReaderContext(req.body.pageText, 5000);
-    const documentText = compactReaderContext(document?.text, 5000);
-    const contextText = selection || pageText || documentText;
+    const question = compactReaderContext(req.body.question, 2500);
+    if (!question) return res.status(400).json({ error: "Type a message before sending." });
+    const task = inferAssistantIntent(question);
+    const history = normalizeAssistantHistory(req.body.history);
+    const contextText = task === "translate" ? compactReaderContext(translationPromptText(question), 2500) : question;
     const analysis = await analyzeText(contextText);
     const termNotes = assistantTermNotes(analysis.tokens);
-    const query = compactReaderContext([question, selection || pageText].filter(Boolean).join(" "), 700) || contextText.slice(0, 250);
-    const searchResult = await mlService.search(query, { limit: 6 });
+    const query = compactReaderContext(question, 700) || contextText.slice(0, 250);
+    const includeCitations = task !== "translate" && assistantWantsLocalCitations(question);
+    const searchResult = !includeCitations
+      ? { results: [], status: { ready: false, skipped: true } }
+      : await mlService.search(query, { limit: 6 });
     const citations = searchResult.results ?? [];
-    const translation = task === "translate"
-      ? await aiService.translate({ text: contextText, sourceLanguage: "ja", targetLanguage: "en" })
-      : null;
-    const answer = assistantResponseText(task, {
+    let chat;
+    try {
+      chat = await aiService.chat({
+        intent: task,
+        modelId: req.body.modelId,
+        messages: buildAssistantMessages({
+          intent: task,
+          question: task === "translate" ? contextText : question,
+          contextText,
+          history,
+          termNotes,
+          citations,
+          document,
+          page: Number(req.body.page) || 0,
+          includeCitations
+        }),
+        maxTokens: assistantMaxTokens(task, contextText),
+        temperature: task === "translate" ? 0.1 : 0.25
+      });
+    } catch (error) {
+      chat = { available: false, text: "", reason: error.message, model: null };
+    }
+    const fallback = assistantResponseText(task, {
       contextText,
       question,
       termNotes,
       citations,
       document,
-      translation
+      translation: task === "translate" ? {
+        available: chat.available,
+        translatedText: chat.text,
+        reason: chat.reason
+      } : null
     });
+    const answer = chat.available && chat.text ? chat.text : fallback;
     const result = {
       task,
+      intent: task,
       question,
       answer,
       terms: termNotes,
-      citations,
-      translation,
+      citations: includeCitations ? citations : [],
+      includeCitations,
+      translation: task === "translate" ? {
+        available: chat.available,
+        translatedText: chat.text,
+        reason: chat.reason,
+        model: chat.model
+      } : null,
+      ai: {
+        available: chat.available,
+        reason: chat.reason,
+        model: chat.model
+      },
       status: searchResult.status,
       context: {
         documentId: document?.id || "",
         title: document?.title || "",
         page: Number(req.body.page) || 0,
-        source: selection ? "selection" : pageText ? "page" : document ? "document" : "none"
+        source: "message"
       }
     };
     logLearningEvent("reader.assistant", {
@@ -3513,6 +3739,128 @@ app.post("/api/reader/assistant", async (req, res, next) => {
     res.json(result);
   } catch (error) {
     next(error);
+  }
+});
+
+function writeAssistantStream(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+app.post("/api/reader/assistant/stream", async (req, res, next) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  try {
+    const document = state.documents.find((item) => item.id === req.body.documentId);
+    const question = compactReaderContext(req.body.question, 2500);
+    if (!question) {
+      writeAssistantStream(res, "error", { error: "Type a message before sending." });
+      res.end();
+      return;
+    }
+    const task = inferAssistantIntent(question);
+    const history = normalizeAssistantHistory(req.body.history);
+    const contextText = task === "translate" ? compactReaderContext(translationPromptText(question), 2500) : question;
+    const analysis = await analyzeText(contextText);
+    const termNotes = assistantTermNotes(analysis.tokens);
+    const query = compactReaderContext(question, 700) || contextText.slice(0, 250);
+    const includeCitations = task !== "translate" && assistantWantsLocalCitations(question);
+    const searchResult = !includeCitations
+      ? { results: [], status: { ready: false, skipped: true } }
+      : await mlService.search(query, { limit: 6 });
+    const citations = searchResult.results ?? [];
+
+    writeAssistantStream(res, "meta", {
+      task,
+      intent: task,
+      includeCitations,
+      terms: termNotes,
+      citations: includeCitations ? citations : [],
+      status: searchResult.status,
+      context: {
+        documentId: document?.id || "",
+        title: document?.title || "",
+        page: Number(req.body.page) || 0,
+        source: "message"
+      }
+    });
+
+    let chat;
+    try {
+      chat = await aiService.chatStream({
+        intent: task,
+        modelId: req.body.modelId,
+        messages: buildAssistantMessages({
+          intent: task,
+          question: task === "translate" ? contextText : question,
+          contextText,
+          history,
+          termNotes,
+          citations,
+          document,
+          page: Number(req.body.page) || 0,
+          includeCitations
+        }),
+        maxTokens: assistantMaxTokens(task, contextText),
+        temperature: task === "translate" ? 0.1 : 0.25,
+        onToken: (delta) => writeAssistantStream(res, "delta", { delta })
+      });
+    } catch (error) {
+      chat = { available: false, text: "", reason: error.message, model: null };
+    }
+
+    const fallback = assistantResponseText(task, {
+      contextText,
+      question,
+      termNotes,
+      citations,
+      document,
+      translation: task === "translate" ? {
+        available: chat.available,
+        translatedText: chat.text,
+        reason: chat.reason
+      } : null
+    });
+    const answer = chat.available && chat.text ? chat.text : fallback;
+    if (!chat.available || !chat.text) writeAssistantStream(res, "delta", { delta: answer });
+    const result = {
+      task,
+      intent: task,
+      question,
+      answer,
+      terms: termNotes,
+      citations: includeCitations ? citations : [],
+      includeCitations,
+      ai: {
+        available: chat.available,
+        reason: chat.reason,
+        model: chat.model
+      },
+      status: searchResult.status,
+      context: {
+        documentId: document?.id || "",
+        title: document?.title || "",
+        page: Number(req.body.page) || 0,
+        source: "message"
+      }
+    };
+    logLearningEvent("reader.assistant", {
+      documentId: document?.id,
+      task,
+      page: result.context.page,
+      terms: termNotes.length,
+      citations: citations.length,
+      source: result.context.source
+    });
+    writeAssistantStream(res, "done", result);
+    res.end();
+  } catch (error) {
+    writeAssistantStream(res, "error", { error: error.message });
+    res.end();
   }
 });
 
