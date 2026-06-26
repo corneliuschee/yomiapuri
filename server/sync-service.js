@@ -330,7 +330,8 @@ export async function buildPushPayload(state, sync, mediaDir, eventLog) {
       file_hash: sourceFileRecord?.file_hash ?? contentHash(document.text ?? document.id),
       content: {
         text: document.text ?? "",
-        chapters: document.chapters ?? []
+        chapters: document.chapters ?? [],
+        author: document.author ?? ""
       },
       created_at: document.createdAt ?? new Date().toISOString(),
       updated_at: document.updatedAt ?? document.createdAt ?? new Date().toISOString()
@@ -439,6 +440,7 @@ function applyDocuments(state, rows) {
       updatedAt: row.updated_at,
       coverPath: row.cover_path ?? "",
       sourcePath: row.source_path ?? "",
+      author: row.content?.author ?? "",
       text: row.content?.text ?? "",
       chapters: row.content?.chapters ?? []
     };

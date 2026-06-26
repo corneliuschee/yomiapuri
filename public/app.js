@@ -32,6 +32,9 @@ const state = {
   highlightUndo: [],
   highlightRedo: [],
   readerMode: "scroll",
+  readerSideTab: "chapters",
+  readerSearchQuery: "",
+  readerSearchResults: [],
   readerZoom: 100,
   libraryZoom: 140,
   libraryQuery: "",
@@ -75,6 +78,14 @@ const elements = {
   pageTitle: $("#page-title"),
   knownCount: $("#known-count"),
   bookForm: $("#book-form"),
+  readerSidebarToggle: $("#reader-sidebar-toggle"),
+  readerLibrary: $("#reader-library"),
+  readerSidePanel: $("#reader-side-panel"),
+  readerSideBook: $("#reader-side-book"),
+  readerSideTabs: document.querySelectorAll("[data-reader-side-tab]"),
+  readerSideChapters: $("#reader-side-chapters"),
+  readerSideBookmarks: $("#reader-side-bookmarks"),
+  readerSideSearch: $("#reader-side-search"),
   libraryBookForm: $("#library-book-form"),
   libraryNotice: $("#library-notice"),
   librarySearch: $("#library-search"),
@@ -104,6 +115,7 @@ const elements = {
   readerZoom: $("#reader-zoom"),
   zoomLabel: $("#zoom-label"),
   toggleZoom: $("#toggle-zoom"),
+  readerAiToggle: $("#reader-ai-toggle"),
   pageJumpForm: $("#page-jump-form"),
   pageJumpInput: $("#page-jump-input"),
   prevPage: $("#prev-page"),
@@ -265,8 +277,12 @@ async function loadState() {
 
 function setPage(pageId) {
   elements.pages.forEach((page) => page.classList.toggle("active", page.id === pageId));
-  elements.navItems.forEach((item) => item.classList.toggle("active", item.dataset.page === pageId));
+  const activeNavPage = pageId === "reader-page" ? "books-page" : pageId;
+  elements.navItems.forEach((item) => item.classList.toggle("active", item.dataset.page === activeNavPage));
+  elements.shell.classList.toggle("reader-sidebar-mode", pageId === "reader-page");
+  setSidebarHidden(pageId === "reader-page", { readerMode: pageId === "reader-page" });
   updateReaderToolbar();
+  renderReaderSidePanel();
   syncReaderModeButtons();
   elements.knownCount.classList.toggle("hidden", pageId !== "wordbank-page");
   const labels = {
@@ -282,6 +298,23 @@ function setPage(pageId) {
   if (pageId === "wordbank-page") loadWordBank();
   if (pageId === "insights-page") loadInsights();
   if (pageId === "trash-page") renderTrash();
+}
+
+function setSidebarHidden(hidden, options = {}) {
+  elements.shell.classList.toggle("sidebar-hidden", hidden);
+  elements.sidebar.classList.toggle("collapsed", hidden);
+  elements.collapseSidebar.classList.toggle("sidebar-toggle-left-open", hidden);
+  elements.collapseSidebar.classList.toggle("sidebar-toggle-left-close", !hidden);
+  elements.collapseSidebar.title = hidden ? "Show sidebar" : "Hide sidebar";
+  elements.collapseSidebar.setAttribute("aria-label", hidden ? "Show sidebar" : "Hide sidebar");
+  elements.showSidebar.classList.add("hidden");
+  if (elements.readerSidebarToggle) {
+    elements.readerSidebarToggle.classList.toggle("sidebar-toggle-left-open", hidden);
+    elements.readerSidebarToggle.classList.toggle("sidebar-toggle-left-close", !hidden);
+    elements.readerSidebarToggle.setAttribute("aria-pressed", String(!hidden));
+    elements.readerSidebarToggle.title = hidden ? "Show sidebar" : "Hide sidebar";
+    elements.readerSidebarToggle.setAttribute("aria-label", hidden ? "Show sidebar" : "Hide sidebar");
+  }
 }
 
 function renderDocuments() {
@@ -319,11 +352,7 @@ function renderBooksGrid() {
   if (!elements.booksGrid) return;
   applyLibraryZoom();
   elements.booksGrid.innerHTML = "";
-  const query = state.libraryQuery.trim().toLowerCase();
-  const visibleDocuments = state.documents.filter((item) => {
-    if (!query) return true;
-    return [item.title, item.filename, item.type].some((value) => String(value ?? "").toLowerCase().includes(query));
-  });
+  const visibleDocuments = visibleLibraryDocuments();
   if (state.documents.length === 0) {
     elements.booksGrid.innerHTML = `<p class="empty">No books imported yet.</p>`;
     return;
@@ -335,27 +364,34 @@ function renderBooksGrid() {
 
   for (const item of visibleDocuments) {
     const card = document.createElement("article");
-    card.className = `library-book${item.id === state.activeDocumentId ? " active" : ""}`;
+    const dragHint = item.id === libraryDragOverId ? (libraryDragInsertAfter ? " drop-after" : " drop-before") : "";
+    card.className = `library-book${item.id === state.activeDocumentId ? " active" : ""}${item.id === draggedBookId ? " dragging" : ""}${dragHint}`;
     card.draggable = true;
     card.dataset.documentId = item.id;
     card.innerHTML = `
-      <button class="library-open" type="button">
+      <div class="library-open" role="button" tabindex="0">
         ${coverMarkup(item, "library-cover")}
         <strong>${escapeHtml(item.title)}</strong>
         <span>${Math.round(state.progress[item.id]?.percentage ?? 0)}% read - ${escapeHtml(item.type.toUpperCase())}</span>
-      </button>
+      </div>
       <div class="library-actions">
         <button class="rename" type="button">Edit</button>
         <button class="delete" type="button">Delete</button>
       </div>
     `;
-    card.querySelector(".library-open").addEventListener("click", () => openDocument(item.id));
+    const openTarget = card.querySelector(".library-open");
+    openTarget.addEventListener("click", () => openDocument(item.id));
+    openTarget.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      openDocument(item.id);
+    });
     card.querySelector(".rename").addEventListener("click", () => startLibraryRename(card, item));
     card.querySelector(".delete").addEventListener("click", () => deleteDocument(item));
     card.addEventListener("dragstart", (event) => startBookDrag(event, item.id));
-    card.addEventListener("dragover", (event) => event.preventDefault());
-    card.addEventListener("drop", (event) => dropBook(event, item.id));
-    card.addEventListener("dragend", () => card.classList.remove("dragging"));
+    card.addEventListener("dragover", updateBookDragTarget);
+    card.addEventListener("drop", dropBook);
+    card.addEventListener("dragend", finishBookDrag);
     elements.booksGrid.append(card);
   }
   renderPdfCovers(elements.booksGrid);
@@ -378,6 +414,8 @@ function syncReaderModeButtons() {
 }
 
 let draggedBookId = "";
+let libraryDragOverId = "";
+let libraryDragInsertAfter = false;
 let libraryNoticeTimer;
 let ankiNoticeTimer;
 let dictionaryNoticeTimer;
@@ -453,21 +491,93 @@ function confirmDeleteBook(item) {
 
 function startBookDrag(event, id) {
   draggedBookId = id;
+  libraryDragOverId = "";
+  libraryDragInsertAfter = false;
   event.currentTarget.classList.add("dragging");
   event.dataTransfer.effectAllowed = "move";
   event.dataTransfer.setData("text/plain", id);
 }
 
-async function dropBook(event, targetId) {
-  event.preventDefault();
-  const sourceId = draggedBookId || event.dataTransfer.getData("text/plain");
+function finishBookDrag() {
   draggedBookId = "";
-  if (!sourceId || sourceId === targetId) return;
+  clearLibraryDropHints();
+}
+
+function clearLibraryDropHints() {
+  libraryDragOverId = "";
+  libraryDragInsertAfter = false;
+  elements.booksGrid?.querySelectorAll(".library-book").forEach((card) => {
+    card.classList.remove("dragging", "drop-before", "drop-after");
+  });
+}
+
+function visibleLibraryDocuments() {
+  const query = state.libraryQuery.trim().toLowerCase();
+  return state.documents.filter((item) => !query || [item.title, item.filename, item.type].some((value) => String(value ?? "").toLowerCase().includes(query)));
+}
+
+function libraryDropSlot(event) {
+  if (!elements.booksGrid) return null;
+  const cards = [...elements.booksGrid.querySelectorAll(".library-book")]
+    .filter((card) => card.dataset.documentId && card.dataset.documentId !== draggedBookId);
+  if (cards.length === 0) return { index: 0, targetId: "", after: false };
+
+  let best = { distance: Number.POSITIVE_INFINITY, index: cards.length, targetId: cards.at(-1)?.dataset.documentId ?? "", after: true };
+  const slots = [
+    { index: 0, targetId: cards[0].dataset.documentId, after: false, rect: cards[0].getBoundingClientRect(), side: "left" },
+    ...cards.map((card, index) => ({
+      index: index + 1,
+      targetId: card.dataset.documentId,
+      after: true,
+      rect: card.getBoundingClientRect(),
+      side: "right"
+    }))
+  ];
+
+  for (const slot of slots) {
+    const x = slot.side === "left" ? slot.rect.left : slot.rect.right;
+    const y = slot.rect.top + slot.rect.height / 2;
+    const distance = Math.hypot(event.clientX - x, event.clientY - y);
+    if (distance < best.distance) best = { distance, index: slot.index, targetId: slot.targetId, after: slot.after };
+  }
+  return best;
+}
+
+function updateBookDragTarget(event) {
+  if (!draggedBookId) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  const slot = libraryDropSlot(event);
+  if (!slot) return;
+  libraryDragOverId = slot.targetId;
+  libraryDragInsertAfter = slot.after;
+  elements.booksGrid?.querySelectorAll(".library-book").forEach((card) => {
+    const isTarget = card.dataset.documentId === slot.targetId;
+    card.classList.toggle("drop-before", isTarget && !slot.after);
+    card.classList.toggle("drop-after", isTarget && slot.after);
+  });
+}
+
+async function dropBook(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const slot = libraryDropSlot(event);
+  const sourceId = draggedBookId || event.dataTransfer.getData("text/plain");
+  if (!sourceId || !slot?.targetId || sourceId === slot.targetId) {
+    finishBookDrag();
+    return;
+  }
   const sourceIndex = state.documents.findIndex((item) => item.id === sourceId);
-  const targetIndex = state.documents.findIndex((item) => item.id === targetId);
-  if (sourceIndex < 0 || targetIndex < 0) return;
+  const targetIndex = state.documents.findIndex((item) => item.id === slot.targetId);
+  if (sourceIndex < 0 || targetIndex < 0) {
+    finishBookDrag();
+    return;
+  }
   const [moved] = state.documents.splice(sourceIndex, 1);
-  state.documents.splice(targetIndex, 0, moved);
+  const targetIndexAfterRemoval = state.documents.findIndex((item) => item.id === slot.targetId);
+  const insertIndex = targetIndexAfterRemoval + (slot.after ? 1 : 0);
+  state.documents.splice(insertIndex, 0, moved);
+  finishBookDrag();
   renderBooksGrid();
   try {
     const result = await api("/api/documents/reorder", {
@@ -589,9 +699,15 @@ async function openDocument(id) {
   if (previousDocumentId !== id) readerAssistantHistory = [];
   setPage("reader-page");
   renderDocuments();
-  elements.reader.innerHTML = `<p class="empty">Loading book...</p>`;
+  renderReaderLoadStatus("Checking local book cache...", 0, 1);
   elements.candidateList.innerHTML = "";
 
+  try {
+    await streamDocumentIngestion(id);
+  } catch (error) {
+    console.warn("Document ingestion stream failed; falling back to normal load.", error);
+    renderReaderLoadStatus("Loading book without cache progress...", 0, 1);
+  }
   const documentData = await api(`/api/documents/${id}`);
   state.activeCandidates = documentData.candidates ?? [];
   state.pageCandidates = {};
@@ -600,6 +716,8 @@ async function openDocument(id) {
 
   state.activePages = documentData.pages?.length ? documentData.pages : [{ chapterId: "chapter-1", html: documentData.html ?? "" }];
   state.activeHtml = documentData.html ?? "";
+  state.readerSearchQuery = "";
+  state.readerSearchResults = [];
   state.activeChapterId = documentData.progress?.chapterId || state.activePages[0]?.chapterId || state.activeChapters[0]?.id || "";
   state.readerZoom = normalizeZoom(documentData.progress?.zoom ?? state.readerZoom);
   state.highlights = normalizeHighlights(documentData.progress?.highlights);
@@ -608,6 +726,12 @@ async function openDocument(id) {
   state.highlightUndo = [];
   state.highlightRedo = [];
   state.activeDocumentTitle = documentData.title;
+  const documentItem = state.documents.find((item) => item.id === id);
+  if (documentItem) {
+    documentItem.title = documentData.title || documentItem.title;
+    documentItem.author = documentData.author || documentItem.author || "";
+    documentItem.coverPath = documentData.coverPath || documentItem.coverPath || "";
+  }
   elements.pageTitle.textContent = documentData.title;
   
   renderBooksGrid();
@@ -616,6 +740,56 @@ async function openDocument(id) {
   updateReaderToolbar();
   renderReader(documentData.progress);
   renderCandidates();
+}
+
+function renderReaderLoadStatus(label = "Loading book...", current = 0, total = 1) {
+  const progress = total > 0 ? Math.max(0, Math.min(100, Math.round((Number(current) / Number(total)) * 100))) : 0;
+  elements.reader.innerHTML = `
+    <div class="reader-load-status">
+      <strong>${escapeHtml(label)}</strong>
+      <div class="reader-load-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}">
+        <span style="width: ${progress}%"></span>
+      </div>
+    </div>
+  `;
+}
+
+async function streamDocumentIngestion(id) {
+  const response = await fetch(`/api/documents/${encodeURIComponent(id)}/ingest-stream`);
+  if (!response.ok) return;
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split(/\n\n/);
+    buffer = blocks.pop() ?? "";
+    for (const block of blocks) handleDocumentIngestionBlock(block);
+  }
+  if (buffer.trim()) handleDocumentIngestionBlock(buffer);
+}
+
+function handleDocumentIngestionBlock(block = "") {
+  let eventName = "message";
+  const data = [];
+  for (const rawLine of String(block).split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (line.startsWith("event:")) eventName = line.slice(6).trim();
+    if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+  }
+  if (data.length === 0) return;
+  const payload = JSON.parse(data.join("\n"));
+  if (eventName === "progress") {
+    renderReaderLoadStatus(payload.label || "Preparing book...", payload.current ?? 0, payload.total ?? 1);
+  }
+  if (eventName === "done") {
+    const label = payload.rebuilt ? "Local book cache ready." : "Local book cache ready.";
+    renderReaderLoadStatus(label, 1, 1);
+  }
+  if (eventName === "error") throw new Error(payload.error || "Book ingestion failed.");
 }
 
 async function refreshActiveDocumentForKnownTerms() {
@@ -698,10 +872,12 @@ function renderReader(progress = {}) {
   state.activeChapterId = page?.chapterId || state.activeChapterId;
   elements.reader.innerHTML = savedPageHtml(state.currentPage) || page?.html || `<p class="empty">No page text.</p>`;
   elements.reader.classList.toggle("image-page", Boolean(elements.reader.querySelector(".reader-page-frame.image-only")));
+  applyReaderSearchHighlights();
   updateReaderFitVars(state.readerZoom);
   renderChapters();
   requestAnimationFrame(() => {
     updateReaderFitVars(state.readerZoom);
+    applyReaderSearchHighlights();
     if (state.readerMode === "scroll") {
       elements.reader.scrollTop = Math.max(0, Math.min(Number(progress.scrollTop) || 0, elements.reader.scrollHeight - elements.reader.clientHeight));
     } else {
@@ -854,6 +1030,7 @@ function renderChapters() {
   elements.chapterList.innerHTML = "";
   if (state.activeChapters.length === 0) {
     elements.chapterList.innerHTML = `<p class="empty">Open a book to show chapters.</p>`;
+    renderReaderSidePanel();
     return;
   }
 
@@ -865,16 +1042,19 @@ function renderChapters() {
     button.addEventListener("click", () => jumpToChapter(chapter.id));
     elements.chapterList.append(button);
   }
+  renderReaderSidePanel();
 }
 
 function renderBookmarks() {
   elements.bookmarkList.innerHTML = "";
   if (!state.activeDocumentId) {
     elements.bookmarkList.innerHTML = `<p class="empty">Open a book to show bookmarks.</p>`;
+    renderReaderSidePanel();
     return;
   }
   if (state.bookmarks.length === 0) {
     elements.bookmarkList.innerHTML = `<p class="empty">No bookmarks yet.</p>`;
+    renderReaderSidePanel();
     return;
   }
 
@@ -894,6 +1074,270 @@ function renderBookmarks() {
     item.querySelector(".bookmark-delete").addEventListener("click", () => deleteBookmark(bookmark));
     elements.bookmarkList.append(item);
   }
+  renderReaderSidePanel();
+}
+
+function renderReaderSidePanel() {
+  if (!elements.readerSidePanel) return;
+  const active = $("#reader-page")?.classList.contains("active") && Boolean(state.activeDocumentId);
+  elements.readerSidePanel.classList.toggle("has-book", active);
+  elements.readerSideTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.readerSideTab === state.readerSideTab));
+  elements.readerSideChapters?.classList.toggle("active", state.readerSideTab === "chapters");
+  elements.readerSideBookmarks?.classList.toggle("active", state.readerSideTab === "bookmarks");
+  elements.readerSideSearch?.classList.toggle("active", state.readerSideTab === "search");
+
+  const documentItem = state.documents.find((item) => item.id === state.activeDocumentId);
+  if (!active || !documentItem) {
+    if (elements.readerSideBook) elements.readerSideBook.innerHTML = `<p class="empty">Open a book.</p>`;
+    if (elements.readerSideChapters) elements.readerSideChapters.innerHTML = `<p class="empty">No chapters.</p>`;
+    if (elements.readerSideBookmarks) elements.readerSideBookmarks.innerHTML = `<p class="empty">No bookmarks.</p>`;
+    if (elements.readerSideSearch) elements.readerSideSearch.innerHTML = `<p class="empty">Open a book to search.</p>`;
+    return;
+  }
+
+  const progress = Math.round(state.progress[documentItem.id]?.percentage ?? Number(elements.progressBar.value) ?? 0);
+  elements.readerSideBook.innerHTML = `
+    ${coverMarkup(documentItem, "reader-side-cover")}
+    <div class="reader-side-meta">
+      <strong>${escapeHtml(documentItem.title)}</strong>
+      <span class="reader-side-author">${escapeHtml(documentItem.author || "Author unknown")}</span>
+      <span>${escapeHtml(documentItem.type.toUpperCase())} - ${progress}% read</span>
+    </div>
+  `;
+
+  elements.readerSideChapters.innerHTML = "";
+  if (state.activeChapters.length === 0) {
+    elements.readerSideChapters.innerHTML = `<p class="empty">No chapters.</p>`;
+  } else {
+    const count = document.createElement("div");
+    count.className = "reader-side-count";
+    count.textContent = `Total chapters: ${state.activeChapters.length}`;
+    elements.readerSideChapters.append(count);
+    for (const chapter of state.activeChapters) {
+      const button = document.createElement("button");
+      button.className = `reader-side-item${chapter.id === state.activeChapterId ? " active" : ""}`;
+      button.type = "button";
+      button.textContent = chapter.title;
+      button.addEventListener("click", () => jumpToChapter(chapter.id));
+      elements.readerSideChapters.append(button);
+    }
+  }
+
+  elements.readerSideBookmarks.innerHTML = "";
+  if (state.bookmarks.length === 0) {
+    elements.readerSideBookmarks.innerHTML = `<p class="empty">No bookmarks yet.</p>`;
+  } else {
+    const sorted = [...state.bookmarks].sort((a, b) => Number(a.page ?? 0) - Number(b.page ?? 0));
+    for (const bookmark of sorted) {
+      const page = Number(bookmark.page ?? 0);
+      const item = document.createElement("div");
+      item.className = `reader-side-bookmark${page === state.currentPage ? " active" : ""}`;
+      item.innerHTML = `
+        <button class="reader-side-bookmark-open" type="button">
+          <strong>Page ${page + 1}</strong>
+          <span>${escapeHtml(bookmark.mode === "scroll" ? "Scroll position" : "Paged mode")}</span>
+        </button>
+        <button class="reader-side-bookmark-delete" type="button" title="Delete bookmark" aria-label="Delete bookmark">x</button>
+      `;
+      item.querySelector(".reader-side-bookmark-open").addEventListener("click", () => jumpToBookmark(bookmark));
+      item.querySelector(".reader-side-bookmark-delete").addEventListener("click", () => deleteBookmark(bookmark));
+      elements.readerSideBookmarks.append(item);
+    }
+  }
+
+  renderReaderSearchPanel();
+  renderPdfCovers(elements.readerSidePanel);
+}
+
+function pageTextFromHtml(html = "") {
+  const doc = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
+  doc.querySelectorAll("rt, script, style, .reader-search-skip").forEach((node) => node.remove());
+  return (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+function chapterTitleForPage(page) {
+  const chapter = state.activeChapters.find((item) => item.id === page?.chapterId);
+  return chapter?.title || "Current chapter";
+}
+
+function buildReaderSearchResults(query) {
+  const needle = query.trim();
+  if (!needle) return [];
+  const lowerNeedle = needle.toLowerCase();
+  const results = [];
+  for (const [pageIndex, page] of state.activePages.entries()) {
+    const text = pageTextFromHtml(page?.html ?? "");
+    const lowerText = text.toLowerCase();
+    let offset = 0;
+    while (true) {
+      const index = lowerText.indexOf(lowerNeedle, offset);
+      if (index < 0) break;
+      const start = Math.max(0, index - 24);
+      const end = Math.min(text.length, index + needle.length + 42);
+      results.push({
+        id: `${pageIndex}-${index}`,
+        page: pageIndex,
+        chapterId: page?.chapterId ?? "",
+        chapterTitle: chapterTitleForPage(page),
+        before: text.slice(start, index),
+        match: text.slice(index, index + needle.length),
+        after: text.slice(index + needle.length, end)
+      });
+      offset = index + Math.max(needle.length, 1);
+      if (results.length >= 200) return results;
+    }
+  }
+  return results;
+}
+
+function renderReaderSearchPanel() {
+  if (!elements.readerSideSearch) return;
+  const query = state.readerSearchQuery;
+  const results = state.readerSearchResults;
+  elements.readerSideSearch.innerHTML = `
+    <form id="reader-search-form" class="reader-search-form" autocomplete="off">
+      <label class="reader-search-field">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg>
+        <input id="reader-search-input" type="search" value="${escapeHtml(query)}" placeholder="Search in book" />
+      </label>
+      <div class="reader-search-count">${query ? `${results.length} match${results.length === 1 ? "" : "es"}` : "Type to search this book"}</div>
+    </form>
+    <div class="reader-search-results"></div>
+  `;
+  const input = elements.readerSideSearch.querySelector("#reader-search-input");
+  const list = elements.readerSideSearch.querySelector(".reader-search-results");
+  input.addEventListener("input", () => updateReaderSearch(input.value));
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const first = state.readerSearchResults[0];
+      if (first) jumpToSearchResult(first);
+    }
+  });
+  if (!query) return;
+  if (results.length === 0) {
+    list.innerHTML = `<p class="empty">No matches found.</p>`;
+    return;
+  }
+  for (const result of results) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `reader-search-result${result.page === state.currentPage ? " active" : ""}`;
+    item.innerHTML = `
+      <span class="reader-search-snippet">${escapeHtml(result.before)}<mark>${escapeHtml(result.match)}</mark>${escapeHtml(result.after)}</span>
+      <span class="reader-search-meta">
+        <strong>Page ${result.page + 1}</strong>
+        <span class="reader-search-chapter">${escapeHtml(result.chapterTitle)}</span>
+      </span>
+    `;
+    item.addEventListener("click", () => jumpToSearchResult(result));
+    list.append(item);
+  }
+}
+
+function updateReaderSearch(query) {
+  state.readerSearchQuery = query;
+  state.readerSearchResults = buildReaderSearchResults(query);
+  renderReaderSearchPanel();
+  requestAnimationFrame(() => {
+    const input = elements.readerSideSearch?.querySelector("#reader-search-input");
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
+  applyReaderSearchHighlights();
+}
+
+function openReaderSearch() {
+  if (!$("#reader-page")?.classList.contains("active")) return;
+  state.readerSideTab = "search";
+  setSidebarHidden(false, { readerMode: true });
+  renderReaderSidePanel();
+  requestAnimationFrame(() => elements.readerSideSearch?.querySelector("#reader-search-input")?.focus());
+}
+
+function jumpToSearchResult(result) {
+  if (!result) return;
+  captureCurrentReaderHtml();
+  state.currentPage = Math.max(0, Math.min(Number(result.page) || 0, state.activePages.length - 1));
+  state.activeChapterId = result.chapterId || state.activePages[state.currentPage]?.chapterId || state.activeChapterId;
+  renderReader({ mode: state.readerMode, page: state.currentPage, scrollTop: 0, zoom: state.readerZoom });
+  saveProgress({ refreshLibrary: false });
+}
+
+function applyReaderSearchHighlights() {
+  window.CSS?.highlights?.delete("reader-search-match");
+  clearReaderSearchInlineHighlights();
+  const query = state.readerSearchQuery.trim();
+  if (!query || !elements.reader) return;
+  const lowerQuery = query.toLowerCase();
+  const nodes = [];
+  const walker = document.createTreeWalker(elements.reader, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest("rt, script, style, button, input, textarea, select, .reader-search-inline-match")) return NodeFilter.FILTER_REJECT;
+      return node.nodeValue?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    }
+  });
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+
+  const segments = [];
+  let fullText = "";
+  for (const node of nodes) {
+    const text = node.nodeValue || "";
+    segments.push({ node, start: fullText.length, end: fullText.length + text.length });
+    fullText += text;
+  }
+
+  const lowerText = fullText.toLowerCase();
+  const matches = [];
+  let offset = 0;
+  while (true) {
+    const index = lowerText.indexOf(lowerQuery, offset);
+    if (index < 0) break;
+    matches.push({ start: index, end: index + query.length });
+    offset = index + Math.max(query.length, 1);
+  }
+  if (matches.length === 0) return;
+
+  for (const segment of [...segments].reverse()) {
+    const localMatches = matches
+      .map((match) => ({
+        start: Math.max(0, match.start - segment.start),
+        end: Math.min(segment.end - segment.start, match.end - segment.start)
+      }))
+      .filter((match) => match.start < match.end)
+      .sort((a, b) => a.start - b.start);
+    if (localMatches.length === 0) continue;
+    const text = segment.node.nodeValue || "";
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const match of localMatches) {
+      if (match.start > cursor) fragment.append(document.createTextNode(text.slice(cursor, match.start)));
+      const mark = document.createElement("span");
+      mark.className = "reader-search-inline-match";
+      mark.textContent = text.slice(match.start, match.end);
+      fragment.append(mark);
+      cursor = match.end;
+    }
+    if (cursor < text.length) fragment.append(document.createTextNode(text.slice(cursor)));
+    segment.node.parentNode?.replaceChild(fragment, segment.node);
+  }
+}
+
+function clearReaderSearchInlineHighlights(root = elements.reader) {
+  if (!root) return;
+  root.querySelectorAll?.(".reader-search-inline-match").forEach((node) => {
+    const parent = node.parentNode;
+    parent?.replaceChild(document.createTextNode(node.textContent || ""), node);
+    parent?.normalize();
+  });
+}
+
+function stripReaderSearchMarkup(root) {
+  clearReaderSearchInlineHighlights(root);
+  root.querySelectorAll?.(".reader-search-inline-match").forEach((node) => node.replaceWith(document.createTextNode(node.textContent || "")));
+  return root;
 }
 
 function sameBookmark(a, b) {
@@ -942,6 +1386,14 @@ function setPanelTab(tabName) {
   elements.chapterList.classList.toggle("active", tabName === "chapters");
   elements.bookmarkList.classList.toggle("active", tabName === "bookmarks");
   elements.assistantPanel?.classList.toggle("active", tabName === "assistant");
+}
+
+function setAssistantPanelHidden(hidden) {
+  if (!elements.readerLayout) return;
+  if (!hidden) setPanelTab("assistant");
+  elements.readerLayout.classList.toggle("chapters-hidden", hidden);
+  elements.showChapters?.classList.add("hidden");
+  elements.readerAiToggle?.classList.toggle("active", !hidden);
 }
 
 function initReaderSidebarResize() {
@@ -1390,11 +1842,15 @@ function renderInsights(analytics, indexStatus) {
 
 function renderMlIndexStatus(status = {}) {
   if (!elements.mlIndexStatus) return;
-  const ready = status.ready ? "Ready" : "Not built";
+  const ready = status.stale ? "Stale" : status.ready ? "Ready" : "Not built";
   const rebuilt = status.rebuiltAt ? new Date(status.rebuiltAt).toLocaleString() : "Never";
+  const provider = status.embeddingProviderLabel || status.embeddingProvider || status.provider || "lancedb";
+  const dimensions = status.embeddingDimensions ? ` - ${Number(status.embeddingDimensions).toLocaleString()}d` : "";
+  const staleReason = status.stale && status.staleReason ? `<em>${escapeHtml(status.staleReason)}</em>` : "";
   elements.mlIndexStatus.innerHTML = `
     <strong>${escapeHtml(ready)}</strong>
-    <span>${Number(status.chunks ?? 0).toLocaleString()} chunks - ${escapeHtml(status.provider ?? "lancedb")} - rebuilt ${escapeHtml(rebuilt)}</span>
+    <span>${Number(status.chunks ?? 0).toLocaleString()} chunks - ${escapeHtml(provider)}${escapeHtml(dimensions)} - rebuilt ${escapeHtml(rebuilt)}</span>
+    ${staleReason}
   `;
 }
 
@@ -2942,6 +3398,7 @@ function captureCurrentReaderHtml() {
 
 function serializableReaderHtml() {
   const clone = elements.reader.cloneNode(true);
+  stripReaderSearchMarkup(clone);
   clone.querySelectorAll(".pdf-page-render").forEach((node) => {
     node.removeAttribute("data-rendered");
     node.removeAttribute("data-rendering");
@@ -2952,6 +3409,7 @@ function serializableReaderHtml() {
 function sanitizeSnapshotHtml(html = "") {
   const template = document.createElement("template");
   template.innerHTML = html;
+  stripReaderSearchMarkup(template.content);
   template.content.querySelectorAll(".pdf-page-render").forEach((node) => {
     node.removeAttribute("data-rendered");
     node.removeAttribute("data-rendering");
@@ -3751,6 +4209,10 @@ function playJapanese(text, options = {}) {
 
 elements.navItems.forEach((item) => item.addEventListener("click", () => setPage(item.dataset.page)));
 elements.pageLinks.forEach((item) => item.addEventListener("click", () => setPage(item.dataset.pageLink)));
+elements.readerSidebarToggle?.addEventListener("click", () => {
+  setSidebarHidden(!elements.shell.classList.contains("sidebar-hidden"), { readerMode: true });
+});
+elements.readerLibrary?.addEventListener("click", () => setPage("books-page"));
 elements.refreshInsights?.addEventListener("click", loadInsights);
 elements.mlRebuildIndex?.addEventListener("click", rebuildMlIndex);
 elements.semanticSearchForm?.addEventListener("submit", runSemanticSearch);
@@ -3762,24 +4224,24 @@ elements.readerAssistantQuestion?.addEventListener("keydown", (event) => {
   elements.readerAssistantForm?.requestSubmit();
 });
 elements.panelTabs.forEach((tab) => tab.addEventListener("click", () => setPanelTab(tab.dataset.panelTab)));
+elements.readerSideTabs.forEach((tab) => tab.addEventListener("click", () => {
+  state.readerSideTab = ["bookmarks", "search"].includes(tab.dataset.readerSideTab) ? tab.dataset.readerSideTab : "chapters";
+  renderReaderSidePanel();
+  if (state.readerSideTab === "search") requestAnimationFrame(() => elements.readerSideSearch?.querySelector("#reader-search-input")?.focus());
+}));
 elements.collapseSidebar.addEventListener("click", () => {
-  elements.shell.classList.add("sidebar-hidden");
-  elements.sidebar.classList.add("collapsed");
-  elements.showSidebar.classList.remove("hidden");
+  setSidebarHidden(!elements.shell.classList.contains("sidebar-hidden"), { readerMode: $("#reader-page")?.classList.contains("active") });
 });
 elements.showSidebar.addEventListener("click", () => {
-  elements.shell.classList.remove("sidebar-hidden");
-  elements.sidebar.classList.remove("collapsed");
-  elements.showSidebar.classList.add("hidden");
+  setSidebarHidden(false);
 });
 elements.hideChapters.addEventListener("click", () => {
-  elements.readerLayout.classList.add("chapters-hidden");
-  elements.showChapters.classList.remove("hidden");
+  setAssistantPanelHidden(true);
 });
 elements.showChapters.addEventListener("click", () => {
-  elements.readerLayout.classList.remove("chapters-hidden");
-  elements.showChapters.classList.add("hidden");
+  setAssistantPanelHidden(false);
 });
+elements.readerAiToggle?.addEventListener("click", () => setAssistantPanelHidden(false));
 elements.chapterResizeHandle?.addEventListener("pointerdown", startReaderSidebarResize);
 elements.chapterResizeHandle?.addEventListener("keydown", nudgeReaderSidebarWidth);
 elements.bookForm.addEventListener("change", async (event) => {
@@ -3804,6 +4266,11 @@ elements.booksGrid?.addEventListener("wheel", (event) => {
   event.preventDefault();
   setLibraryZoom(state.libraryZoom + (event.deltaY < 0 ? 12 : -12));
 }, { passive: false });
+elements.booksGrid?.addEventListener("dragover", updateBookDragTarget);
+elements.booksGrid?.addEventListener("drop", dropBook);
+elements.booksGrid?.addEventListener("dragleave", (event) => {
+  if (!elements.booksGrid?.contains(event.relatedTarget)) clearLibraryDropHints();
+});
 elements.librarySearch?.addEventListener("input", () => {
   state.libraryQuery = elements.librarySearch.value;
   renderBooksGrid();
@@ -3826,6 +4293,12 @@ elements.toggleZoom.addEventListener("click", () => {
 window.addEventListener("resize", () => {
   setReaderSidebarWidth(Number(localStorage.getItem("readerSideWidth")) || 280);
   refreshReaderFitSoon();
+});
+window.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && $("#reader-page")?.classList.contains("active")) {
+    event.preventDefault();
+    openReaderSearch();
+  }
 });
 elements.pageJumpForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -4206,7 +4679,7 @@ function coverMarkup(item, className) {
     return `<span class="${className} pdf-cover-render" data-pdf-src="${escapeHtml(item.sourcePath)}"><canvas aria-label=""></canvas></span>`;
   }
   if (item.coverPath) {
-    return `<span class="${className}"><img src="${escapeHtml(item.coverPath)}" alt="" loading="lazy" /></span>`;
+    return `<span class="${className}"><img src="${escapeHtml(item.coverPath)}" alt="" loading="lazy" draggable="false" /></span>`;
   }
   const initials = (item.title || item.filename || "?").trim().slice(0, 2).toUpperCase();
   return `<span class="${className} cover-fallback">${escapeHtml(initials)}</span>`;

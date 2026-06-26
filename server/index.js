@@ -25,12 +25,17 @@ const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path
 const mediaDir = path.join(dataDir, "media");
 const eventsPath = path.join(dataDir, "events.jsonl");
 const vectorDir = path.join(dataDir, "vector-index");
+const documentCacheDir = path.join(dataDir, "document-cache");
 const dbPath = path.join(dataDir, "state.json");
 const dbTmpPath = path.join(dataDir, "state.json.tmp");
 const dictionaryDbPath = path.join(dataDir, "dictionaries.json");
 const dictionaryDbTmpPath = path.join(dataDir, "dictionaries.json.tmp");
 const publicDir = path.join(rootDir, "public");
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 60 * 1024 * 1024 } });
+const DOCUMENT_CACHE_VERSION = 1;
+const TOKENIZER_VERSION = "kuromoji-ipadic-v1";
+const NORMALIZER_VERSION = "dictionary-aware-v1";
+const READER_LAYOUT_VERSION = 1;
 
 const app = express();
 app.use(express.json({ limit: "4mb" }));
@@ -69,6 +74,10 @@ const initialState = {
   media: defaultMediaSettings(),
   ai: defaultAiSettings(),
   sync: defaultSyncSettings(),
+  ml: {
+    indexStale: false,
+    indexStaleReason: ""
+  },
   progress: {},
   cards: [],
   anki: {
@@ -177,7 +186,8 @@ function ensureStorage() {
   return Promise.all([
     fs.mkdir(dataDir, { recursive: true }),
     fs.mkdir(mediaDir, { recursive: true }),
-    fs.mkdir(vectorDir, { recursive: true })
+    fs.mkdir(vectorDir, { recursive: true }),
+    fs.mkdir(documentCacheDir, { recursive: true })
   ]);
 }
 
@@ -212,6 +222,10 @@ async function loadState() {
   state.media = normalizeMediaSettings(state.media);
   state.ai = normalizeAiSettings(state.ai);
   state.sync = normalizeSyncSettings(state.sync);
+  state.ml = {
+    ...structuredClone(initialState.ml),
+    ...(state.ml ?? {})
+  };
   if (repairDictionaryState(state, { normalizeJapaneseTerm })) repaired = true;
   const legacyBaseTime = Date.parse("2020-01-01T00:00:00.000Z");
   for (const [index, term] of state.knownTerms.entries()) {
@@ -550,6 +564,7 @@ function documentCacheKey(document) {
   return [
     document.id,
     document.updatedAt ?? document.createdAt ?? "",
+    dictionaryNormalizationSignature(),
     state.knownTerms.length,
     state.knownTerms.join("\u0001"),
     state.dictionaries.length
@@ -558,6 +573,204 @@ function documentCacheKey(document) {
 
 function clearDocumentCache() {
   documentResponseCache.clear();
+}
+
+function markMlIndexStale(reason = "Source data changed. Rebuild the local index.") {
+  state.ml ??= {};
+  state.ml.indexStale = true;
+  state.ml.indexStaleReason = reason;
+}
+
+function markMlIndexFresh() {
+  state.ml ??= {};
+  state.ml.indexStale = false;
+  state.ml.indexStaleReason = "";
+}
+
+function documentCachePath(documentId = "") {
+  return path.join(documentCacheDir, safeAssetName(documentId || "unknown"));
+}
+
+function documentCacheManifestPath(documentId = "") {
+  return path.join(documentCachePath(documentId), "manifest.json");
+}
+
+function documentTokenCacheDir(documentId = "") {
+  return path.join(documentCachePath(documentId), "tokens");
+}
+
+function documentSourceSignature(document = {}) {
+  return createHash("sha256")
+    .update(document.id ?? "")
+    .update("\u0000")
+    .update(document.updatedAt ?? document.createdAt ?? "")
+    .update("\u0000")
+    .update(document.title ?? "")
+    .update("\u0000")
+    .update(document.author ?? "")
+    .update("\u0000")
+    .update(document.text ?? "")
+    .update("\u0000")
+    .update(JSON.stringify((document.chapters ?? []).map((chapter) => ({
+      id: chapter.id,
+      title: chapter.title,
+      href: chapter.href,
+      blocks: chapter.blocks
+    }))))
+    .digest("hex");
+}
+
+function currentDocumentCacheManifest(document = {}) {
+  return {
+    documentId: document.id,
+    cacheVersion: DOCUMENT_CACHE_VERSION,
+    tokenizerVersion: TOKENIZER_VERSION,
+    normalizerVersion: NORMALIZER_VERSION,
+    layoutVersion: READER_LAYOUT_VERSION,
+    sourceHash: documentSourceSignature(document),
+    dictionarySignature: dictionaryNormalizationSignature()
+  };
+}
+
+async function readDocumentCacheManifest(documentId = "") {
+  try {
+    const raw = await fs.readFile(documentCacheManifestPath(documentId), "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function documentCacheState(document = {}, manifest = null) {
+  const current = currentDocumentCacheManifest(document);
+  if (!manifest) return { state: "full-stale", current, reason: "No local ingestion cache." };
+  const fullStale = manifest.cacheVersion !== current.cacheVersion ||
+    manifest.tokenizerVersion !== current.tokenizerVersion ||
+    manifest.normalizerVersion !== current.normalizerVersion ||
+    manifest.layoutVersion !== current.layoutVersion ||
+    manifest.sourceHash !== current.sourceHash;
+  if (fullStale) return { state: "full-stale", current, reason: "Book source, tokenizer, normalizer, or layout version changed." };
+  if (manifest.dictionarySignature !== current.dictionarySignature) {
+    return { state: "dictionary-stale", current, reason: "Dictionary normalization changed." };
+  }
+  return { state: "valid", current, reason: "" };
+}
+
+async function writeDocumentCacheManifest(document = {}, currentManifest) {
+  const cachePath = documentCachePath(document.id);
+  await fs.mkdir(cachePath, { recursive: true });
+  await fs.writeFile(documentCacheManifestPath(document.id), JSON.stringify({
+    ...currentManifest,
+    builtAt: new Date().toISOString()
+  }, null, 2), "utf8");
+}
+
+async function clearDocumentIngestionCache(documentId = "") {
+  await fs.rm(documentCachePath(documentId), { recursive: true, force: true });
+}
+
+function tokenCachePathForKey(cacheDir = "", key = "") {
+  return path.join(cacheDir, `${key}.json`);
+}
+
+async function readPersistentReaderTokens(cacheDir = "", key = "") {
+  if (!cacheDir || !key) return null;
+  try {
+    const parsed = JSON.parse(await fs.readFile(tokenCachePathForKey(cacheDir, key), "utf8"));
+    return Array.isArray(parsed.tokens) ? parsed.tokens : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writePersistentReaderTokens(cacheDir = "", key = "", tokens = []) {
+  if (!cacheDir || !key || !Array.isArray(tokens)) return;
+  await fs.mkdir(cacheDir, { recursive: true });
+  await fs.writeFile(tokenCachePathForKey(cacheDir, key), JSON.stringify({
+    key,
+    tokenizerVersion: TOKENIZER_VERSION,
+    normalizerVersion: NORMALIZER_VERSION,
+    dictionarySignature: dictionaryNormalizationSignature(),
+    tokens
+  }), "utf8");
+}
+
+function documentTextCacheBlocks(document = {}) {
+  const blocks = [];
+  const chapters = fallbackChapters(document);
+  for (const chapter of chapters) {
+    for (const block of flattenTextBlocks(chapter.blocks ?? [])) {
+      const text = String(block.text ?? "").trim();
+      if (text && hasJapaneseText(text)) blocks.push(text);
+    }
+  }
+  return blocks;
+}
+
+function flattenTextBlocks(blocks = []) {
+  const values = [];
+  for (const block of blocks) {
+    if (!block) continue;
+    if (typeof block === "string") {
+      values.push({ type: "text", text: block });
+      continue;
+    }
+    if (block.type === "text" || block.type === "link") values.push(block);
+    if (block.type === "page") values.push(...flattenTextBlocks(block.blocks ?? []));
+  }
+  return values;
+}
+
+async function ensureDocumentIngestionCache(document = {}, options = {}) {
+  const onProgress = typeof options.onProgress === "function" ? options.onProgress : () => {};
+  const manifest = await readDocumentCacheManifest(document.id);
+  const cacheState = documentCacheState(document, manifest);
+  const cacheDir = documentTokenCacheDir(document.id);
+  const shouldBuild = cacheState.state !== "valid" || options.force === true;
+  if (!shouldBuild) return { ...cacheState, rebuilt: false, cacheDir };
+
+  onProgress({
+    phase: cacheState.state,
+    label: cacheState.state === "dictionary-stale" ? "Refreshing dictionary-aware tokens..." : "Building local book cache...",
+    current: 0,
+    total: 1
+  });
+
+  if (cacheState.state === "full-stale" || options.force === true) await clearDocumentIngestionCache(document.id);
+  else await fs.rm(cacheDir, { recursive: true, force: true });
+  await fs.mkdir(cacheDir, { recursive: true });
+
+  const blocks = documentTextCacheBlocks(document);
+  const total = Math.max(1, blocks.length);
+  for (const [index, text] of blocks.entries()) {
+    onProgress({
+      phase: cacheState.state,
+      label: `Re-indexing text tokens: ${index + 1}/${total}`,
+      current: index + 1,
+      total
+    });
+    await analyzeReaderTokenStream(text, {
+      cacheDir,
+      authorRubyProtectedTerms: authorRubyProtectedTermsFromText(text)
+    });
+  }
+
+  await writeDocumentCacheManifest(document, cacheState.current);
+  if (cacheState.state === "dictionary-stale") {
+    onProgress({
+      phase: "vector-index",
+      label: "Rebuilding local semantic index after dictionary drift...",
+      current: 0,
+      total: 1
+    });
+    await mlService.rebuildIndex();
+    markMlIndexFresh();
+    await saveState();
+  } else if (cacheState.state === "full-stale" || options.force === true) {
+    markMlIndexStale("Document ingestion cache changed. Rebuild the local semantic index.");
+    await saveState();
+  }
+  return { ...cacheState, rebuilt: true, cacheDir };
 }
 
 function renderImageFigure(src = "", alt = "") {
@@ -926,11 +1139,13 @@ async function extractEpubDocument(file, documentId) {
   const imageManifest = new Map();
   let spinePaths = [];
   let title = "";
+  let author = "";
   let coverPath = "";
   let tocItems = [];
 
   if (opf) {
     title = repairMojibake(getXmlText(opf, "dc:title") || getXmlText(opf, "title"));
+    author = repairMojibake(getXmlText(opf, "dc:creator") || getXmlText(opf, "creator"));
     const coverId = getXmlAttr(opf.match(/<meta\b[^>]*name=["']cover["'][^>]*>/i)?.[0] ?? "", "content");
     for (const match of opf.matchAll(/<item\b[^>]*>/gi)) {
       const item = match[0];
@@ -1040,6 +1255,7 @@ async function extractEpubDocument(file, documentId) {
 
   return {
     title,
+    author,
     coverPath,
     text: chapters.map((chapter) => blocksToText(chapter.blocks)).filter(Boolean).join("\n\n"),
     chapters
@@ -1166,6 +1382,7 @@ async function extractPdfDocument(file, documentId) {
   });
 
   const title = repairMojibake(parsed.info?.Title || path.parse(filename).name || "PDF");
+  const author = repairMojibake(parsed.info?.Author || parsed.metadata?._metadata?.["dc:creator"] || "");
   const totalPages = Math.max(parsed.numpages ?? 0, pageTexts.length);
   const pages = Array.from({ length: totalPages }, (_, index) => pageTexts[index] ?? "");
   const pageBlocks = pages.map((text, index) => ({
@@ -1192,6 +1409,7 @@ async function extractPdfDocument(file, documentId) {
 
   return {
     title,
+    author,
     coverPath: await writePdfCover(documentId, title, filename),
     sourcePath,
     text: chapters.map((chapter) => blocksToText(chapter.blocks)).filter(Boolean).join("\n\n"),
@@ -1544,7 +1762,7 @@ function assistantContextMessage({ intent, question, contextText, history = [], 
     }).join("\n")}`);
   }
   if (includeCitations && citations.length) {
-    lines.push(`Local citations:\n${citations.slice(0, 6).map((item, index) => {
+    lines.push(`Local retrieved context for grounding only. Do not mention citations, sources, passages, or book/page labels unless the user explicitly asked for them:\n${citations.slice(0, 6).map((item, index) => {
       const label = `${item.title || "Untitled"}${item.chapterTitle ? `, ${item.chapterTitle}` : ""}${item.page ? `, page ${Number(item.page) + 1}` : ""}`;
       return `${index + 1}. ${label}: ${compactReaderContext(item.text, 320)}`;
     }).join("\n")}`);
@@ -2059,9 +2277,11 @@ function dictionaryNormalizationSignature() {
   return signature;
 }
 
-function readerTokenCacheKey(text = "") {
+function readerTokenCacheKey(text = "", authorRubyProtectedTerms = new Set()) {
   return createHash("sha1")
     .update(dictionaryNormalizationSignature())
+    .update("\u0000")
+    .update([...authorRubyProtectedTerms].sort().join("\u0001"))
     .update("\u0000")
     .update(text)
     .digest("hex");
@@ -2108,7 +2328,7 @@ function learnedByTokenVariants(token = {}, known = learnedSet()) {
   return tokenLookupVariants(token).some((term) => known.has(term));
 }
 
-function normalizeReaderToken(token = {}, known = learnedSet()) {
+function normalizeReaderToken(token = {}, known = learnedSet(), authorRubyProtectedTerms = new Set()) {
   const surface = normalizeJapaneseTerm(token.surface ?? "");
   if (!surface) return token;
   if (token.authorRuby) {
@@ -2127,10 +2347,11 @@ function normalizeReaderToken(token = {}, known = learnedSet()) {
   }
 
   const base = normalizeJapaneseTerm(token.base || surface);
+  const protectedByAuthorRuby = isAuthorRubyProtectedToken({ ...token, surface, base }, authorRubyProtectedTerms);
   const canonical = canonicalDictionaryMatch([surface, base]);
   const dictionaryForm = canonical?.term || base || surface;
   const dictionaryReading = primaryReading(canonical?.reading || token.dictionaryReading || "");
-  const displayReading = primaryReading(token.displayReading || token.reading || (canonical?.matchedInput === surface ? dictionaryReading : ""));
+  const displayReading = protectedByAuthorRuby ? "" : primaryReading(token.displayReading || token.reading || (canonical?.matchedInput === surface ? dictionaryReading : ""));
   const lookupTerms = uniqueNormalizedTerms([
     surface,
     base,
@@ -2150,11 +2371,12 @@ function normalizeReaderToken(token = {}, known = learnedSet()) {
     dictionaryReading,
     lookupTerms
   };
-  const learned = learnedByTokenVariants(next, known);
+  const learned = protectedByAuthorRuby || learnedByTokenVariants(next, known);
   return {
     ...next,
+    authorRubyProtected: protectedByAuthorRuby,
     learned,
-    eligible: hasKanji(surface) && !learned && token.pos !== "\u8a18\u53f7"
+    eligible: hasKanji(surface) && !learned && !protectedByAuthorRuby && token.pos !== "\u8a18\u53f7"
   };
 }
 
@@ -2207,12 +2429,12 @@ function bestDictionaryMatch(term = "") {
   return matches.find((entry) => normalizeJapaneseTerm(entry.term) === normalizeJapaneseTerm(term) && entry.reading) ?? matches.find((entry) => entry.reading);
 }
 
-function dictionaryAwareTokenStream(tokens = [], known = learnedSet()) {
+function dictionaryAwareTokenStream(tokens = [], known = learnedSet(), authorRubyProtectedTerms = authorRubyProtectedTermsFromTokens(tokens)) {
   const merged = [];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
-    if (token.authorRuby || !hasKanji(token.surface)) {
-      merged.push(normalizeReaderToken(token, known));
+    if (token.authorRuby || !hasKanji(token.surface) || isAuthorRubyProtectedToken(token, authorRubyProtectedTerms)) {
+      merged.push(normalizeReaderToken(token, known, authorRubyProtectedTerms));
       continue;
     }
 
@@ -2220,7 +2442,7 @@ function dictionaryAwareTokenStream(tokens = [], known = learnedSet()) {
     let surface = "";
     for (let end = index; end < Math.min(tokens.length, index + 6); end += 1) {
       const candidate = tokens[end];
-      if (candidate.authorRuby || isBoundaryToken(candidate)) break;
+      if (candidate.authorRuby || isAuthorRubyProtectedToken(candidate, authorRubyProtectedTerms) || isBoundaryToken(candidate)) break;
       surface += candidate.surface;
       if (end === index || !hasKanji(surface)) continue;
       const match = canonicalDictionaryMatch([surface]);
@@ -2243,15 +2465,46 @@ function dictionaryAwareTokenStream(tokens = [], known = learnedSet()) {
         posDetail3: token.posDetail3 ?? "",
         start: token.start,
         end: tokens[best.end]?.end ?? token.end
-      }, known);
+      }, known, authorRubyProtectedTerms);
       merged.push(compound);
       index = best.end;
       continue;
     }
 
-    merged.push(normalizeReaderToken(token, known));
+    merged.push(normalizeReaderToken(token, known, authorRubyProtectedTerms));
   }
   return merged;
+}
+
+function authorRubyProtectedTermsFromTokens(tokens = []) {
+  const terms = new Set();
+  for (const token of tokens) {
+    const surface = normalizeJapaneseTerm(token.surface ?? "");
+    if (!token.authorRuby || !surface || !hasKanji(surface)) continue;
+    terms.add(surface);
+  }
+  return terms;
+}
+
+function authorRubyProtectedTermsFromText(text = "") {
+  const terms = new Set();
+  const markerPattern = /\[\[RUBY:([^|]*)\|[^\]]*\]\]/g;
+  for (const match of String(text ?? "").matchAll(markerPattern)) {
+    const surface = normalizeJapaneseTerm(decodeURIComponent(match[1] ?? ""));
+    if (surface && hasKanji(surface)) terms.add(surface);
+  }
+  return terms;
+}
+
+function normalizeAuthorRubyProtectedTerms(terms = new Set()) {
+  return new Set([...terms].map(normalizeJapaneseTerm).filter((term) => term && hasKanji(term)));
+}
+
+function isAuthorRubyProtectedToken(token = {}, authorRubyProtectedTerms = new Set()) {
+  if (!authorRubyProtectedTerms?.size) return false;
+  const surface = normalizeJapaneseTerm(token.surface ?? "");
+  const base = normalizeJapaneseTerm(token.base ?? "");
+  return Boolean((surface && authorRubyProtectedTerms.has(surface)) || (base && authorRubyProtectedTerms.has(base)));
 }
 
 function renderRubyPages(tokens, charLimit = 850) {
@@ -2329,21 +2582,27 @@ function renderPlainTextLines(text = "") {
     .join("");
 }
 
-async function analyzeReaderTokenStream(text) {
+async function analyzeReaderTokenStream(text, options = {}) {
   const tokenizer = await getTokenizer();
   const known = await learnedVariantSet();
-  const key = readerTokenCacheKey(text);
+  const authorRubyProtectedTerms = normalizeAuthorRubyProtectedTerms(options.authorRubyProtectedTerms ?? authorRubyProtectedTermsFromText(text));
+  const key = readerTokenCacheKey(text, authorRubyProtectedTerms);
   let normalizedTokens = readerTokenCache.get(key);
+  if (!normalizedTokens && options.cacheDir) {
+    normalizedTokens = await readPersistentReaderTokens(options.cacheDir, key);
+    if (normalizedTokens) rememberReaderTokens(key, normalizedTokens);
+  }
   if (!normalizedTokens) {
-    normalizedTokens = dictionaryAwareTokenStream(readerRenderTokens(text, tokenizer, new Set()), new Set());
+    normalizedTokens = dictionaryAwareTokenStream(readerRenderTokens(text, tokenizer, new Set()), new Set(), authorRubyProtectedTerms);
     rememberReaderTokens(key, normalizedTokens);
+    if (options.cacheDir) await writePersistentReaderTokens(options.cacheDir, key, normalizedTokens);
   }
   return applyLearnedState(normalizedTokens, known);
 }
 
 function applyLearnedState(tokens = [], known = learnedSet()) {
   return tokens.map((token) => {
-    if (token.authorRuby) return { ...token, learned: true, eligible: false };
+    if (token.authorRuby || token.authorRubyProtected) return { ...token, learned: true, eligible: false };
     const learned = learnedByTokenVariants(token, known);
     return {
       ...token,
@@ -2353,10 +2612,10 @@ function applyLearnedState(tokens = [], known = learnedSet()) {
   });
 }
 
-async function renderReaderTextLines(text) {
+async function renderReaderTextLines(text, options = {}) {
   if (!hasJapaneseText(text)) return renderPlainTextLines(text);
 
-  const tokens = await analyzeReaderTokenStream(text);
+  const tokens = await analyzeReaderTokenStream(text, options);
 
   const lines = [];
   let line = "";
@@ -2490,13 +2749,13 @@ function splitLongTextBlock(block, charLimit) {
   return chunks;
 }
 
-async function renderStructuredBlocks(blocks = []) {
+async function renderStructuredBlocks(blocks = [], options = {}) {
   const rendered = [];
   let textBuffer = [];
 
   async function flushText() {
     if (textBuffer.length === 0) return;
-    rendered.push(`<div class="book-lines">${await renderReaderTextLines(joinTextBlocks(textBuffer))}</div>`);
+    rendered.push(`<div class="book-lines">${await renderReaderTextLines(joinTextBlocks(textBuffer), options)}</div>`);
     textBuffer = [];
   }
 
@@ -2508,7 +2767,7 @@ async function renderStructuredBlocks(blocks = []) {
         continue;
       }
       const pageNumber = block.pageNumber ? ` data-pdf-page="${escapeHtml(String(block.pageNumber))}"` : "";
-      rendered.push(`<section class="pdf-page-block"${pageNumber}>${await renderStructuredBlocks(block.blocks ?? [])}</section>`);
+      rendered.push(`<section class="pdf-page-block"${pageNumber}>${await renderStructuredBlocks(block.blocks ?? [], options)}</section>`);
       continue;
     }
     if (block.type === "image") {
@@ -2531,7 +2790,7 @@ async function renderStructuredBlocks(blocks = []) {
   return rendered.join("");
 }
 
-async function renderStructuredPages(blocks = [], charLimit = 850) {
+async function renderStructuredPages(blocks = [], charLimit = 850, options = {}) {
   const pages = [];
   let pageBlocks = [];
   let count = 0;
@@ -2541,25 +2800,25 @@ async function renderStructuredPages(blocks = [], charLimit = 850) {
     for (const block of expandedBlocks) {
     if (block.type === "page") {
       if (pageBlocks.length > 0) {
-        pages.push(await renderStructuredBlocks(pageBlocks));
+        pages.push(await renderStructuredBlocks(pageBlocks, options));
         pageBlocks = [];
         count = 0;
       }
-      pages.push(block.pdfSrc ? renderPdfPageFigure(block) : await renderStructuredBlocks(block.blocks ?? []));
+      pages.push(block.pdfSrc ? renderPdfPageFigure(block) : await renderStructuredBlocks(block.blocks ?? [], options));
       continue;
     }
     if (block.type === "image") {
       if (pageBlocks.length > 0) {
-        pages.push(await renderStructuredBlocks(pageBlocks));
+        pages.push(await renderStructuredBlocks(pageBlocks, options));
         pageBlocks = [];
         count = 0;
       }
-      pages.push(await renderStructuredBlocks([block]));
+      pages.push(await renderStructuredBlocks([block], options));
       continue;
     }
     const blockLength = block.type === "text" || block.type === "link" ? block.text.length : 220;
     if (pageBlocks.length > 0 && count + blockLength > charLimit) {
-      pages.push(await renderStructuredBlocks(pageBlocks));
+      pages.push(await renderStructuredBlocks(pageBlocks, options));
       pageBlocks = [];
       count = 0;
     }
@@ -2568,7 +2827,7 @@ async function renderStructuredPages(blocks = [], charLimit = 850) {
     }
   }
 
-  if (pageBlocks.length > 0) pages.push(await renderStructuredBlocks(pageBlocks));
+  if (pageBlocks.length > 0) pages.push(await renderStructuredBlocks(pageBlocks, options));
   return pages.length > 0 ? pages : [""];
 }
 
@@ -2893,6 +3152,7 @@ app.post("/api/documents", upload.single("book"), async (req, res, next) => {
     const document = {
       id,
       title: repairMojibake(req.body.title?.trim() || imported.title || path.parse(filename).name),
+      author: repairMojibake(imported.author || ""),
       filename,
       type,
       createdAt: new Date().toISOString(),
@@ -2905,6 +3165,7 @@ app.post("/api/documents", upload.single("book"), async (req, res, next) => {
     state.documents.unshift(document);
     state.progress[document.id] = { percentage: 0, updatedAt: new Date().toISOString() };
     clearDocumentCache();
+    markMlIndexStale("Imported book added new source text.");
     await saveState();
     logLearningEvent("document.imported", { documentId: document.id, title: document.title, type: document.type });
     res.status(201).json({ document: { ...document, text: undefined } });
@@ -2922,9 +3183,50 @@ app.post("/api/documents/reorder", async (req, res) => {
     const bOrder = order.has(b.id) ? order.get(b.id) : Number.MAX_SAFE_INTEGER;
     return aOrder - bOrder;
   });
+  markMlIndexStale("Book order changed.");
   await saveState();
   const documents = state.documents.map(({ text, chapters, ...document }) => document);
   res.json({ documents });
+});
+
+function writeSse(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+app.get("/api/documents/:id/ingest-stream", async (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  try {
+    const document = state.documents.find((item) => item.id === req.params.id);
+    if (!document) {
+      writeSse(res, "error", { error: "Document not found." });
+      res.end();
+      return;
+    }
+    const result = await ensureDocumentIngestionCache(document, {
+      force: req.query.force === "1",
+      onProgress: (progress) => writeSse(res, "progress", progress)
+    });
+    if (result.state === "dictionary-stale" && result.rebuilt) {
+      markMlIndexFresh();
+      await saveState();
+    }
+    writeSse(res, "done", {
+      state: result.state,
+      rebuilt: result.rebuilt,
+      reason: result.reason,
+      indexStale: Boolean(state.ml?.indexStale)
+    });
+    res.end();
+  } catch (error) {
+    writeSse(res, "error", { error: error.message });
+    res.end();
+  }
 });
 
 app.get("/api/documents/:id", async (req, res, next) => {
@@ -2932,6 +3234,8 @@ app.get("/api/documents/:id", async (req, res, next) => {
     const document = state.documents.find((item) => item.id === req.params.id);
     if (!document) return res.status(404).json({ error: "Document not found." });
     const includeCandidates = req.query.candidates === "1" || document.text.length < 20000;
+    const ingestion = await ensureDocumentIngestionCache(document);
+    const tokenCacheDir = ingestion.cacheDir;
 
     const cacheKey = documentCacheKey(document);
     let cached = documentResponseCache.get(cacheKey);
@@ -2958,7 +3262,10 @@ app.get("/api/documents/:id", async (req, res, next) => {
           const chapterText = blocksToText(renderBlocks);
           const chapterHasPageBlocks = renderBlocks.some((block) => block.type === "page");
           const chapterHasImageBlocks = renderBlocks.some((block) => block.type === "image");
-          const rawPages = await renderStructuredPages(renderBlocks);
+          const rawPages = await renderStructuredPages(renderBlocks, 850, {
+            cacheDir: tokenCacheDir,
+            authorRubyProtectedTerms: authorRubyProtectedTermsFromText(chapterText)
+          });
           let headingPlaced = false;
           const pages = rawPages.map((pageHtml) => {
             const includeHeading = !headingPlaced && !isImageOnlyPageHtml(pageHtml);
@@ -3001,6 +3308,7 @@ app.get("/api/documents/:id", async (req, res, next) => {
         filename: document.filename,
         createdAt: document.createdAt,
         coverPath: document.coverPath ?? "",
+        author: document.author ?? "",
         sourcePath: document.sourcePath ?? "",
         html: frontImageHtml,
         pages,
@@ -3042,6 +3350,7 @@ app.patch("/api/documents/:id", async (req, res) => {
   document.title = title;
   document.updatedAt = new Date().toISOString();
   clearDocumentCache();
+  markMlIndexStale("Book metadata changed.");
   await saveState();
   const { text, chapters, ...publicDocument } = document;
   res.json(publicDocument);
@@ -3057,6 +3366,7 @@ app.delete("/api/documents/:id", async (req, res) => {
   if (trashIndex >= 0) state.trash.documents.splice(trashIndex, 1, trashedDocument);
   else state.trash.documents.unshift(trashedDocument);
   clearDocumentCache();
+  markMlIndexStale("Book was moved to Trash.");
   await saveState();
   res.json({ ok: true });
 });
@@ -3071,6 +3381,7 @@ app.post("/api/trash/documents/:id/restore", async (req, res) => {
     state.documents.push(document);
   }
   clearDocumentCache();
+  markMlIndexStale("Book was restored from Trash.");
   await saveState();
   const { text, chapters, ...publicDocument } = document;
   res.json({ document: publicDocument });
@@ -3081,6 +3392,7 @@ app.delete("/api/trash/documents/:id", async (req, res) => {
   if (index === -1) return res.status(404).json({ error: "Deleted book not found." });
   const [deleted] = state.trash.documents.splice(index, 1);
   clearDocumentCache();
+  markMlIndexStale("Deleted book was permanently removed.");
   await saveState();
   res.json({ deleted: 1, documentId: deleted.id, total: state.trash.documents.length });
 });
@@ -3089,6 +3401,7 @@ app.delete("/api/trash/documents", async (req, res) => {
   const deleted = state.trash.documents.length;
   state.trash.documents = [];
   clearDocumentCache();
+  if (deleted > 0) markMlIndexStale("Deleted books were permanently removed.");
   await saveState();
   res.json({ deleted, total: 0 });
 });
@@ -3130,6 +3443,7 @@ app.post("/api/known-terms", upload.single("terms"), async (req, res) => {
   if (incoming.length === 0) return res.status(400).json({ error: "No vocabulary provided." });
   const added = mergeKnownTerms(incoming);
   clearDocumentCache();
+  if (added.length > 0) markMlIndexStale("Word Bank changed known-term coverage.");
   await saveState();
   for (const term of added) logLearningEvent("wordbank.added", { term, source: req.file ? "import" : "manual" });
   res.json({ imported: incoming.length, added: added.length, total: state.knownTerms.length });
@@ -3145,6 +3459,7 @@ app.delete("/api/known-terms", async (req, res) => {
   const deletedTerms = moveKnownTermsToTrash(terms);
   const deleted = deletedTerms.length;
   clearDocumentCache();
+  if (deleted > 0) markMlIndexStale("Word Bank changed known-term coverage.");
   await saveState();
   for (const term of deletedTerms) logLearningEvent("wordbank.deleted", { term });
   res.json({ deleted, total: state.knownTerms.length });
@@ -3176,6 +3491,7 @@ app.post("/api/known-terms/sync-anki", async (req, res, next) => {
     if (removedTerms.length > 0) {
       moveKnownTermsToTrash(removedTerms, "anki-sync");
       clearDocumentCache();
+      markMlIndexStale("Anki sync removed Word Bank terms.");
       await saveState();
     }
     logLearningEvent("wordbank.synced-anki", { checked: noteIdsByTerm.size, removed: removedTerms.length });
@@ -3215,6 +3531,7 @@ app.post("/api/trash/known-terms/restore", async (req, res) => {
 
   state.trash.knownTerms = remainingTrash;
   clearDocumentCache();
+  if (restoredTerms.length > 0) markMlIndexStale("Word Bank changed known-term coverage.");
   await saveState();
   for (const term of restoredTerms) logLearningEvent("wordbank.restored", { term });
   res.json({ restored: restoredTerms.length, total: state.knownTerms.length });
@@ -3232,6 +3549,7 @@ app.delete("/api/trash/known-terms", async (req, res) => {
     return !term || !selected.has(term);
   });
   const deleted = before - state.trash.knownTerms.length;
+  if (deleted > 0) markMlIndexStale("Deleted vocabulary was permanently removed.");
   await saveState();
   res.json({ deleted, total: state.trash.knownTerms.length });
 });
@@ -3273,7 +3591,9 @@ app.post("/api/dictionaries", upload.array("dictionary", 20), async (req, res, n
     for (const file of files) {
       imports.push(await dictionaryService.importDictionary(file, displayName));
     }
+    markMlIndexStale("Dictionary imports changed lookup metadata.");
     await saveDictionariesState();
+    await saveState();
     res.status(201).json({
       dictionary: imports[0]?.dictionary ?? null,
       dictionaries: imports.map((item) => item.dictionary),
@@ -3291,7 +3611,9 @@ app.get("/api/dictionaries", (req, res) => {
 app.patch("/api/dictionaries/:id/settings", async (req, res, next) => {
   try {
     const dictionary = await dictionaryService.updateSettings(req.params.id, req.body ?? {});
+    markMlIndexStale("Dictionary settings changed lookup metadata.");
     await saveDictionariesState();
+    await saveState();
     clearDocumentCache();
     res.json({ dictionary, dictionaries: dictionaryService.listMetadata(), settings: state.dictionarySettings });
   } catch (error) {
@@ -3302,7 +3624,9 @@ app.patch("/api/dictionaries/:id/settings", async (req, res, next) => {
 app.delete("/api/dictionaries/:id", async (req, res, next) => {
   try {
     const dictionary = await dictionaryService.deleteDictionary(req.params.id);
+    markMlIndexStale("Dictionary was deleted.");
     await saveDictionariesState();
+    await saveState();
     clearDocumentCache();
     res.json({ dictionary, dictionaries: dictionaryService.listMetadata(), settings: state.dictionarySettings });
   } catch (error) {
@@ -3313,6 +3637,8 @@ app.delete("/api/dictionaries/:id", async (req, res, next) => {
 app.patch("/api/dictionaries/settings", async (req, res, next) => {
   try {
     const settings = await dictionaryService.updateLookupSettings(req.body ?? {});
+    markMlIndexStale("Dictionary lookup settings changed.");
+    await saveState();
     res.json({ settings });
   } catch (error) {
     next(error);
@@ -3622,8 +3948,11 @@ app.get("/api/ml/index/status", async (req, res, next) => {
 
 app.post("/api/ml/index/rebuild", async (req, res, next) => {
   try {
-    const result = await mlService.rebuildIndex();
-    logLearningEvent("ml.index-rebuilt", { chunks: result.chunks, provider: result.provider });
+    await mlService.rebuildIndex();
+    markMlIndexFresh();
+    await saveState();
+    const result = await mlService.status();
+    logLearningEvent("ml.index-rebuilt", { chunks: result.chunks, provider: result.provider, embeddingProvider: result.embeddingProvider });
     res.json(result);
   } catch (error) {
     next(error);
@@ -3632,7 +3961,13 @@ app.post("/api/ml/index/rebuild", async (req, res, next) => {
 
 app.post("/api/search/semantic", async (req, res, next) => {
   try {
-    const result = await mlService.search(req.body.query, { limit: req.body.limit });
+    const result = await mlService.search(req.body.query, {
+      limit: req.body.limit,
+      readSafe: req.body.readSafe === true,
+      documentId: req.body.documentId ? String(req.body.documentId) : "",
+      currentPage: Number.isFinite(Number(req.body.currentPage)) ? Number(req.body.currentPage) : null,
+      scope: req.body.scope === "document" ? "document" : "library"
+    });
     logLearningEvent("search.semantic", { query: req.body.query, results: result.results.length });
     res.json(result);
   } catch (error) {
@@ -3642,7 +3977,11 @@ app.post("/api/search/semantic", async (req, res, next) => {
 
 app.post("/api/rag/ask", async (req, res, next) => {
   try {
-    const result = await mlService.ragAnswer(req.body.question);
+    const result = await mlService.ragAnswer(req.body.question, {
+      readSafe: req.body.readSafe !== false,
+      documentId: req.body.documentId ? String(req.body.documentId) : "",
+      currentPage: Number.isFinite(Number(req.body.currentPage)) ? Number(req.body.currentPage) : null
+    });
     logLearningEvent("rag.asked", { question: req.body.question, citations: result.citations.length });
     res.json(result);
   } catch (error) {
@@ -3661,10 +4000,17 @@ app.post("/api/reader/assistant", async (req, res, next) => {
     const analysis = await analyzeText(contextText);
     const termNotes = assistantTermNotes(analysis.tokens);
     const query = compactReaderContext(question, 700) || contextText.slice(0, 250);
-    const includeCitations = task !== "translate" && assistantWantsLocalCitations(question);
-    const searchResult = !includeCitations
+    const exposeCitations = task !== "translate" && assistantWantsLocalCitations(question);
+    const useRagContext = task === "recap" || exposeCitations;
+    const currentPage = Number(req.body.page) || 0;
+    const searchResult = !useRagContext
       ? { results: [], status: { ready: false, skipped: true } }
-      : await mlService.search(query, { limit: 6 });
+      : await mlService.search(query, {
+          limit: 6,
+          readSafe: true,
+          documentId: document?.id || "",
+          currentPage
+        });
     const citations = searchResult.results ?? [];
     let chat;
     try {
@@ -3679,8 +4025,8 @@ app.post("/api/reader/assistant", async (req, res, next) => {
           termNotes,
           citations,
           document,
-          page: Number(req.body.page) || 0,
-          includeCitations
+          page: currentPage,
+          includeCitations: useRagContext
         }),
         maxTokens: assistantMaxTokens(task, contextText),
         temperature: task === "translate" ? 0.1 : 0.25
@@ -3707,8 +4053,8 @@ app.post("/api/reader/assistant", async (req, res, next) => {
       question,
       answer,
       terms: termNotes,
-      citations: includeCitations ? citations : [],
-      includeCitations,
+      citations: exposeCitations ? citations : [],
+      includeCitations: exposeCitations,
       translation: task === "translate" ? {
         available: chat.available,
         translatedText: chat.text,
@@ -3724,7 +4070,7 @@ app.post("/api/reader/assistant", async (req, res, next) => {
       context: {
         documentId: document?.id || "",
         title: document?.title || "",
-        page: Number(req.body.page) || 0,
+        page: currentPage,
         source: "message"
       }
     };
@@ -3768,23 +4114,30 @@ app.post("/api/reader/assistant/stream", async (req, res, next) => {
     const analysis = await analyzeText(contextText);
     const termNotes = assistantTermNotes(analysis.tokens);
     const query = compactReaderContext(question, 700) || contextText.slice(0, 250);
-    const includeCitations = task !== "translate" && assistantWantsLocalCitations(question);
-    const searchResult = !includeCitations
+    const exposeCitations = task !== "translate" && assistantWantsLocalCitations(question);
+    const useRagContext = task === "recap" || exposeCitations;
+    const currentPage = Number(req.body.page) || 0;
+    const searchResult = !useRagContext
       ? { results: [], status: { ready: false, skipped: true } }
-      : await mlService.search(query, { limit: 6 });
+      : await mlService.search(query, {
+          limit: 6,
+          readSafe: true,
+          documentId: document?.id || "",
+          currentPage
+        });
     const citations = searchResult.results ?? [];
 
     writeAssistantStream(res, "meta", {
       task,
       intent: task,
-      includeCitations,
+      includeCitations: exposeCitations,
       terms: termNotes,
-      citations: includeCitations ? citations : [],
+      citations: exposeCitations ? citations : [],
       status: searchResult.status,
       context: {
         documentId: document?.id || "",
         title: document?.title || "",
-        page: Number(req.body.page) || 0,
+        page: currentPage,
         source: "message"
       }
     });
@@ -3802,8 +4155,8 @@ app.post("/api/reader/assistant/stream", async (req, res, next) => {
           termNotes,
           citations,
           document,
-          page: Number(req.body.page) || 0,
-          includeCitations
+          page: currentPage,
+          includeCitations: useRagContext
         }),
         maxTokens: assistantMaxTokens(task, contextText),
         temperature: task === "translate" ? 0.1 : 0.25,
@@ -3833,8 +4186,8 @@ app.post("/api/reader/assistant/stream", async (req, res, next) => {
       question,
       answer,
       terms: termNotes,
-      citations: includeCitations ? citations : [],
-      includeCitations,
+      citations: exposeCitations ? citations : [],
+      includeCitations: exposeCitations,
       ai: {
         available: chat.available,
         reason: chat.reason,
@@ -3844,7 +4197,7 @@ app.post("/api/reader/assistant/stream", async (req, res, next) => {
       context: {
         documentId: document?.id || "",
         title: document?.title || "",
-        page: Number(req.body.page) || 0,
+        page: currentPage,
         source: "message"
       }
     };
@@ -3875,6 +4228,8 @@ app.post("/api/anki/export-card", async (req, res, next) => {
       deckName: exported.deckName,
       modelName: exported.modelName
     });
+    markMlIndexStale("Anki export added mined-card source data.");
+    await saveState();
     res.status(201).json(exported);
   } catch (error) {
     next(error);

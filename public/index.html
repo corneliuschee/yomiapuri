@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Anki Kanji Reader</title>
+    <title>Yomiアプリ</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -11,38 +11,64 @@
       <aside id="sidebar" class="sidebar">
         <div class="side-head">
           <div class="brand">
-            <span class="brand-mark">AK</span>
-            <span>Anki Reader</span>
+            <span class="brand-mark">読</span>
+            <span class="brand-name">Yomiアプリ</span>
           </div>
-          <button id="collapse-sidebar" class="icon-button hamburger" type="button" title="Hide sidebar" aria-label="Hide sidebar">
-            <span></span><span></span><span></span>
+          <button id="collapse-sidebar" class="icon-button hamburger sidebar-toggle sidebar-toggle-left-close" type="button" title="Hide sidebar" aria-label="Hide sidebar">
+            <svg class="sidebar-toggle-svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path class="sidebar-toggle-rail" d="M8 8v8"/><path class="sidebar-toggle-arrow-open" d="m11 9 4 3-4 3"/><path class="sidebar-toggle-arrow-close" d="m14 9-4 3 4 3"/></svg>
           </button>
         </div>
 
         <nav class="nav-list" aria-label="App pages">
-          <button class="nav-item" type="button" data-page="books-page">Books</button>
-          <button class="nav-item active" type="button" data-page="reader-page">Reader</button>
-          <button class="nav-item" type="button" data-page="wordbank-page">Word Bank</button>
-          <button class="nav-item" type="button" data-page="insights-page">Insights</button>
-          <button class="nav-item" type="button" data-page="trash-page">Trash</button>
-          <button class="nav-item" type="button" data-page="integrations-page">Integrations</button>
+          <button class="nav-item active" type="button" data-page="books-page" title="Books" aria-label="Books">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5c2.3-.7 4.7-.4 7 1v12c-2.3-1.4-4.7-1.7-7-1V5.5Z"/><path d="M12 6.5c2.3-1.4 4.7-1.7 7-1v12c-2.3-.7-4.7-.4-7 1V6.5Z"/></svg>
+            <span class="nav-label">Books</span>
+          </button>
+          <button class="nav-item" type="button" data-page="wordbank-page" title="Word Bank" aria-label="Word Bank">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/><path d="M8 4v16"/></svg>
+            <span class="nav-label">Word Bank</span>
+          </button>
+          <button class="nav-item" type="button" data-page="insights-page" title="Insights" aria-label="Insights">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"/><path d="M4 19h16"/><path d="m7 15 4-4 3 3 5-7"/></svg>
+            <span class="nav-label">Insights</span>
+          </button>
+          <button class="nav-item" type="button" data-page="trash-page" title="Trash" aria-label="Trash">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14"/><path d="M9 7V5h6v2"/><path d="M8 10v8"/><path d="M12 10v8"/><path d="M16 10v8"/><path d="M7 7l1 14h8l1-14"/></svg>
+            <span class="nav-label">Trash</span>
+          </button>
+          <button class="nav-item" type="button" data-page="integrations-page" title="Integrations" aria-label="Integrations">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19 12h2"/><path d="M3 12h2"/><path d="m17 7 1.4-1.4"/><path d="M5.6 18.4 7 17"/><path d="m17 17 1.4 1.4"/><path d="M5.6 5.6 7 7"/></svg>
+            <span class="nav-label">Integrations</span>
+          </button>
         </nav>
+
+        <section id="reader-side-panel" class="reader-side-panel" aria-label="Reader navigation">
+          <div id="reader-side-book" class="reader-side-book"></div>
+          <div class="reader-side-tabs" role="tablist" aria-label="Reader sidebar">
+            <button class="reader-side-tab active" type="button" data-reader-side-tab="chapters">Content</button>
+            <button class="reader-side-tab" type="button" data-reader-side-tab="bookmarks">Bookmark</button>
+            <button class="reader-side-tab" type="button" data-reader-side-tab="search">Search</button>
+          </div>
+          <div id="reader-side-chapters" class="reader-side-list active"></div>
+          <div id="reader-side-bookmarks" class="reader-side-list"></div>
+          <div id="reader-side-search" class="reader-side-list reader-side-search"></div>
+        </section>
 
       </aside>
 
       <main class="main">
         <header class="topbar">
-          <button id="show-sidebar" class="icon-button hamburger hidden" type="button" title="Show sidebar" aria-label="Show sidebar">
-            <span></span><span></span><span></span>
+          <button id="show-sidebar" class="icon-button hamburger sidebar-toggle sidebar-toggle-left-open hidden" type="button" title="Show sidebar" aria-label="Show sidebar">
+            <svg class="sidebar-toggle-svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path class="sidebar-toggle-rail" d="M8 8v8"/><path class="sidebar-toggle-arrow-open" d="m11 9 4 3-4 3"/><path class="sidebar-toggle-arrow-close" d="m14 9-4 3 4 3"/></svg>
           </button>
           <div>
-            <p class="eyebrow" id="page-eyebrow">Reader</p>
-            <h1 id="page-title">Choose a book</h1>
+            <p class="eyebrow" id="page-eyebrow">Books</p>
+            <h1 id="page-title">Library</h1>
           </div>
           <div id="known-count" class="stat">0 known terms</div>
         </header>
 
-        <section id="books-page" class="page">
+        <section id="books-page" class="page active">
           <div class="library-toolbar">
             <form id="library-book-form" class="import-row">
               <label class="file-button">
@@ -59,7 +85,7 @@
           <div id="books-grid" class="books-grid"></div>
         </section>
 
-        <section id="reader-page" class="page active">
+        <section id="reader-page" class="page">
           <div class="reader-actions">
             <form id="book-form" class="import-row">
               <label class="file-button">
@@ -68,6 +94,12 @@
               </label>
             </form>
             <div class="reader-tools">
+              <button id="reader-sidebar-toggle" class="tool-button hamburger sidebar-toggle sidebar-toggle-left-open reader-sidebar-toggle" type="button" title="Show sidebar" aria-label="Show sidebar">
+                <svg class="sidebar-toggle-svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path class="sidebar-toggle-rail" d="M8 8v8"/><path class="sidebar-toggle-arrow-open" d="m11 9 4 3-4 3"/><path class="sidebar-toggle-arrow-close" d="m14 9-4 3 4 3"/></svg>
+              </button>
+              <button id="reader-library" class="tool-button icon-tool reader-library-button" type="button" title="Back to library" aria-label="Back to library">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+              </button>
               <button id="select-tool" class="tool-button icon-tool active" type="button" title="Select text" aria-label="Select text">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3 19 13l-7 1.5L8.5 21z"/><path d="m12 14.5 4 6"/></svg>
               </button>
@@ -89,7 +121,9 @@
               <button id="refresh-reader" class="tool-button icon-tool" type="button" title="Refresh reader page" aria-label="Refresh reader page">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-14.5-4L4 9"/><path d="M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 14.5 4L20 15"/><path d="M20 20v-5h-5"/></svg>
               </button>
-              <button id="bookmark-page" class="tool-button bookmark-button" type="button">Bookmark current page</button>
+              <button id="bookmark-page" class="tool-button icon-tool bookmark-button" type="button" title="Bookmark current page" aria-label="Bookmark current page">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5"/><path d="M5 17h14"/><path d="m7 3 1.5 8L5 17h14l-3.5-6L17 3z"/></svg>
+              </button>
               <span id="bookmark-feedback" class="tool-feedback" aria-live="polite"></span>
             </div>
             <label class="zoom-control" title="Reader zoom">
@@ -97,6 +131,9 @@
               <input id="reader-zoom" class="zoom-field" type="range" min="75" max="175" step="5" value="100" />
               <button id="toggle-zoom" class="tool-button icon-tool zoom-toggle" type="button" title="Show or hide zoom slider" aria-label="Show or hide zoom slider">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/><path d="M10.5 7.5v6"/><path d="M7.5 10.5h6"/></svg>
+              </button>
+              <button id="reader-ai-toggle" class="tool-button icon-tool reader-ai-toggle active" type="button" title="Open assistant" aria-label="Open assistant">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7.5A3.5 3.5 0 0 1 8.5 4h7A3.5 3.5 0 0 1 19 7.5v4A3.5 3.5 0 0 1 15.5 15H11l-4 4v-4.5A3.5 3.5 0 0 1 5 11z"/><path d="M9 8h6"/><path d="M9 11h4"/></svg>
               </button>
             </label>
             <div class="segmented">
@@ -112,25 +149,20 @@
             <aside id="chapter-panel" class="chapter-panel">
               <div id="chapter-resize-handle" class="chapter-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize reader side panel" tabindex="0"></div>
               <div class="chapter-panel-head">
-                <div class="panel-tabs" role="tablist" aria-label="Reader side panel">
-                  <button id="chapters-tab" class="panel-tab active" type="button" data-panel-tab="chapters">Chapters</button>
-                  <button id="bookmarks-tab" class="panel-tab" type="button" data-panel-tab="bookmarks">Bookmarks</button>
-                  <button id="assistant-tab" class="panel-tab" type="button" data-panel-tab="assistant">AI</button>
-                </div>
-                <button id="hide-chapters" class="icon-button hamburger" type="button" title="Hide chapters" aria-label="Hide chapters">
-                  <span></span><span></span><span></span>
+                <div class="panel-head-spacer" aria-hidden="true"></div>
+                <button id="hide-chapters" class="icon-button close-panel-button" type="button" title="Close assistant" aria-label="Close assistant">
+                  <svg class="close-panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10"/><path d="M17 7 7 17"/></svg>
                 </button>
               </div>
-              <div id="chapter-list" class="chapter-list panel-list active">
+              <div id="chapter-list" class="chapter-list panel-list">
                 <p class="empty">Open a book to show chapters.</p>
               </div>
               <div id="bookmark-list" class="bookmark-list panel-list">
                 <p class="empty">No bookmarks yet.</p>
               </div>
-              <div id="assistant-panel" class="assistant-panel panel-list">
-                <div id="reader-assistant-answer" class="reader-assistant-answer">
-                  <p class="empty">Send a message to the assistant.</p>
-                </div>
+              <div id="assistant-panel" class="assistant-panel panel-list active">
+                <p class="assistant-panel-placeholder">Ask about grammar, vocabulary, or story recap</p>
+                <div id="reader-assistant-answer" class="reader-assistant-answer"></div>
                 <form id="reader-assistant-form" class="reader-assistant-form">
                   <textarea id="reader-assistant-question" rows="3" placeholder="Message the assistant"></textarea>
                   <div class="assistant-composer-actions">
@@ -149,8 +181,8 @@
 
           <footer class="reader-footer">
             <div class="pager">
-              <button id="show-chapters" class="icon-button hamburger hidden" type="button" title="Show chapters" aria-label="Show chapters">
-                <span></span><span></span><span></span>
+              <button id="show-chapters" class="icon-button hamburger sidebar-toggle sidebar-toggle-right-open hidden" type="button" title="Show chapters" aria-label="Show chapters">
+                <svg class="sidebar-toggle-svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path class="sidebar-toggle-rail" d="M16 8v8"/><path class="sidebar-toggle-arrow" d="m13 9-4 3 4 3"/></svg>
               </button>
               <button id="prev-page" type="button" disabled>Previous</button>
               <button id="next-page" type="button" disabled>Next</button>

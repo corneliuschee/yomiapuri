@@ -39,6 +39,10 @@ try {
   await uploadFile("/api/dictionaries", "dictionary", readingAlignmentDictionaryPath);
   const imported = await uploadFile("/api/documents", "book", "samples/sample-novel.txt");
   const documentId = imported.document.id;
+  const ingestEvents = await readSse(`/api/documents/${documentId}/ingest-stream`);
+  assert(ingestEvents.some((event) => event.event === "progress"), "Document ingestion stream should report progress.");
+  assert(ingestEvents.some((event) => event.event === "done" && event.data.rebuilt === true), "Document ingestion should build a local cache on first open.");
+  await assertDocumentCacheCreated(documentId);
   const documentData = await getJson(`/api/documents/${documentId}`);
   const expressions = documentData.candidates.map((candidate) => candidate.expression);
 
@@ -50,6 +54,13 @@ try {
   const lookupDefinitions = lookup.entries.flatMap((entry) => entry.definitions ?? []);
   assert(!lookupDefinitions.some((definition) => definition.includes("â˜…") || definition.includes("â›¬")), "Noisy dictionary metadata should be filtered.");
   assert(!lookupDefinitions.some((definition) => definition.includes("★") || definition.includes("⛬")), "Unicode dictionary metadata should be filtered.");
+  const driftDictionaryPath = await writeDictionaryDriftFixture();
+  await uploadFile("/api/dictionaries", "dictionary", driftDictionaryPath);
+  const driftEvents = await readSse(`/api/documents/${documentId}/ingest-stream`);
+  assert(driftEvents.some((event) => event.event === "progress" && event.data.phase === "dictionary-stale"), "Dictionary drift should trigger dictionary-stale cache rebuild.");
+  assert(driftEvents.some((event) => event.event === "progress" && event.data.phase === "vector-index"), "Dictionary drift should rewrite the semantic index.");
+  const driftDone = driftEvents.find((event) => event.event === "done")?.data;
+  assert(driftDone?.indexStale === false, `Dictionary-stale ingestion should leave the semantic index fresh. Events: ${JSON.stringify(driftEvents)}`);
   const richLookup = await getJson(`/api/dictionary/lookup?term=${encodeURIComponent(smokeDictionaryTerm)}`);
   assert(richLookup.entries[0]?.dictionary, "Lookup should include dictionary labels.");
   assert(richLookup.frequencies[0]?.displayValue === "440", "Lookup should include frequency data.");
@@ -61,6 +72,12 @@ try {
   const compoundCandidate = readingAlignmentData.candidates.find((candidate) => candidate.expression === "\u5f8c\u8f2a");
   assert(compoundCandidate?.reading === "\u3053\u3046\u308a\u3093", "Sentence mining should use the same compound reading as reader furigana.");
   assert(readingAlignmentData.pages[0]?.html?.includes('data-base="\u5f8c\u8f2a" data-reading="\u3053\u3046\u308a\u3093"'), "Reader furigana should use the compound dictionary reading.");
+  const authorRubyNameDocumentPath = await writeAuthorRubyNameDocumentFixture();
+  const authorRubyNameImport = await uploadFile("/api/documents", "book", authorRubyNameDocumentPath);
+  const authorRubyNameData = await getJson(`/api/documents/${authorRubyNameImport.document.id}?candidates=1&page=0`);
+  const authorRubyNameHtml = authorRubyNameData.pages[0]?.html ?? "";
+  assert(authorRubyNameHtml.includes('class="author-ruby" data-author-ruby="true" data-base="\u5468" data-reading="\u3042\u307e\u306d"'), "Reader should preserve author-provided name ruby.");
+  assert(!authorRubyNameHtml.includes('<ruby data-base="\u5468"'), "Reader should not add generated ruby to later bare occurrences of author-ruby names.");
   const redirectedVerbCandidate = readingAlignmentData.candidates.find((candidate) => candidate.expression === "\u53d6\u308a\u4ed8\u3051\u308b");
   assert(redirectedVerbCandidate?.dictionaryForm === "\u53d6\u308a\u4ed8\u3051\u308b", "Sentence mining should canonicalize redirected verb forms.");
   assert(redirectedVerbCandidate?.reading === "\u3068\u308a\u3064\u3051\u308b", "Canonical redirected verb should use dictionary-form reading.");
@@ -99,6 +116,25 @@ async function getJson(route) {
   const response = await fetch(`${baseUrl}${route}`);
   if (!response.ok) throw new Error(`${route} failed with ${response.status}`);
   return response.json();
+}
+
+async function readSse(route) {
+  const response = await fetch(`${baseUrl}${route}`);
+  if (!response.ok) throw new Error(`${route} failed with ${response.status}`);
+  const text = await response.text();
+  return text
+    .split(/\n\n/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      let event = "message";
+      let data = "{}";
+      for (const line of block.split(/\r?\n/)) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        if (line.startsWith("data:")) data = line.slice(5).trim();
+      }
+      return { event, data: JSON.parse(data) };
+    });
 }
 
 async function postJson(route, body) {
@@ -189,9 +225,23 @@ async function writeReadingAlignmentDictionaryFixture() {
   return path.relative(rootDir, fixturePath);
 }
 
+async function writeDictionaryDriftFixture() {
+  const fixturePath = path.join(dataDir, "dictionary-drift.json");
+  await fs.writeFile(fixturePath, JSON.stringify([
+    ["\u8f9e\u66f8\u6f02\u6d41", "\u3058\u3057\u3087\u3072\u3087\u3046\u308a\u3085\u3046", "n", "", 0, ["dictionary drift fixture"]]
+  ]));
+  return path.relative(rootDir, fixturePath);
+}
+
 async function writeReadingAlignmentDocumentFixture() {
   const fixturePath = path.join(dataDir, "reading-alignment.txt");
   await fs.writeFile(fixturePath, "\u5f8c\u8f2a\u8107\u306b\u53d6\u308a\u3064\u3051\u3089\u308c\u3066\u3044\u308b\u3002", "utf8");
+  return path.relative(rootDir, fixturePath);
+}
+
+async function writeAuthorRubyNameDocumentFixture() {
+  const fixturePath = path.join(dataDir, "author-ruby-name.txt");
+  await fs.writeFile(fixturePath, "[[RUBY:%E5%91%A8|%E3%81%82%E3%81%BE%E3%81%AD]]\u306f\u6c17\u4ed8\u3044\u305f\u3002\u5468\u306e\u69d8\u5b50\u3092\u6307\u6458\u3057\u305f\u3002", "utf8");
   return path.relative(rootDir, fixturePath);
 }
 
@@ -199,6 +249,14 @@ async function assertWordCardCss() {
   const css = await fs.readFile(path.join(rootDir, "public/styles.css"), "utf8");
   assert(/\.word-row\s*\{[\s\S]*height:\s*124px;/.test(css), "Word cards should have a fixed height.");
   assert(/\.word-row p\s*\{[\s\S]*-webkit-line-clamp:\s*3;/.test(css), "Word card definitions should be line-clamped.");
+}
+
+async function assertDocumentCacheCreated(documentId) {
+  const cacheRoot = path.join(dataDir, "document-cache", documentId);
+  const manifest = JSON.parse(await fs.readFile(path.join(cacheRoot, "manifest.json"), "utf8"));
+  assert(manifest.documentId === documentId, "Document cache manifest should be written.");
+  const tokenFiles = await fs.readdir(path.join(cacheRoot, "tokens"));
+  assert(tokenFiles.length > 0, "Document token cache should contain token files.");
 }
 
 function assert(condition, message) {

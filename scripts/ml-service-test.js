@@ -18,6 +18,9 @@ const state = {
       blocks: [{ type: "text", text: "図書館へ行く。図書館で本を読む。山を見る。雪ノ下が来る。" }]
     }]
   }],
+  progress: {
+    "doc-1": { page: 4, percentage: 100, updatedAt: "2026-01-01T00:00:00.000Z" }
+  },
   knownTerms: ["行く"],
   cards: []
 };
@@ -83,7 +86,26 @@ assert.match(search.results[0].text, /図書館/);
 
 const rag = await service.ragAnswer("図書館はどこに出る?");
 assert.equal(rag.citations.length > 0, true);
-assert.match(rag.answer, /Relevant local evidence/);
+assert.match(rag.answer, /Retrieved local evidence/);
+
+const unreadState = {
+  ...state,
+  progress: {
+    "doc-1": { page: -1, percentage: 0, updatedAt: "2026-01-01T00:00:00.000Z" }
+  }
+};
+const unreadService = createMlService({
+  getState: () => unreadState,
+  vectorDir: path.join(tmp, "vector-index"),
+  eventLog,
+  analyzeText,
+  lookupDictionary,
+  normalizeJapaneseTerm,
+  hasJapaneseText,
+  hasKanji
+});
+const safeSearch = await unreadService.search("山を見る", { readSafe: true, limit: 5 });
+assert.equal(safeSearch.results.some((item) => /山/.test(item.text)), false);
 
 await fs.rm(tmp, { recursive: true, force: true });
 console.log("ML service test passed.");
