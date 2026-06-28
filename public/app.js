@@ -2,6 +2,7 @@ const state = {
   documents: [],
   dictionaries: [],
   dictionarySettings: { prefixWildcardSearch: false },
+  reader: { hideInferredReadableFurigana: false },
   media: { audio: { enabled: false, provider: "local-system-tts", voiceName: "", rate: 0 }, image: { enabled: false, provider: "local-mnemonic" } },
   mediaProviders: { voices: [], status: null },
   ai: { translation: { enabled: true, modelId: "sugoi-14b-ultra-q4-k-m" }, models: [] },
@@ -19,6 +20,8 @@ const state = {
   activeDocumentId: null,
   activeDocumentTitle: "",
   activeCandidates: [],
+  readabilitySuggestions: [],
+  dismissedReadableSuggestions: new Set(),
   pageCandidates: {},
   candidateRequestId: 0,
   activeHtml: "",
@@ -48,7 +51,7 @@ const state = {
   selectedTrashTerms: new Set(),
   currentPage: 0,
   voices: [],
-  ml: { analytics: null, indexStatus: null }
+  ml: { analytics: null, indexStatus: null, settings: { embeddingProviderId: "multilingual-e5-small" }, providers: [] }
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -116,6 +119,7 @@ const elements = {
   zoomLabel: $("#zoom-label"),
   toggleZoom: $("#toggle-zoom"),
   readerAiToggle: $("#reader-ai-toggle"),
+  hideInferredFurigana: $("#hide-inferred-furigana"),
   pageJumpForm: $("#page-jump-form"),
   pageJumpInput: $("#page-jump-input"),
   prevPage: $("#prev-page"),
@@ -131,6 +135,7 @@ const elements = {
   bookmarkPage: $("#bookmark-page"),
   bookmarkFeedback: $("#bookmark-feedback"),
   candidateList: $("#candidate-list"),
+  readableSuggestions: $("#readable-suggestions"),
   candidateTemplate: $("#candidate-template"),
   wordbankSearch: $("#wordbank-search"),
   wordbankSort: $("#wordbank-sort"),
@@ -144,12 +149,10 @@ const elements = {
   mlDocumentList: $("#ml-document-list"),
   mlRebuildIndex: $("#ml-rebuild-index"),
   mlIndexStatus: $("#ml-index-status"),
+  mlEmbeddingProvider: $("#ml-embedding-provider"),
   semanticSearchForm: $("#semantic-search-form"),
   semanticSearchInput: $("#semantic-search-input"),
   semanticSearchResults: $("#semantic-search-results"),
-  ragForm: $("#rag-form"),
-  ragQuestion: $("#rag-question"),
-  ragAnswer: $("#rag-answer"),
   trashBooksTab: $("#trash-books-tab"),
   trashWordsTab: $("#trash-words-tab"),
   trashRestoreWords: $("#trash-restore-words"),
@@ -250,6 +253,8 @@ async function loadState() {
   state.documents = snapshot.documents;
   state.dictionaries = snapshot.dictionaries ?? [];
   state.dictionarySettings = snapshot.dictionarySettings ?? { prefixWildcardSearch: false };
+  state.reader = snapshot.reader ?? state.reader;
+  if (elements.hideInferredFurigana) elements.hideInferredFurigana.checked = Boolean(state.reader.hideInferredReadableFurigana);
   state.wordbankCache.clear();
   state.cards = snapshot.cards ?? [];
   state.progress = snapshot.progress ?? {};
@@ -257,6 +262,7 @@ async function loadState() {
   state.anki = snapshot.anki;
   state.media = snapshot.media ?? state.media;
   state.ai = snapshot.ai ?? state.ai;
+  state.ml.settings = snapshot.ml ?? state.ml.settings;
   state.sync = snapshot.sync ?? state.sync;
   state.knownTermsCount = snapshot.knownTermsCount ?? 0;
   elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
@@ -710,6 +716,7 @@ async function openDocument(id) {
   }
   const documentData = await api(`/api/documents/${id}`);
   state.activeCandidates = documentData.candidates ?? [];
+  state.readabilitySuggestions = documentData.readabilitySuggestions ?? [];
   state.pageCandidates = {};
   
   state.activeChapters = documentData.chapters ?? [];
@@ -740,15 +747,29 @@ async function openDocument(id) {
   updateReaderToolbar();
   renderReader(documentData.progress);
   renderCandidates();
+  renderReadableSuggestions();
 }
 
 function renderReaderLoadStatus(label = "Loading book...", current = 0, total = 1) {
   const progress = total > 0 ? Math.max(0, Math.min(100, Math.round((Number(current) / Number(total)) * 100))) : 0;
+  const existing = elements.reader.querySelector(".reader-load-status");
+  if (existing) {
+    const labelNode = existing.querySelector("strong");
+    const track = existing.querySelector(".reader-load-track");
+    const fill = existing.querySelector(".reader-load-fill");
+    if (labelNode) labelNode.textContent = label;
+    if (track) track.setAttribute("aria-valuenow", String(progress));
+    if (fill) {
+      fill.style.width = `${progress}%`;
+      fill.style.transform = `scaleX(${progress / 100})`;
+    }
+    return;
+  }
   elements.reader.innerHTML = `
-    <div class="reader-load-status">
+    <div class="reader-load-status" aria-live="polite">
       <strong>${escapeHtml(label)}</strong>
       <div class="reader-load-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}">
-        <span style="width: ${progress}%"></span>
+        <span class="reader-load-fill" style="width: ${progress}%; transform: scaleX(${progress / 100})"></span>
       </div>
     </div>
   `;
@@ -820,8 +841,10 @@ async function loadDocumentCandidates(id, page = state.currentPage) {
     const documentData = await api(`/api/documents/${id}?candidates=1&page=${page}`);
     if (state.activeDocumentId !== id || state.currentPage !== page || requestId !== state.candidateRequestId) return;
     state.activeCandidates = documentData.candidates ?? [];
+    state.readabilitySuggestions = documentData.readabilitySuggestions ?? [];
     state.pageCandidates[key] = state.activeCandidates;
     renderCandidates();
+    renderReadableSuggestions();
   } catch (error) {
     if (state.activeDocumentId === id && requestId === state.candidateRequestId) elements.candidateList.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
   }
@@ -1458,10 +1481,11 @@ function renderCandidates() {
       const rank = document.createElement("div");
       rank.className = "candidate-rank";
       const badges = (candidate.rankBadges ?? []).slice(0, 4).map((badge) => `<span>${escapeHtml(badge)}</span>`).join("");
+      const readabilityBadge = candidate.readabilityStatus === "inferred-readable" ? `<span>readable ${Number(candidate.readabilityScore ?? 0)}</span>` : "";
       const reasons = candidate.rankReasons
         ? `Coverage ${candidate.rankReasons.knownCoverage}% - Unknown ${candidate.rankReasons.uniqueUnknown} - Recurs ${candidate.rankReasons.recurrence}`
         : "";
-      rank.innerHTML = `<strong>${Number(candidate.rankScore).toLocaleString()}</strong>${badges}<em>${escapeHtml(reasons)}</em>`;
+      rank.innerHTML = `<strong>${Number(candidate.rankScore).toLocaleString()}</strong>${badges}${readabilityBadge}<em>${escapeHtml(reasons)}</em>`;
       definition.after(rank);
     }
     const submitButton = node.querySelector(".candidate-actions button[type='submit']");
@@ -1482,6 +1506,88 @@ function renderCandidates() {
     });
     elements.candidateList.append(node);
   }
+}
+
+function renderReadableSuggestions() {
+  if (!elements.readableSuggestions) return;
+  const visible = (state.readabilitySuggestions ?? [])
+    .filter((item) => !state.dismissedReadableSuggestions.has(item.dictionaryForm || item.expression))
+    .slice(0, 12);
+  if (visible.length === 0) {
+    elements.readableSuggestions.innerHTML = `<p class="empty compact-empty">No inferred readable words on this page.</p>`;
+    return;
+  }
+  elements.readableSuggestions.innerHTML = visible.map((item) => {
+    const term = item.dictionaryForm || item.expression;
+    const reasons = (item.readabilityReasons ?? []).slice(0, 3).join(", ");
+    return `
+      <article class="readable-suggestion" data-term="${escapeHtml(term)}">
+        <div>
+          <strong>${escapeHtml(term)}</strong>
+          <span>${escapeHtml(item.reading || "")}</span>
+        </div>
+        <p>${Number(item.readabilityScore ?? 0)} - ${escapeHtml(reasons || "inferred readable")}</p>
+        <div>
+          <button class="readable-add" type="button">Add</button>
+          <button class="readable-anki" type="button">Anki</button>
+          <button class="readable-dismiss" type="button">Dismiss</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+  elements.readableSuggestions.querySelectorAll(".readable-add").forEach((button) => {
+    button.addEventListener("click", () => addReadableSuggestionToWordBank(button.closest(".readable-suggestion")?.dataset.term ?? ""));
+  });
+  elements.readableSuggestions.querySelectorAll(".readable-anki").forEach((button) => {
+    button.addEventListener("click", () => exportReadableSuggestion(button.closest(".readable-suggestion")?.dataset.term ?? ""));
+  });
+  elements.readableSuggestions.querySelectorAll(".readable-dismiss").forEach((button) => {
+    button.addEventListener("click", () => dismissReadableSuggestion(button.closest(".readable-suggestion")?.dataset.term ?? ""));
+  });
+}
+
+function readableSuggestionByTerm(term = "") {
+  return (state.readabilitySuggestions ?? []).find((item) => (item.dictionaryForm || item.expression) === term);
+}
+
+async function addReadableSuggestionToWordBank(term = "") {
+  const suggestion = readableSuggestionByTerm(term);
+  if (!suggestion) return;
+  const result = await api("/api/known-terms", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ term, source: "readable-suggestion", documentId: state.activeDocumentId })
+  });
+  state.knownTermsCount = result.total ?? state.knownTermsCount;
+  elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
+  state.wordbankCache.clear();
+  state.dismissedReadableSuggestions.add(term);
+  renderReadableSuggestions();
+  await refreshActiveDocumentForKnownTerms();
+}
+
+async function exportReadableSuggestion(term = "") {
+  const suggestion = readableSuggestionByTerm(term);
+  if (!suggestion) return;
+  await openAnkiPreview({
+    expression: suggestion.dictionaryForm || suggestion.expression,
+    surface: suggestion.surface,
+    dictionaryForm: suggestion.dictionaryForm || suggestion.expression,
+    reading: suggestion.reading,
+    sentence: currentReaderPageText(),
+    source: state.activeDocumentTitle || "Reader"
+  }, null);
+}
+
+async function dismissReadableSuggestion(term = "") {
+  if (!term) return;
+  state.dismissedReadableSuggestions.add(term);
+  renderReadableSuggestions();
+  await api("/api/reader/readable-suggestion/dismiss", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ term, documentId: state.activeDocumentId })
+  }).catch(() => {});
 }
 
 async function openAnkiPreview(candidate, node) {
@@ -1814,16 +1920,30 @@ async function loadInsights() {
   elements.mlMetrics.innerHTML = `<p class="empty">Loading analytics...</p>`;
   elements.mlDocumentList.innerHTML = "";
   try {
-    const [analytics, indexStatus] = await Promise.all([
+    const [analytics, indexStatus, providers] = await Promise.all([
       api("/api/ml/analytics"),
-      api("/api/ml/index/status")
+      api("/api/ml/index/status"),
+      api("/api/ml/providers")
     ]);
     state.ml.analytics = analytics;
     state.ml.indexStatus = indexStatus;
+    state.ml.providers = providers.models ?? [];
+    state.ml.settings = providers.settings ?? state.ml.settings;
+    renderMlProviderSelect();
     renderInsights(analytics, indexStatus);
   } catch (error) {
     elements.mlMetrics.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
   }
+}
+
+function renderMlProviderSelect() {
+  if (!elements.mlEmbeddingProvider) return;
+  const models = state.ml.providers ?? [];
+  elements.mlEmbeddingProvider.innerHTML = models.map((model) => {
+    const suffix = model.runtime === "builtin" ? "fallback" : model.quality === "high" ? "high quality" : model.recommended ? "recommended" : "";
+    return `<option value="${escapeHtml(model.id)}">${escapeHtml(model.label)}${suffix ? ` (${escapeHtml(suffix)})` : ""}</option>`;
+  }).join("");
+  elements.mlEmbeddingProvider.value = state.ml.settings?.embeddingProviderId || "multilingual-e5-small";
 }
 
 function renderInsights(analytics, indexStatus) {
@@ -1846,11 +1966,19 @@ function renderMlIndexStatus(status = {}) {
   const rebuilt = status.rebuiltAt ? new Date(status.rebuiltAt).toLocaleString() : "Never";
   const provider = status.embeddingProviderLabel || status.embeddingProvider || status.provider || "lancedb";
   const dimensions = status.embeddingDimensions ? ` - ${Number(status.embeddingDimensions).toLocaleString()}d` : "";
+  const device = status.embeddingDevice ? ` - ${escapeHtml(status.embeddingDevice)}` : "";
+  const vectorCounts = Number.isFinite(Number(status.embeddedVectors)) || Number.isFinite(Number(status.reusedVectors))
+    ? ` - ${Number(status.embeddedVectors ?? 0).toLocaleString()} new / ${Number(status.reusedVectors ?? 0).toLocaleString()} reused`
+    : "";
   const staleReason = status.stale && status.staleReason ? `<em>${escapeHtml(status.staleReason)}</em>` : "";
+  const embeddingError = String(status.embeddingError || "");
+  const visibleEmbeddingError = embeddingError.includes("cache_dir") && embeddingError.includes("deprecated") ? "" : embeddingError;
+  const fallback = status.embeddingFallback && visibleEmbeddingError ? `<em>Embedding fallback active: ${escapeHtml(visibleEmbeddingError)}</em>` : "";
   elements.mlIndexStatus.innerHTML = `
     <strong>${escapeHtml(ready)}</strong>
-    <span>${Number(status.chunks ?? 0).toLocaleString()} chunks - ${escapeHtml(provider)}${escapeHtml(dimensions)} - rebuilt ${escapeHtml(rebuilt)}</span>
+    <span>${Number(status.chunks ?? 0).toLocaleString()} chunks - ${escapeHtml(provider)}${escapeHtml(dimensions)}${device}${vectorCounts} - rebuilt ${escapeHtml(rebuilt)}</span>
     ${staleReason}
+    ${fallback}
   `;
 }
 
@@ -1890,6 +2018,24 @@ async function rebuildMlIndex() {
   }
 }
 
+async function updateMlEmbeddingProvider() {
+  if (!elements.mlEmbeddingProvider) return;
+  const embeddingProviderId = elements.mlEmbeddingProvider.value;
+  state.ml.settings = { ...(state.ml.settings ?? {}), embeddingProviderId };
+  try {
+    const result = await api("/api/ml/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ embeddingProviderId })
+    });
+    state.ml.settings = result.settings ?? state.ml.settings;
+    state.ml.indexStatus = result.status ?? state.ml.indexStatus;
+    renderMlIndexStatus(state.ml.indexStatus ?? {});
+  } catch (error) {
+    elements.mlIndexStatus.textContent = error.message;
+  }
+}
+
 async function runSemanticSearch(event) {
   event.preventDefault();
   const query = elements.semanticSearchInput.value.trim();
@@ -1904,27 +2050,6 @@ async function runSemanticSearch(event) {
     renderMlResults(elements.semanticSearchResults, result.results ?? []);
   } catch (error) {
     elements.semanticSearchResults.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
-  }
-}
-
-async function askRag(event) {
-  event.preventDefault();
-  const question = elements.ragQuestion.value.trim();
-  if (!question) return;
-  elements.ragAnswer.innerHTML = `<p class="empty">Retrieving local evidence...</p>`;
-  try {
-    const result = await api("/api/rag/ask", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question })
-    });
-    const citations = result.citations ?? [];
-    elements.ragAnswer.innerHTML = `
-      <div class="ml-answer">${escapeHtml(result.answer ?? "").replace(/\n/g, "<br>")}</div>
-      ${citations.length ? `<div class="ml-citations">${citationRows(citations)}</div>` : ""}
-    `;
-  } catch (error) {
-    elements.ragAnswer.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -2418,9 +2543,8 @@ function renderDictionaries() {
       <button class="dictionary-drag-handle" type="button" title="Drag to reorder" aria-label="Drag ${escapeHtml(dictionary.name)} to reorder">
         <span></span><span></span><span></span>
       </button>
-      <label class="switch" title="Show this dictionary in reader lookup">
+      <label class="dictionary-check" title="Show this dictionary in reader lookup">
         <input data-dictionary-toggle="${escapeHtml(dictionary.id)}" type="checkbox"${dictionary.enabledForLookup ? " checked" : ""} />
-        <span></span>
       </label>
       <button class="dictionary-delete" data-dictionary-delete="${escapeHtml(dictionary.id)}" type="button" title="Delete dictionary" aria-label="Delete ${escapeHtml(dictionary.name)}">×</button>
       <div class="dictionary-main">
@@ -3888,8 +4012,12 @@ function renderDictionaryLookup(term, result, preview = null) {
   const selectedIsKana = /[\u3040-\u30ff]/u.test(selectedTerm) && !/[\u3400-\u9fff]/u.test(selectedTerm);
   const headerReading = selectedIsKana ? "" : primary?.readings?.[0] ?? "";
   const headerTerm = selectedTerm || primary?.term || "";
+  const readability = result.readability ?? {};
   const frequencyHtml = frequencies.length > 0
     ? `<div class="lookup-frequency">${frequencies.map((item) => `<span><b>${escapeHtml(shortDictionaryName(item.dictionary))}</b> ${escapeHtml(item.displayValue)}</span>`).join("")}</div>`
+    : "";
+  const readabilityHtml = readability.status === "inferred-readable"
+    ? `<div class="lookup-readability"><strong>Readable ${Number(readability.score ?? 0)}</strong><span>${escapeHtml((readability.reasons ?? []).join(", ") || "inferred readable")}</span></div>`
     : "";
   const knownTerm = result.knownTerm?.exists ? result.knownTerm.term : "";
   const hasAnkiNote = Boolean(result.knownTerm?.hasAnkiNote);
@@ -3929,6 +4057,7 @@ function renderDictionaryLookup(term, result, preview = null) {
       </div>
     </div>
     ${frequencyHtml}
+    ${readabilityHtml}
     ${entriesHtml}
   `;
   elements.dictionaryLookup.querySelector(".lookup-add-card")?.addEventListener("click", async (event) => {
@@ -4215,8 +4344,8 @@ elements.readerSidebarToggle?.addEventListener("click", () => {
 elements.readerLibrary?.addEventListener("click", () => setPage("books-page"));
 elements.refreshInsights?.addEventListener("click", loadInsights);
 elements.mlRebuildIndex?.addEventListener("click", rebuildMlIndex);
+elements.mlEmbeddingProvider?.addEventListener("change", updateMlEmbeddingProvider);
 elements.semanticSearchForm?.addEventListener("submit", runSemanticSearch);
-elements.ragForm?.addEventListener("submit", askRag);
 elements.readerAssistantForm?.addEventListener("submit", askReaderAssistant);
 elements.readerAssistantQuestion?.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
@@ -4333,6 +4462,23 @@ elements.eraserTool.addEventListener("click", () => {
 elements.undoHighlight.addEventListener("click", undoHighlightChange);
 elements.redoHighlight.addEventListener("click", redoHighlightChange);
 elements.refreshReader?.addEventListener("click", refreshReaderPage);
+elements.hideInferredFurigana?.addEventListener("change", async () => {
+  const checked = Boolean(elements.hideInferredFurigana.checked);
+  state.reader.hideInferredReadableFurigana = checked;
+  try {
+    const result = await api("/api/reader/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hideInferredReadableFurigana: checked })
+    });
+    state.reader = result.reader ?? state.reader;
+    if (state.activeDocumentId) await refreshActiveDocumentForKnownTerms();
+  } catch (error) {
+    state.reader.hideInferredReadableFurigana = !checked;
+    elements.hideInferredFurigana.checked = !checked;
+    elements.bookmarkFeedback.textContent = error.message;
+  }
+});
 elements.bookmarkPage.addEventListener("click", bookmarkCurrentPage);
 elements.reader.addEventListener("mousedown", (event) => {
   if (!state.activeDocumentId || !event.shiftKey) return;

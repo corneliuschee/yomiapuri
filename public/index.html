@@ -200,6 +200,10 @@
 
           <details class="drawer" id="mining-drawer">
             <summary>Sentence mining candidates</summary>
+            <section class="readable-suggestions-wrap">
+              <div class="drawer-subhead">Readable suggestions</div>
+              <div id="readable-suggestions" class="readable-suggestions"></div>
+            </section>
             <div id="candidate-list" class="candidate-list"></div>
           </details>
         </section>
@@ -252,33 +256,22 @@
             <section class="page-card">
               <div class="page-card-head">
                 <div>
-                  <h2>Semantic Index <span class="help-dot" tabindex="0" data-tooltip="A rebuildable local LanceDB search index made from your imported book sentences and mined Anki cards. Rebuild after importing new books or many new cards.">?</span></h2>
-                  <p>Rebuildable local LanceDB index for search and cited retrieval.</p>
+                  <h2>Semantic Index <span class="help-dot" tabindex="0" data-tooltip="A rebuildable local LanceDB search index made from your imported book text. Rebuild after importing new books or changing the embedding model.">?</span></h2>
+                  <p>Rebuildable local LanceDB index for book-text search and reader retrieval.</p>
                 </div>
-                <button id="ml-rebuild-index" type="button">Rebuild index</button><span class="help-dot" tabindex="0" data-tooltip="Recreates the local vector/search index from current books and mined cards. This can take a short while for large libraries.">?</span>
+                <button id="ml-rebuild-index" type="button">Rebuild index</button><span class="help-dot" tabindex="0" data-tooltip="Recreates the local vector/search index from current books. Unchanged chunks reuse cached vectors where possible.">?</span>
               </div>
               <div id="ml-index-status" class="meta-box">Index status not loaded.</div>
+              <label class="ml-provider-row">
+                Embedding model
+                <select id="ml-embedding-provider"></select>
+              </label>
               <form id="semantic-search-form" class="ml-search-form">
-                <input id="semantic-search-input" type="search" placeholder="Search your books and mined cards" />
+                <input id="semantic-search-input" type="search" placeholder="Search for phrase/vocab" />
                 <button type="submit">Search</button>
-                <span class="help-dot" tabindex="0" data-tooltip="Finds relevant local sentences/cards using hybrid retrieval: exact Japanese text matching plus local vector similarity.">?</span>
+                <span class="help-dot" tabindex="0" data-tooltip="Finds relevant local book text using hybrid retrieval: exact Japanese text matching plus local vector similarity.">?</span>
               </form>
               <div id="semantic-search-results" class="ml-results"></div>
-            </section>
-
-            <section class="page-card">
-              <div class="page-card-head">
-                <div>
-                  <h2>Cited Study Assistant <span class="help-dot" tabindex="0" data-tooltip="Retrieves relevant local evidence for your question and shows citations. It is a RAG foundation, not a full LLM answer generator yet.">?</span></h2>
-                  <p>Answers are grounded in retrieved local sentences.</p>
-                </div>
-              </div>
-              <form id="rag-form" class="ml-search-form">
-                <input id="rag-question" type="search" placeholder="Ask about a word, sentence, or recap" />
-                <button type="submit">Ask</button>
-                <span class="help-dot" tabindex="0" data-tooltip="Use this to ask for examples, sentence evidence, or recaps from indexed local books/cards. Answers show the retrieved source text.">?</span>
-              </form>
-              <div id="rag-answer" class="ml-results"></div>
             </section>
           </div>
         </section>
@@ -462,8 +455,12 @@
                   <input id="instant-anki-toggle" type="checkbox" />
                   Instant Anki export
                 </label>
+                <label class="toggle-row" title="Hide generated furigana for vocabulary the app predicts is readable from your Word Bank, known kanji, and enabled frequency dictionaries. Author-provided ruby stays visible.">
+                  <input id="hide-inferred-furigana" type="checkbox" />
+                  Hide inferred readable furigana
+                </label>
               </div>
-              <p class="dictionary-help">Switches control which dictionaries appear in reader lookup. Order controls lookup priority and frequency badge order.</p>
+              <p class="dictionary-help">Switches control reader lookup dictionaries and inferred furigana behavior. Order controls lookup priority and frequency badge order.</p>
               <form id="dictionary-form" class="stack">
                 <input name="name" type="text" placeholder="Dictionary name" />
                 <label class="file-button wide">

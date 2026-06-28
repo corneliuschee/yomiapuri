@@ -7,6 +7,7 @@ const HASH_VECTOR_DIMENSIONS = 128;
 const MAX_INDEX_SENTENCES_PER_DOCUMENT = 2500;
 const MAX_ANALYTICS_CHARS = 120000;
 const READER_PAGE_CHAR_LIMIT = 850;
+const VECTOR_CACHE_FILE = "vector-cache.json";
 
 export function createHashEmbeddingProvider() {
   return {
@@ -15,6 +16,9 @@ export function createHashEmbeddingProvider() {
     dimensions: HASH_VECTOR_DIMENSIONS,
     async embed(text = "") {
       return hashEmbedText(text);
+    },
+    async embedMany(texts = []) {
+      return texts.map((text) => hashEmbedText(text));
     }
   };
 }
@@ -52,12 +56,14 @@ export function createMlService({
       hasKanji
     });
     const chunks = [];
-    for (const chunk of sourceChunks) {
-      chunks.push({
-        ...chunk,
-        vector: await embeddingProvider.embed(`${chunk.title}\n${chunk.chapterTitle}\n${chunk.text}`)
-      });
+    const texts = sourceChunks.map((chunk) => `${chunk.title}\n${chunk.chapterTitle}\n${chunk.text}`);
+    const targetInfo = typeof embeddingProvider.configuredInfo === "function" ? embeddingProvider.configuredInfo() : embeddingInfo();
+    const vectorCache = await readVectorCache(vectorDir);
+    const { vectors, reused, embedded } = await vectorsForChunks(sourceChunks, texts, vectorCache, targetInfo);
+    for (const [index, chunk] of sourceChunks.entries()) {
+      chunks.push({ ...chunk, vector: vectors[index] });
     }
+    let runtimeInfo = embeddingInfo();
 
     const db = await lancedb.connect(vectorDir);
     const vectorRows = chunks.map(encodeChunkForVectorTable);
@@ -78,24 +84,77 @@ export function createMlService({
         dictionaryForms: [],
         mined: false,
         readAtIndex: false,
-        vector: await embeddingProvider.embed("")
+        vector: await embeddingProvider.embed("", { providerId: runtimeInfo.id })
       }], { mode: "overwrite" });
+      runtimeInfo = embeddingInfo();
     }
 
     indexStatus = {
       provider: "lancedb",
-      embeddingProvider: embeddingProvider.id,
-      embeddingProviderLabel: embeddingProvider.label,
-      embeddingDimensions: embeddingProvider.dimensions,
+      embeddingProvider: runtimeInfo.id,
+      embeddingProviderLabel: runtimeInfo.label,
+      embeddingDimensions: runtimeInfo.dimensions,
+      embeddingDevice: runtimeInfo.device || "",
+      embeddingFallback: Boolean(runtimeInfo.fallback),
+      embeddingError: runtimeInfo.error || "",
       vectorDir,
       ready: true,
       chunks: chunks.length,
+      reusedVectors: reused,
+      embeddedVectors: embedded,
       rebuiltAt: new Date().toISOString(),
       error: ""
     };
     await fs.writeFile(path.join(vectorDir, "chunks.json"), JSON.stringify(chunks.map(({ vector, ...chunk }) => chunk)), "utf8");
+    await writeVectorCache(vectorDir, chunks, texts, runtimeInfo);
     await fs.writeFile(path.join(vectorDir, "status.json"), JSON.stringify(indexStatus, null, 2), "utf8");
     return withRuntimeStatus(indexStatus);
+  }
+
+  async function vectorsForChunks(sourceChunks, texts, vectorCache, targetInfo) {
+    const vectors = new Array(sourceChunks.length);
+    const missing = [];
+    let reused = 0;
+    const targetProvider = targetInfo.id;
+    const targetDimensions = Number(targetInfo.dimensions) || 0;
+
+    sourceChunks.forEach((chunk, index) => {
+      const cacheEntry = vectorCache.get(chunk.id);
+      const hash = chunkContentHash(texts[index]);
+      if (
+        cacheEntry
+        && cacheEntry.hash === hash
+        && cacheEntry.embeddingProvider === targetProvider
+        && Number(cacheEntry.embeddingDimensions) === targetDimensions
+        && Array.isArray(cacheEntry.vector)
+        && cacheEntry.vector.length === targetDimensions
+      ) {
+        vectors[index] = cacheEntry.vector;
+        reused += 1;
+      } else {
+        missing.push({ index, text: texts[index] });
+      }
+    });
+
+    if (missing.length === 0) return { vectors, reused, embedded: 0 };
+
+    const missingTexts = missing.map((item) => item.text);
+    const missingVectors = typeof embeddingProvider.embedMany === "function"
+      ? await embeddingProvider.embedMany(missingTexts)
+      : await Promise.all(missingTexts.map((text) => embeddingProvider.embed(text)));
+    let runtimeInfo = embeddingInfo();
+
+    if (runtimeInfo.id !== targetProvider || Number(runtimeInfo.dimensions) !== targetDimensions) {
+      const allVectors = typeof embeddingProvider.embedMany === "function"
+        ? await embeddingProvider.embedMany(texts, { providerId: runtimeInfo.id })
+        : await Promise.all(texts.map((text) => embeddingProvider.embed(text, { providerId: runtimeInfo.id })));
+      return { vectors: allVectors, reused: 0, embedded: allVectors.length };
+    }
+
+    for (const [offset, item] of missing.entries()) {
+      vectors[item.index] = missingVectors[offset];
+    }
+    return { vectors, reused, embedded: missing.length };
   }
 
   async function status() {
@@ -126,9 +185,10 @@ export function createMlService({
     const db = await lancedb.connect(vectorDir);
     const table = await db.openTable("chunks");
     const resultLimit = Math.max(1, Math.min(20, Number(limit) || 8));
+    const queryVariants = await queryVariantsForSearch(normalizedQuery, { analyzeText, normalizeJapaneseTerm });
     const [vectorRows, lexicalRows] = await Promise.all([
-      table.search(await embeddingProvider.embed(normalizedQuery)).limit(Math.max(resultLimit * 6, 30)).toArray(),
-      lexicalSearch(normalizedQuery, vectorDir, resultLimit * 6)
+      vectorSearch(table, normalizedQuery, currentStatus, resultLimit * 6),
+      lexicalSearch(normalizedQuery, queryVariants, vectorDir, resultLimit * 8)
     ]);
 
     const byId = new Map();
@@ -154,13 +214,13 @@ export function createMlService({
       .filter((row) => includeCards || row.type !== "card")
       .filter((row) => scope !== "document" || !documentId || row.documentId === documentId)
       .filter((row) => !readSafe || isChunkReadSafe(row, state, { documentId, currentPage }))
-      .sort((a, b) => retrievalScore(b, normalizedQuery, { documentId, currentPage }) - retrievalScore(a, normalizedQuery, { documentId, currentPage }))
+      .sort((a, b) => retrievalScore(b, normalizedQuery, { documentId, currentPage, queryVariants }) - retrievalScore(a, normalizedQuery, { documentId, currentPage, queryVariants }))
       .filter(uniqueSearchResult())
       .slice(0, resultLimit);
 
     return {
       query: normalizedQuery,
-      results: rows.map((row) => publicSearchResult(row, normalizedQuery, { documentId, currentPage }, state)),
+      results: rows.map((row) => publicSearchResult(row, normalizedQuery, { documentId, currentPage, queryVariants }, state)),
       status: currentStatus
     };
   }
@@ -281,14 +341,51 @@ export function createMlService({
 
   function withRuntimeStatus(statusValue = {}) {
     const mlState = getState().ml ?? {};
+    const runtimeInfo = embeddingInfo();
+    const storedProvider = statusValue.embeddingProvider || runtimeInfo.id;
+    const storedDimensions = statusValue.embeddingDimensions || runtimeInfo.dimensions;
+    const providerMismatch = Boolean(statusValue.ready && storedProvider && runtimeInfo.id && storedProvider !== runtimeInfo.id);
+    const dimensionMismatch = Boolean(
+      statusValue.ready
+      && storedDimensions
+      && runtimeInfo.dimensions
+      && Number(storedDimensions) !== Number(runtimeInfo.dimensions)
+    );
+    const stale = Boolean(mlState.indexStale || providerMismatch || dimensionMismatch);
+    const staleReason = mlState.indexStaleReason
+      || (providerMismatch ? `Embedding model changed from ${storedProvider} to ${runtimeInfo.id}.` : "")
+      || (dimensionMismatch ? "Embedding vector dimensions changed." : "");
     return {
       ...statusValue,
-      embeddingProvider: statusValue.embeddingProvider || embeddingProvider.id,
-      embeddingProviderLabel: statusValue.embeddingProviderLabel || embeddingProvider.label,
-      embeddingDimensions: statusValue.embeddingDimensions || embeddingProvider.dimensions,
-      stale: Boolean(mlState.indexStale),
-      staleReason: mlState.indexStaleReason || ""
+      embeddingProvider: storedProvider,
+      embeddingProviderLabel: statusValue.embeddingProviderLabel || runtimeInfo.label,
+      embeddingDimensions: storedDimensions,
+      embeddingDevice: statusValue.embeddingDevice || runtimeInfo.device || "",
+      embeddingFallback: Boolean(statusValue.embeddingFallback ?? runtimeInfo.fallback),
+      embeddingError: statusValue.embeddingError || runtimeInfo.error || "",
+      stale,
+      staleReason
     };
+  }
+
+  function embeddingInfo() {
+    return typeof embeddingProvider.info === "function"
+      ? embeddingProvider.info()
+      : {
+          id: embeddingProvider.id,
+          label: embeddingProvider.label,
+          dimensions: embeddingProvider.dimensions
+        };
+  }
+
+  async function vectorSearch(table, query, currentStatus, limit) {
+    try {
+      const vector = await embeddingProvider.embed(query, { providerId: currentStatus.embeddingProvider });
+      if (currentStatus.embeddingDimensions && vector.length !== Number(currentStatus.embeddingDimensions)) return [];
+      return await table.search(vector).limit(Math.max(limit, 30)).toArray();
+    } catch {
+      return [];
+    }
   }
 
   return { rebuildIndex, status, search, ragAnswer, analytics, rankCandidates };
@@ -300,8 +397,41 @@ async function buildChunks(state, context) {
     const documentChunks = await buildDocumentChunks(document, state, context);
     chunks.push(...documentChunks.slice(0, MAX_INDEX_SENTENCES_PER_DOCUMENT));
   }
-  chunks.push(...buildCardChunks(state, context.normalizeJapaneseTerm));
   return chunks;
+}
+
+async function readVectorCache(vectorDir) {
+  try {
+    const raw = await fs.readFile(path.join(vectorDir, VECTOR_CACHE_FILE), "utf8");
+    const parsed = JSON.parse(raw);
+    const entries = Array.isArray(parsed?.entries) ? parsed.entries : Array.isArray(parsed) ? parsed : [];
+    return new Map(entries.filter((entry) => entry?.id).map((entry) => [entry.id, entry]));
+  } catch {
+    return new Map();
+  }
+}
+
+async function writeVectorCache(vectorDir, chunks, texts, runtimeInfo) {
+  const entries = chunks
+    .map((chunk, index) => ({
+      id: chunk.id,
+      hash: chunkContentHash(texts[index]),
+      embeddingProvider: runtimeInfo.id,
+      embeddingDimensions: runtimeInfo.dimensions,
+      vector: chunk.vector
+    }))
+    .filter((entry) => Array.isArray(entry.vector) && entry.vector.length === Number(runtimeInfo.dimensions));
+  await fs.writeFile(path.join(vectorDir, VECTOR_CACHE_FILE), JSON.stringify({
+    version: 1,
+    embeddingProvider: runtimeInfo.id,
+    embeddingDimensions: runtimeInfo.dimensions,
+    updatedAt: new Date().toISOString(),
+    entries
+  }), "utf8");
+}
+
+function chunkContentHash(text = "") {
+  return createHash("sha256").update(String(text ?? ""), "utf8").digest("hex");
 }
 
 async function buildDocumentChunks(document, state, context) {
@@ -393,32 +523,6 @@ async function createTextChunk({ document, chapterId, chapterTitle, page, type, 
     mined: minedSentences.has(context.normalizeJapaneseTerm(text)),
     readAtIndex: isChunkReadSafe({ documentId: document.id, page, type }, state, {})
   };
-}
-
-function buildCardChunks(state, normalizeJapaneseTerm) {
-  const chunks = [];
-  for (const card of state.cards ?? []) {
-    const text = [card.expression, card.reading, card.meaning, card.sentence].filter(Boolean).join(" - ");
-    const clean = cleanChunkText(text);
-    if (!clean) continue;
-    chunks.push({
-      id: createChunkId(card.id || card.ankiNoteId || "", "card", 0, clean),
-      documentId: card.documentId || "",
-      title: card.source || "Anki card",
-      chapterId: "",
-      chapterTitle: "Mined cards",
-      page: 0,
-      text: clean,
-      type: "card",
-      knownCoverage: 100,
-      terms: [card.expression, card.dictionaryForm].map(normalizeJapaneseTerm).filter(Boolean),
-      dictionaryForms: [card.dictionaryForm || card.expression].map(normalizeJapaneseTerm).filter(Boolean),
-      dictionaryMatches: [],
-      mined: true,
-      readAtIndex: true
-    });
-  }
-  return chunks;
 }
 
 function chapterVirtualPages(blocks = []) {
@@ -571,12 +675,29 @@ function hashEmbedText(text = "") {
   return vector.map((value) => value / length);
 }
 
-async function lexicalSearch(query = "", vectorDir, limit = 20) {
+async function queryVariantsForSearch(query = "", context = {}) {
+  const variants = new Set([String(query ?? "").normalize("NFKC").trim()].filter(Boolean));
+  for (const term of queryTermsForLexical(query)) variants.add(context.normalizeJapaneseTerm?.(term) ?? term);
+  try {
+    const analysis = await safeAnalyzeText(context.analyzeText, query);
+    for (const token of analysis.tokens ?? []) {
+      for (const value of [token.surface, token.base, token.dictionaryForm]) {
+        const normalized = context.normalizeJapaneseTerm?.(value ?? "") ?? String(value ?? "").normalize("NFKC").trim();
+        if (usefulQueryTerm(normalized)) variants.add(normalized);
+      }
+    }
+  } catch {
+    // Query analysis is best-effort; exact lexical search still runs without it.
+  }
+  return [...variants].filter(Boolean);
+}
+
+async function lexicalSearch(query = "", queryVariants = [], vectorDir, limit = 20) {
   try {
     const raw = await fs.readFile(path.join(vectorDir, "chunks.json"), "utf8");
     const chunks = JSON.parse(raw);
     return chunks
-      .map((chunk) => ({ ...chunk, lexicalScore: lexicalScore(query, chunk.text, chunk) }))
+      .map((chunk) => ({ ...chunk, lexicalScore: lexicalScore(query, queryVariants, chunk.text, chunk) }))
       .filter((chunk) => chunk.lexicalScore > 0)
       .sort((a, b) => b.lexicalScore - a.lexicalScore)
       .slice(0, limit);
@@ -585,18 +706,19 @@ async function lexicalSearch(query = "", vectorDir, limit = 20) {
   }
 }
 
-function lexicalScore(query = "", text = "", chunk = {}) {
+function lexicalScore(query = "", queryVariants = [], text = "", chunk = {}) {
   const normalizedQuery = String(query ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, "");
   const normalizedText = String(text ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, "");
   if (!normalizedQuery || !normalizedText) return 0;
   const terms = [
     normalizedQuery,
-    ...queryTermsForLexical(normalizedQuery),
-    ...arrayFromPossiblyLanceList(chunk.dictionaryForms),
-    ...arrayFromPossiblyLanceList(chunk.terms)
-  ].filter(Boolean);
+    ...queryVariants,
+    ...queryTermsForLexical(normalizedQuery)
+  ].map((term) => String(term ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, "")).filter(Boolean);
   const termScores = terms.map((term) => lexicalScoreTerm(term, normalizedText));
-  return Math.max(...termScores);
+  const dictionaryForms = new Set(arrayFromPossiblyLanceList(chunk.dictionaryForms).map((term) => String(term).normalize("NFKC").toLowerCase().replace(/\s+/g, "")));
+  const termMatches = terms.some((term) => dictionaryForms.has(term));
+  return Math.max(...termScores, termMatches ? 12 : 0);
 }
 
 function lexicalScoreTerm(term = "", normalizedText = "") {
@@ -620,6 +742,14 @@ function retrievalScore(row = {}, query = "", options = {}) {
   const normalizedText = String(row.text ?? "").normalize("NFKC").replace(/\s+/g, "");
   const normalizedQuery = String(query ?? "").normalize("NFKC").replace(/\s+/g, "");
   if (normalizedQuery && normalizedText.includes(normalizedQuery)) score += 12;
+  const variants = (options.queryVariants ?? []).map((term) => String(term ?? "").normalize("NFKC").replace(/\s+/g, "")).filter(Boolean);
+  const dictionaryForms = new Set(arrayFromPossiblyLanceList(row.dictionaryForms).map((term) => String(term).normalize("NFKC").replace(/\s+/g, "")));
+  const terms = new Set(arrayFromPossiblyLanceList(row.terms).map((term) => String(term).normalize("NFKC").replace(/\s+/g, "")));
+  for (const variant of variants) {
+    if (variant && normalizedText.includes(variant)) score += 8 + Math.min(8, variant.length);
+    if (dictionaryForms.has(variant)) score += 10;
+    if (terms.has(variant)) score += 6;
+  }
   if (options.documentId && row.documentId === options.documentId) score += 3;
   if (Number.isFinite(Number(options.currentPage)) && Number.isFinite(Number(row.page))) {
     const distance = Math.abs(Number(row.page) - Number(options.currentPage));

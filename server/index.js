@@ -12,9 +12,10 @@ import { createAnkiService } from "./anki-service.js";
 import { createAnkiLauncher, detectAnkiExecutablePath } from "./anki-launcher.js";
 import { createAiService, defaultAiSettings, normalizeAiSettings } from "./ai-service.js";
 import { createDictionaryService, repairDictionaryState } from "./dictionary-service.js";
+import { createRuntimeEmbeddingProvider, defaultMlSettings, EMBEDDING_MODELS, normalizeMlSettings, publicMlSettings } from "./embedding-providers.js";
 import { createJsonStateStore } from "./json-state-store.js";
 import { createLearningEventLog } from "./learning-events.js";
-import { createMlService } from "./ml-service.js";
+import { createHashEmbeddingProvider, createMlService } from "./ml-service.js";
 import { createLocalMediaProvider, defaultMediaSettings, normalizeMediaSettings } from "./media-providers.js";
 import { createSyncService, defaultSyncSettings, normalizeSyncSettings, publicSyncSettings } from "./sync-service.js";
 
@@ -71,13 +72,13 @@ const initialState = {
   dictionarySettings: {
     prefixWildcardSearch: false
   },
+  reader: {
+    hideInferredReadableFurigana: false
+  },
   media: defaultMediaSettings(),
   ai: defaultAiSettings(),
   sync: defaultSyncSettings(),
-  ml: {
-    indexStale: false,
-    indexStaleReason: ""
-  },
+  ml: defaultMlSettings(),
   progress: {},
   cards: [],
   anki: {
@@ -115,6 +116,9 @@ let saveStateQueue = Promise.resolve();
 const documentResponseCache = new Map();
 let learnedVariantCacheKey = "";
 let learnedVariantCache = null;
+let readabilityContextCacheKey = "";
+let readabilityContextCacheExpires = 0;
+let readabilityContextCache = null;
 const normalizationDictionaryCache = new Map();
 const readerTokenCache = new Map();
 let normalizationDictionarySignatureCache = "";
@@ -151,6 +155,12 @@ const dictionaryService = createDictionaryService({
   crypto
 });
 const eventLog = createLearningEventLog({ eventsPath });
+const embeddingProvider = createRuntimeEmbeddingProvider({
+  getState: () => state,
+  rootDir,
+  dataDir,
+  hashProvider: createHashEmbeddingProvider()
+});
 const syncService = createSyncService({
   getState: () => state,
   saveState,
@@ -166,7 +176,8 @@ const mlService = createMlService({
   lookupDictionary,
   normalizeJapaneseTerm,
   hasJapaneseText,
-  hasKanji
+  hasKanji,
+  embeddingProvider
 });
 const ankiLauncher = createAnkiLauncher();
 const ankiService = createAnkiService({
@@ -219,13 +230,14 @@ async function loadState() {
     knownTerms: [],
     ...(state.trash ?? {})
   };
+  state.reader = {
+    ...structuredClone(initialState.reader),
+    ...(state.reader ?? {})
+  };
   state.media = normalizeMediaSettings(state.media);
   state.ai = normalizeAiSettings(state.ai);
   state.sync = normalizeSyncSettings(state.sync);
-  state.ml = {
-    ...structuredClone(initialState.ml),
-    ...(state.ml ?? {})
-  };
+  state.ml = normalizeMlSettings(state.ml);
   if (repairDictionaryState(state, { normalizeJapaneseTerm })) repaired = true;
   const legacyBaseTime = Date.parse("2020-01-01T00:00:00.000Z");
   for (const [index, term] of state.knownTerms.entries()) {
@@ -565,6 +577,7 @@ function documentCacheKey(document) {
     document.id,
     document.updatedAt ?? document.createdAt ?? "",
     dictionaryNormalizationSignature(),
+    state.reader?.hideInferredReadableFurigana ? "hide-inferred" : "show-inferred",
     state.knownTerms.length,
     state.knownTerms.join("\u0001"),
     state.dictionaries.length
@@ -573,6 +586,12 @@ function documentCacheKey(document) {
 
 function clearDocumentCache() {
   documentResponseCache.clear();
+}
+
+function invalidateReadabilityContext() {
+  readabilityContextCacheKey = "";
+  readabilityContextCacheExpires = 0;
+  readabilityContextCache = null;
 }
 
 function markMlIndexStale(reason = "Source data changed. Rebuild the local index.") {
@@ -1619,6 +1638,22 @@ function compactReaderContext(value = "", limit = 5000) {
     .slice(0, limit);
 }
 
+function compactRetrievedSnippet(value = "", limit = 500) {
+  const text = compactReaderContext(value, Math.max(limit * 2, limit + 100));
+  if (text.length <= limit) return text;
+  const boundary = [...text.slice(0, limit + 1).matchAll(/[\u3002\uff01\uff1f!?」』]/g)].at(-1);
+  const cut = boundary && boundary.index > Math.floor(limit * 0.35)
+    ? boundary.index + boundary[0].length
+    : limit;
+  return text.slice(0, cut).replace(/[\u300c\u300e\s]+$/g, "").trim();
+}
+
+function hasUsableRetrievedSnippet(value = "") {
+  const text = compactReaderContext(value, 120);
+  const meaningful = text.replace(/[\s\u3000\u300c\u300d\u300e\u300f"'.,;:!?()\[\]{}<>-]/g, "");
+  return meaningful.length >= 4 && hasJapaneseText(meaningful);
+}
+
 function assistantTermNotes(tokens = []) {
   const notes = [];
   const seen = new Set();
@@ -1639,6 +1674,130 @@ function assistantTermNotes(tokens = []) {
     if (notes.length >= 10) break;
   }
   return notes;
+}
+
+const authorRubyNameNotesCache = new Map();
+
+function assistantNameReadingNotes({ document, question = "", contextText = "", citations = [] } = {}) {
+  const documentNotes = authorRubyReadingMapForDocument(document);
+  if (documentNotes.size === 0) return [];
+  const haystack = normalizeJapaneseTerm([
+    question,
+    contextText,
+    ...citations.map((item) => item?.text ?? "")
+  ].join("\n"));
+  const notes = [];
+  for (const [surface, readings] of documentNotes.entries()) {
+    if (haystack && !haystack.includes(surface)) continue;
+    const reading = mostCommonReading(readings);
+    const romaji = hiraganaToRomaji(reading);
+    if (!reading || !romaji) continue;
+    notes.push({ surface, reading, romaji });
+    if (notes.length >= 12) break;
+  }
+  return notes;
+}
+
+function authorRubyReadingMapForDocument(document = {}) {
+  const documentId = String(document?.id ?? "");
+  const text = String(document?.text ?? "");
+  if (!documentId || !text) return new Map();
+  const cacheKey = `${documentId}:${text.length}`;
+  if (authorRubyNameNotesCache.has(cacheKey)) return authorRubyNameNotesCache.get(cacheKey);
+
+  const readingsBySurface = new Map();
+  const markerPattern = /\[\[RUBY:([^|]*)\|([^\]]*)\]\]/g;
+  for (const match of text.matchAll(markerPattern)) {
+    const surface = normalizeJapaneseTerm(safeDecodeURIComponent(match[1] ?? ""));
+    const reading = katakanaToHiragana(normalizeJapaneseTerm(safeDecodeURIComponent(match[2] ?? "")));
+    if (!isAssistantNameReadingCandidate(surface, reading)) continue;
+    if (!readingsBySurface.has(surface)) readingsBySurface.set(surface, new Map());
+    const readings = readingsBySurface.get(surface);
+    readings.set(reading, (readings.get(reading) ?? 0) + 1);
+  }
+
+  authorRubyNameNotesCache.set(cacheKey, readingsBySurface);
+  if (authorRubyNameNotesCache.size > 12) authorRubyNameNotesCache.delete(authorRubyNameNotesCache.keys().next().value);
+  return readingsBySurface;
+}
+
+function safeDecodeURIComponent(value = "") {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function isAssistantNameReadingCandidate(surface = "", reading = "") {
+  return Boolean(
+    surface &&
+    reading &&
+    hasKanji(surface) &&
+    surface.length <= 6 &&
+    reading.length <= 12 &&
+    /^[\u3040-\u309fー]+$/u.test(reading)
+  );
+}
+
+function mostCommonReading(readings = new Map()) {
+  return [...readings.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)[0]?.[0] ?? "";
+}
+
+const HIRAGANA_ROMAJI_DIGRAPHS = new Map(Object.entries({
+  "\u304d\u3083": "kya", "\u304d\u3085": "kyu", "\u304d\u3087": "kyo",
+  "\u304e\u3083": "gya", "\u304e\u3085": "gyu", "\u304e\u3087": "gyo",
+  "\u3057\u3083": "sha", "\u3057\u3085": "shu", "\u3057\u3087": "sho",
+  "\u3058\u3083": "ja", "\u3058\u3085": "ju", "\u3058\u3087": "jo",
+  "\u3061\u3083": "cha", "\u3061\u3085": "chu", "\u3061\u3087": "cho",
+  "\u306b\u3083": "nya", "\u306b\u3085": "nyu", "\u306b\u3087": "nyo",
+  "\u3072\u3083": "hya", "\u3072\u3085": "hyu", "\u3072\u3087": "hyo",
+  "\u3073\u3083": "bya", "\u3073\u3085": "byu", "\u3073\u3087": "byo",
+  "\u3074\u3083": "pya", "\u3074\u3085": "pyu", "\u3074\u3087": "pyo",
+  "\u307f\u3083": "mya", "\u307f\u3085": "myu", "\u307f\u3087": "myo",
+  "\u308a\u3083": "rya", "\u308a\u3085": "ryu", "\u308a\u3087": "ryo"
+}));
+
+const HIRAGANA_ROMAJI = new Map(Object.entries({
+  "\u3042": "a", "\u3044": "i", "\u3046": "u", "\u3048": "e", "\u304a": "o",
+  "\u304b": "ka", "\u304d": "ki", "\u304f": "ku", "\u3051": "ke", "\u3053": "ko",
+  "\u3055": "sa", "\u3057": "shi", "\u3059": "su", "\u305b": "se", "\u305d": "so",
+  "\u305f": "ta", "\u3061": "chi", "\u3064": "tsu", "\u3066": "te", "\u3068": "to",
+  "\u306a": "na", "\u306b": "ni", "\u306c": "nu", "\u306d": "ne", "\u306e": "no",
+  "\u306f": "ha", "\u3072": "hi", "\u3075": "fu", "\u3078": "he", "\u307b": "ho",
+  "\u307e": "ma", "\u307f": "mi", "\u3080": "mu", "\u3081": "me", "\u3082": "mo",
+  "\u3084": "ya", "\u3086": "yu", "\u3088": "yo",
+  "\u3089": "ra", "\u308a": "ri", "\u308b": "ru", "\u308c": "re", "\u308d": "ro",
+  "\u308f": "wa", "\u3092": "o", "\u3093": "n",
+  "\u304c": "ga", "\u304e": "gi", "\u3050": "gu", "\u3052": "ge", "\u3054": "go",
+  "\u3056": "za", "\u3058": "ji", "\u305a": "zu", "\u305c": "ze", "\u305e": "zo",
+  "\u3060": "da", "\u3062": "ji", "\u3065": "zu", "\u3067": "de", "\u3069": "do",
+  "\u3070": "ba", "\u3073": "bi", "\u3076": "bu", "\u3079": "be", "\u307c": "bo",
+  "\u3071": "pa", "\u3074": "pi", "\u3077": "pu", "\u307a": "pe", "\u307d": "po",
+  "\u3041": "a", "\u3043": "i", "\u3045": "u", "\u3047": "e", "\u3049": "o"
+}));
+
+function hiraganaToRomaji(value = "") {
+  const chars = [...katakanaToHiragana(String(value ?? "").replace(/ー/g, ""))];
+  let output = "";
+  let geminate = false;
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index];
+    if (char === "\u3063") {
+      geminate = true;
+      continue;
+    }
+    const pair = `${char}${chars[index + 1] ?? ""}`;
+    let roman = HIRAGANA_ROMAJI_DIGRAPHS.get(pair);
+    if (roman) index += 1;
+    else roman = HIRAGANA_ROMAJI.get(char) ?? "";
+    if (!roman) continue;
+    if (geminate && /^[bcdfghjklmnpqrstvwxyz]/.test(roman)) roman = `${roman[0]}${roman}`;
+    geminate = false;
+    output += roman;
+  }
+  return output ? `${output[0].toUpperCase()}${output.slice(1)}` : "";
 }
 
 function assistantResponseText(task, { contextText, question, termNotes, citations, document, translation }) {
@@ -1702,6 +1861,109 @@ function assistantWantsLocalCitations(value = "") {
     || /他の本|引用|出典|根拠|似た例|似ている文/.test(String(value ?? ""));
 }
 
+function assistantWantsExplicitCitations(value = "") {
+  const lower = String(value ?? "").toLowerCase();
+  return /\b(citation|citations|source|sources|evidence|quote|quotes|passage|passages)\b/.test(lower)
+    || /å¼•ç”¨|å‡ºå…¸|æ ¹æ‹ /.test(String(value ?? ""));
+}
+
+function assistantWantsLocalRetrieval(value = "") {
+  const lower = String(value ?? "").toLowerCase();
+  return assistantWantsExplicitCitations(value)
+    || /\b(search|find|look for|where else|examples?|other examples?|other books?|my library|app'?s library|this app|local library|library|similar examples?|similar sentences?|cross[- ]book|rag|appears?|occurs?|show me)\b/.test(lower);
+}
+
+function assistantWantsExamples(value = "") {
+  const lower = String(value ?? "").toLowerCase();
+  return /\b(search|find|look for|where else|examples?|other examples?|similar examples?|similar sentences?|show me)\b/.test(lower);
+}
+
+const ASSISTANT_REVERSE_DEFINITION_STOPWORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "among",
+  "another",
+  "app",
+  "book",
+  "books",
+  "example",
+  "examples",
+  "find",
+  "given",
+  "library",
+  "local",
+  "other",
+  "search",
+  "sentence",
+  "sentences",
+  "show",
+  "that",
+  "this",
+  "where",
+  "with",
+  "your"
+]);
+const assistantReverseDefinitionCache = new Map();
+
+function assistantRetrievalQuery(question = "", contextText = "", history = []) {
+  const previousUser = previousUserMessage(history);
+  const current = compactReaderContext(question, 700);
+  const previous = compactReaderContext(previousUser, 700);
+  const combined = previous && assistantFollowupNeedsPreviousQuestion(current)
+    ? `${previous}\n${current}`
+    : current;
+  const reverseTerms = reverseDictionaryTermsForAssistantQuery(combined);
+  const expanded = reverseTerms.length ? `${combined}\n${reverseTerms.join(" ")}` : combined;
+  return compactReaderContext(expanded, 900) || contextText.slice(0, 250);
+}
+
+function assistantFollowupNeedsPreviousQuestion(value = "") {
+  const lower = String(value ?? "").toLowerCase();
+  return lower.length < 160 && /\b(this|that|it|app'?s library|this app|library|yes|yeah|among|those|them|previous|above)\b/.test(lower);
+}
+
+function reverseDictionaryTermsForAssistantQuery(query = "") {
+  const anchors = englishDefinitionAnchors(query);
+  if (anchors.length === 0) return [];
+  const dictionarySignature = state.dictionaries
+    .filter((dictionary) => dictionary.type === "term" && dictionary.enabledForLookup)
+    .map((dictionary) => `${dictionary.id}:${dictionary.entries?.length ?? 0}:${dictionary.sortOrder ?? 0}`)
+    .join("|");
+  const cacheKey = `${dictionarySignature}\u0000${anchors.join("|")}`;
+  if (assistantReverseDefinitionCache.has(cacheKey)) return assistantReverseDefinitionCache.get(cacheKey);
+
+  const scored = new Map();
+  for (const dictionary of state.dictionaries.filter((item) => item.type === "term" && item.enabledForLookup).sort((a, b) => Number(a.sortOrder) - Number(b.sortOrder))) {
+    for (const entry of dictionary.entries ?? []) {
+      const term = normalizeJapaneseTerm(entry.term ?? "");
+      if (!term || !hasJapaneseText(term)) continue;
+      const definitions = Array.isArray(entry.definitions) ? entry.definitions : [];
+      const details = Array.isArray(entry.details) ? entry.details : [];
+      const text = [...definitions, ...details].join(" ").toLowerCase();
+      if (!text) continue;
+      const score = anchors.reduce((total, anchor) => total + (text.includes(anchor) ? 1 : 0), 0);
+      if (score <= 0) continue;
+      const existing = scored.get(term) ?? 0;
+      scored.set(term, Math.max(existing, score));
+    }
+  }
+  const terms = [...scored.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)
+    .slice(0, 12)
+    .map(([term]) => term);
+  assistantReverseDefinitionCache.set(cacheKey, terms);
+  if (assistantReverseDefinitionCache.size > 50) assistantReverseDefinitionCache.delete(assistantReverseDefinitionCache.keys().next().value);
+  return terms;
+}
+
+function englishDefinitionAnchors(query = "") {
+  return [...new Set(String(query ?? "").toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? [])]
+    .map((word) => word.replace(/^'+|'+$/g, ""))
+    .filter((word) => word.length >= 4 && !ASSISTANT_REVERSE_DEFINITION_STOPWORDS.has(word))
+    .slice(0, 4);
+}
+
 function looksLikeJapanesePassage(value = "") {
   const text = String(value ?? "").trim();
   if (!hasJapaneseText(text)) return false;
@@ -1736,8 +1998,12 @@ function previousUserMessage(history = []) {
   return "";
 }
 
-function assistantContextMessage({ intent, question, contextText, history = [], termNotes, citations, document, page, includeCitations = false }) {
+function assistantContextMessage({ intent, question, contextText, history = [], termNotes, nameNotes = [], citations, document, page, includeRetrievedContext = false, includeCitations = false, exampleSearch = false }) {
   const lines = [
+    "You are running inside Yomiã‚¢ãƒ—ãƒª, a local Japanese reading app.",
+    `The app library currently contains ${state.documents.length} imported book${state.documents.length === 1 ? "" : "s"}.`,
+    "When the user says my library, this app's library, other books, examples, search, or similar, they mean this local app library and its indexed book text.",
+    "If local retrieved context is provided below, you have access to those app search results. Do not claim you cannot access the user's library.",
     `Intent: ${intent}`,
     `Current book: ${document?.title || "unknown"}`,
     `Current page: ${Number(page) + 1 || "unknown"}`
@@ -1752,6 +2018,9 @@ function assistantContextMessage({ intent, question, contextText, history = [], 
   if (intent === "recap") {
     lines.push("Use only already-read or supplied local context. Avoid spoilers.");
   }
+  if (exampleSearch) {
+    lines.push("The user is asking for examples from the indexed app library. Use only the local retrieved app-library context below. Answer with up to four complete examples copied from that context, then one short reason each is similar. Do not invent dialogue. Do not output a standalone opening quote or incomplete quote as an example. If the retrieved context does not contain a usable match, say: No matching indexed examples were found.");
+  }
   if (contextText && intent !== "translate") {
     lines.push(`Reader context:\n${compactReaderContext(contextText, 900)}`);
   }
@@ -1761,26 +2030,41 @@ function assistantContextMessage({ intent, question, contextText, history = [], 
       return `- ${term.term}${term.reading ? ` (${term.reading})` : ""}: ${meaning}`;
     }).join("\n")}`);
   }
-  if (includeCitations && citations.length) {
-    lines.push(`Local retrieved context for grounding only. Do not mention citations, sources, passages, or book/page labels unless the user explicitly asked for them:\n${citations.slice(0, 6).map((item, index) => {
-      const label = `${item.title || "Untitled"}${item.chapterTitle ? `, ${item.chapterTitle}` : ""}${item.page ? `, page ${Number(item.page) + 1}` : ""}`;
-      return `${index + 1}. ${label}: ${compactReaderContext(item.text, 320)}`;
+  if (nameNotes.length) {
+    lines.push(`Author ruby/name reading notes from the current book. These override common kanji readings when romanizing character names:\n${nameNotes.slice(0, 12).map((note) => {
+      return `- ${note.surface}: ${note.reading} -> ${note.romaji}`;
     }).join("\n")}`);
   }
-  return compactReaderContext(lines.join("\n\n"), 2600);
+  if (includeRetrievedContext && citations.length) {
+    const usableCitations = citations.filter((item) => hasUsableRetrievedSnippet(item.text)).slice(0, 6);
+    const snippetLimit = exampleSearch ? 700 : 420;
+    if (!usableCitations.length) {
+      lines.push("Local retrieved app-library context: no usable indexed matches were found for this query. Say that no matching indexed examples were found instead of claiming you cannot access the library.");
+    } else {
+      lines.push(`Local retrieved app-library context for grounding. Use these book-text matches to answer search/example/library questions. Do not mention citations, sources, passages, or book/page labels unless the user explicitly asked for them:\n${usableCitations.map((item, index) => {
+      const label = `${item.title || "Untitled"}${item.chapterTitle ? `, ${item.chapterTitle}` : ""}${item.page ? `, page ${Number(item.page) + 1}` : ""}`;
+      return `${index + 1}. ${label}: ${compactRetrievedSnippet(item.text, snippetLimit)}`;
+      }).join("\n")}`);
+    }
+  } else if (includeRetrievedContext) {
+    lines.push("Local retrieved app-library context: no indexed matches were found for this query. Say that no matching indexed examples were found instead of claiming you cannot access the library.");
+  }
+  return compactReaderContext(lines.join("\n\n"), exampleSearch ? 4200 : 2600);
 }
 
-function buildAssistantMessages({ intent, question, contextText, history, termNotes, citations, document, page, includeCitations = false }) {
+function buildAssistantMessages({ intent, question, contextText, history, termNotes, nameNotes = [], citations, document, page, includeRetrievedContext = false, includeCitations = false, exampleSearch = false }) {
   const messages = [];
-  const context = assistantContextMessage({ intent, question, contextText, history, termNotes, citations, document, page, includeCitations });
+  const context = assistantContextMessage({ intent, question, contextText, history, termNotes, nameNotes, citations, document, page, includeRetrievedContext, includeCitations, exampleSearch });
   if (context) messages.push({ role: "user", content: `App-provided context for this turn:\n${context}` });
   messages.push(...normalizeAssistantHistory(history));
   messages.push({ role: "user", content: question });
   return messages;
 }
 
-function assistantMaxTokens(intent, contextText = "") {
+function assistantMaxTokens(intent, contextText = "", options = {}) {
   if (intent === "translate") return Math.max(96, Math.min(768, Math.ceil(String(contextText).length * 1.8) + 64));
+  if (options.exampleSearch) return 768;
+  if (options.useRagContext) return 640;
   if (intent === "explain") return 448;
   if (intent === "recap") return 512;
   return 512;
@@ -2074,6 +2358,9 @@ async function analyzeTextLegacy(text = "") {
         dictionaryForm: token.dictionaryForm || token.base,
         reading: token.dictionaryReading || token.reading,
         partOfSpeech: token.pos,
+        readabilityStatus: token.readabilityStatus,
+        readabilityScore: token.readabilityScore,
+        readabilityReasons: token.readabilityReasons ?? [],
         sentence: token.sentence
       });
     }
@@ -2103,6 +2390,9 @@ async function analyzeText(text = "") {
         dictionaryForm: token.dictionaryForm || token.base,
         reading: token.dictionaryReading || token.reading,
         partOfSpeech: token.pos,
+        readabilityStatus: token.readabilityStatus,
+        readabilityScore: token.readabilityScore,
+        readabilityReasons: token.readabilityReasons ?? [],
         sentence: token.sentence
       });
     }
@@ -2217,13 +2507,25 @@ function tokenToHtml(token) {
   if (token.html) return token.html;
   const normalizedReading = primaryReading(token.displayReading || token.reading || token.dictionaryReading || "");
   const normalizedBase = token.dictionaryForm || token.base || token.surface;
+  const readabilityAttrs = readabilityDataAttributes(token);
   if (!token.eligible || !normalizedReading) {
     if (hasJapaneseText(token.surface) && token.pos !== "\u8a18\u53f7") {
-      return `<span class="lookup-token" data-base="${escapeHtml(normalizedBase)}" data-reading="${escapeHtml(normalizedReading)}">${escapeHtml(token.surface)}</span>`;
+      return `<span class="lookup-token" data-base="${escapeHtml(normalizedBase)}" data-reading="${escapeHtml(normalizedReading)}"${readabilityAttrs}>${escapeHtml(token.surface)}</span>`;
     }
     return escapeHtml(token.surface);
   }
-  return `<ruby data-base="${escapeHtml(normalizedBase)}" data-reading="${escapeHtml(normalizedReading)}">${escapeHtml(token.surface)}<rt>${escapeHtml(normalizedReading)}</rt></ruby>`;
+  return `<ruby data-base="${escapeHtml(normalizedBase)}" data-reading="${escapeHtml(normalizedReading)}"${readabilityAttrs}>${escapeHtml(token.surface)}<rt>${escapeHtml(normalizedReading)}</rt></ruby>`;
+}
+
+function readabilityDataAttributes(token = {}) {
+  const status = token.readabilityStatus || "";
+  if (!status) return "";
+  const reasons = Array.isArray(token.readabilityReasons) ? token.readabilityReasons.join(", ") : "";
+  return [
+    ` data-readability-status="${escapeHtml(status)}"`,
+    ` data-readability-score="${escapeHtml(String(token.readabilityScore ?? 0))}"`,
+    reasons ? ` data-readability-reasons="${escapeHtml(reasons)}"` : ""
+  ].join("");
 }
 
 function primaryReading(reading = "") {
@@ -2326,6 +2628,149 @@ function canonicalDictionaryMatch(terms = []) {
 
 function learnedByTokenVariants(token = {}, known = learnedSet()) {
   return tokenLookupVariants(token).some((term) => known.has(term));
+}
+
+function knownKanjiSet() {
+  const kanji = new Set();
+  for (const term of state.knownTerms.map(normalizeJapaneseTerm).filter(Boolean)) {
+    for (const char of term) {
+      if (hasKanji(char)) kanji.add(char);
+    }
+  }
+  return kanji;
+}
+
+async function readabilityScoringContext() {
+  const key = [
+    state.knownTerms.map(normalizeJapaneseTerm).sort().join("\u0000"),
+    dictionaryNormalizationSignature(),
+    state.cards.length
+  ].join("\u0002");
+  const now = Date.now();
+  if (readabilityContextCache && readabilityContextCacheKey === key && readabilityContextCacheExpires > now) return readabilityContextCache;
+  const events = await eventLog.recent(1000).catch(() => []);
+  const lookupCounts = new Map();
+  const exportCounts = new Map();
+  for (const event of events) {
+    const term = normalizeJapaneseTerm(event.payload?.term || event.payload?.dictionaryForm || event.payload?.expression || "");
+    if (!term) continue;
+    if (event.type === "lookup.performed") lookupCounts.set(term, (lookupCounts.get(term) ?? 0) + 1);
+    if (event.type === "anki.exported") exportCounts.set(term, (exportCounts.get(term) ?? 0) + 1);
+  }
+  readabilityContextCacheKey = key;
+  readabilityContextCacheExpires = now + 10000;
+  readabilityContextCache = {
+    knownKanji: knownKanjiSet(),
+    lookupCounts,
+    exportCounts,
+    lookupCache: new Map(),
+    hideInferredReadableFurigana: Boolean(state.reader?.hideInferredReadableFurigana)
+  };
+  return readabilityContextCache;
+}
+
+function readabilityLookupForToken(token = {}, context = {}) {
+  const variants = tokenLookupVariants(token).filter(Boolean);
+  const cacheKey = variants.join("\u0001");
+  if (context.lookupCache?.has(cacheKey)) return context.lookupCache.get(cacheKey);
+  const merged = { entries: [], frequencies: [] };
+  const seenEntries = new Set();
+  const seenFrequencies = new Set();
+  for (const term of variants) {
+    const result = dictionaryService.lookup(term);
+    for (const entry of result.entries ?? []) {
+      const key = `${entry.dictionaryId}\u0001${entry.term}\u0001${entry.reading}`;
+      if (seenEntries.has(key)) continue;
+      seenEntries.add(key);
+      merged.entries.push(entry);
+    }
+    for (const frequency of result.frequencies ?? []) {
+      const key = `${frequency.dictionaryId}\u0001${frequency.displayValue}\u0001${frequency.value}`;
+      if (seenFrequencies.has(key)) continue;
+      seenFrequencies.add(key);
+      merged.frequencies.push(frequency);
+    }
+  }
+  context.lookupCache?.set(cacheKey, merged);
+  return merged;
+}
+
+function scoreTokenReadability(token = {}, learned = false, context = {}) {
+  if (token.authorRuby || token.authorRubyProtected) {
+    return { status: "known", score: 100, reasons: ["author ruby"] };
+  }
+  if (learned) return { status: "known", score: 100, reasons: ["word bank"] };
+  const surface = normalizeJapaneseTerm(token.surface ?? "");
+  if (!surface || !hasKanji(surface) || token.pos === "\u8a18\u53f7") return { status: "unknown", score: 0, reasons: [] };
+
+  let score = 0;
+  const reasons = [];
+  const kanji = [...surface].filter((char) => hasKanji(char));
+  const knownKanji = kanji.filter((char) => context.knownKanji?.has(char)).length;
+  const knownKanjiRatio = kanji.length ? knownKanji / kanji.length : 0;
+  if (knownKanjiRatio >= 0.8) {
+    score += 35;
+    reasons.push("known kanji");
+  } else if (knownKanjiRatio >= 0.5) {
+    score += 18;
+    reasons.push("partial kanji");
+  }
+
+  const lookup = readabilityLookupForToken(token, context);
+  if ((lookup.entries?.length ?? 0) > 0) {
+    score += 12;
+    reasons.push("dictionary match");
+  }
+
+  const frequencyScore = bestFrequencyReadabilityScore(lookup.frequencies ?? []);
+  if (frequencyScore.score > 0) {
+    score += frequencyScore.score;
+    reasons.push(frequencyScore.reason);
+  }
+  if (frequencyScore.rare) score -= 10;
+
+  const variants = tokenLookupVariants(token);
+  const lookupPenalty = Math.min(20, variants.reduce((total, term) => total + (context.lookupCounts?.get(term) ?? 0), 0) * 10);
+  const exportPenalty = Math.min(25, variants.reduce((total, term) => total + (context.exportCounts?.get(term) ?? 0), 0) * 15);
+  score -= lookupPenalty + exportPenalty;
+  if (lookupPenalty > 0) reasons.push("recent lookup");
+  if (exportPenalty > 0) reasons.push("recent export");
+
+  if (token.posDetail1 === "\u56fa\u6709\u540d\u8a5e") {
+    score -= 30;
+    reasons.push("name uncertainty");
+  }
+
+  const bounded = Math.max(0, Math.min(100, Math.round(score)));
+  return {
+    status: bounded >= 85 ? "inferred-readable" : "unknown",
+    score: bounded,
+    reasons: [...new Set(reasons)].slice(0, 4)
+  };
+}
+
+function bestFrequencyReadabilityScore(frequencies = []) {
+  let best = { score: 0, reason: "", rare: false };
+  for (const frequency of frequencies) {
+    const display = String(frequency.displayValue ?? frequency.value ?? "");
+    const jlpt = display.match(/N([1-5])/i);
+    if (jlpt) {
+      const level = Number(jlpt[1]);
+      const score = level >= 4 ? 40 : level === 3 ? 30 : level === 2 ? 18 : 10;
+      if (score > best.score) best = { score, reason: `JLPT N${level}`, rare: false };
+    }
+    const numbers = [...display.matchAll(/\d+(?:\.\d+)?/g)].map((match) => Number(match[0])).filter(Number.isFinite);
+    const rank = numbers.length ? Math.min(...numbers) : Number.POSITIVE_INFINITY;
+    let score = 0;
+    if (rank <= 1000) score = 40;
+    else if (rank <= 5000) score = 34;
+    else if (rank <= 10000) score = 28;
+    else if (rank <= 25000) score = 18;
+    else if (rank <= 50000) score = 8;
+    if (score > best.score) best = { score, reason: "common frequency", rare: false };
+    if (rank > 80000 && best.score === 0) best = { score: 0, reason: "", rare: true };
+  }
+  return best;
 }
 
 function normalizeReaderToken(token = {}, known = learnedSet(), authorRubyProtectedTerms = new Set()) {
@@ -2585,6 +3030,7 @@ function renderPlainTextLines(text = "") {
 async function analyzeReaderTokenStream(text, options = {}) {
   const tokenizer = await getTokenizer();
   const known = await learnedVariantSet();
+  const readabilityContext = await readabilityScoringContext();
   const authorRubyProtectedTerms = normalizeAuthorRubyProtectedTerms(options.authorRubyProtectedTerms ?? authorRubyProtectedTermsFromText(text));
   const key = readerTokenCacheKey(text, authorRubyProtectedTerms);
   let normalizedTokens = readerTokenCache.get(key);
@@ -2597,19 +3043,88 @@ async function analyzeReaderTokenStream(text, options = {}) {
     rememberReaderTokens(key, normalizedTokens);
     if (options.cacheDir) await writePersistentReaderTokens(options.cacheDir, key, normalizedTokens);
   }
-  return applyLearnedState(normalizedTokens, known);
+  return applyLearnedState(normalizedTokens, known, readabilityContext);
 }
 
-function applyLearnedState(tokens = [], known = learnedSet()) {
+function applyLearnedState(tokens = [], known = learnedSet(), readabilityContext = {}) {
   return tokens.map((token) => {
-    if (token.authorRuby || token.authorRubyProtected) return { ...token, learned: true, eligible: false };
+    if (token.authorRuby || token.authorRubyProtected) {
+      return {
+        ...token,
+        learned: true,
+        eligible: false,
+        readabilityStatus: "known",
+        readabilityScore: 100,
+        readabilityReasons: token.authorRuby ? ["author ruby"] : ["author ruby protected"]
+      };
+    }
     const learned = learnedByTokenVariants(token, known);
+    const readability = scoreTokenReadability(token, learned, readabilityContext);
+    const inferredReadable = readability.status === "inferred-readable";
+    const eligible = hasKanji(token.surface) &&
+      !learned &&
+      token.pos !== "\u8a18\u53f7" &&
+      !(inferredReadable && readabilityContext.hideInferredReadableFurigana);
     return {
       ...token,
       learned,
-      eligible: hasKanji(token.surface) && !learned && token.pos !== "\u8a18\u53f7"
+      readabilityStatus: readability.status,
+      readabilityScore: readability.score,
+      readabilityReasons: readability.reasons,
+      eligible
     };
   });
+}
+
+function readableSuggestionsFromTokens(tokens = [], limit = 20) {
+  const byTerm = new Map();
+  for (const token of tokens) {
+    if (token.authorRuby || token.authorRubyProtected) continue;
+    if (token.readabilityStatus !== "inferred-readable") continue;
+    const term = normalizeJapaneseTerm(token.dictionaryForm || token.base || token.surface);
+    if (!term || byTerm.has(term)) continue;
+    byTerm.set(term, {
+      expression: term,
+      surface: token.surface,
+      dictionaryForm: term,
+      reading: token.dictionaryReading || token.reading || token.displayReading || "",
+      readabilityStatus: token.readabilityStatus,
+      readabilityScore: token.readabilityScore ?? 0,
+      readabilityReasons: token.readabilityReasons ?? []
+    });
+  }
+  return [...byTerm.values()]
+    .sort((a, b) => Number(b.readabilityScore ?? 0) - Number(a.readabilityScore ?? 0) || a.expression.localeCompare(b.expression, "ja"))
+    .slice(0, limit);
+}
+
+async function readableSuggestionsFromText(text = "", limit = 20) {
+  if (!hasJapaneseText(text)) return [];
+  const tokens = await analyzeReaderTokenStream(text);
+  return readableSuggestionsFromTokens(tokens, limit);
+}
+
+async function readabilityForLookupTerm(term = "", lookupResult = {}) {
+  const normalized = normalizeJapaneseTerm(term);
+  const primaryEntry = lookupResult.entries?.[0];
+  const context = await readabilityScoringContext();
+  const token = {
+    surface: normalized || primaryEntry?.term || "",
+    base: primaryEntry?.term || normalized,
+    dictionaryForm: primaryEntry?.term || normalized,
+    displayReading: primaryEntry?.reading || "",
+    dictionaryReading: primaryEntry?.reading || "",
+    lookupTerms: uniqueNormalizedTerms([normalized, lookupResult.queryTerms ?? [], primaryEntry?.term, primaryEntry?.reading]),
+    pos: "",
+    posDetail1: ""
+  };
+  const known = learnedByTokenVariants(token, await learnedVariantSet());
+  const readability = scoreTokenReadability(token, known, context);
+  return {
+    status: readability.status,
+    score: readability.score,
+    reasons: readability.reasons
+  };
 }
 
 async function renderReaderTextLines(text, options = {}) {
@@ -3039,11 +3554,13 @@ app.get("/api/state", (req, res) => {
     },
     dictionaries: dictionaryService.listMetadata(),
     dictionarySettings: state.dictionarySettings,
+    reader: state.reader,
     progress: state.progress,
     cards: state.cards,
     anki: state.anki,
     media: state.media,
     ai: state.ai,
+    ml: publicMlSettings(state.ml),
     sync: { ...sync, diagnostics: syncDiagnostics() },
     templates: state.templates
   });
@@ -3062,6 +3579,31 @@ app.get("/api/known-terms", (req, res) => {
     .map((term) => ({ term, dictionaryEntries: dictionaryService.lookupWordBank(term, dictionaryId) }));
 
   res.json({ total: filtered.length, allTotal: state.knownTerms.length, offset, limit, sort, terms });
+});
+
+async function updateReaderSettings(req, res) {
+  state.reader = {
+    ...structuredClone(initialState.reader),
+    ...(state.reader ?? {}),
+    hideInferredReadableFurigana: Boolean(req.body?.hideInferredReadableFurigana)
+  };
+  clearDocumentCache();
+  invalidateReadabilityContext();
+  await saveState();
+  res.json({ reader: state.reader });
+}
+
+app.patch("/api/reader/settings", updateReaderSettings);
+app.post("/api/reader/settings", updateReaderSettings);
+
+app.post("/api/reader/readable-suggestion/dismiss", async (req, res) => {
+  const term = normalizeJapaneseTerm(req.body?.term ?? "");
+  if (!term) return res.status(400).json({ error: "No vocabulary selected." });
+  logLearningEvent("reader.readable-suggestion-dismissed", {
+    term,
+    documentId: String(req.body?.documentId ?? "")
+  });
+  res.json({ dismissed: true, term });
 });
 
 app.get("/api/sync/status", (req, res) => {
@@ -3319,8 +3861,9 @@ app.get("/api/documents/:id", async (req, res, next) => {
     }
 
     let candidates = [];
+    let readabilitySuggestions = [];
+    const pageIndex = Number(req.query.page);
     if (includeCandidates) {
-      const pageIndex = Number(req.query.page);
       if (Number.isInteger(pageIndex) && cached.pages[pageIndex]) {
         candidates = (await analyzeText(pageHtmlToCandidateText(cached.pages[pageIndex].html))).candidates.map(enrichCandidate);
       } else {
@@ -3328,10 +3871,15 @@ app.get("/api/documents/:id", async (req, res, next) => {
       }
       candidates = await mlService.rankCandidates(document.id, candidates);
     }
+    const suggestionPageIndex = Number.isInteger(pageIndex) && cached.pages[pageIndex] ? pageIndex : 0;
+    if (cached.pages[suggestionPageIndex]) {
+      readabilitySuggestions = await readableSuggestionsFromText(pageHtmlToCandidateText(cached.pages[suggestionPageIndex].html), 20);
+    }
 
     res.json({
       ...cached,
       candidates,
+      readabilitySuggestions,
       title: document.title,
       progress: state.progress[document.id] ?? { percentage: 0 }
     });
@@ -3443,9 +3991,19 @@ app.post("/api/known-terms", upload.single("terms"), async (req, res) => {
   if (incoming.length === 0) return res.status(400).json({ error: "No vocabulary provided." });
   const added = mergeKnownTerms(incoming);
   clearDocumentCache();
+  invalidateReadabilityContext();
   if (added.length > 0) markMlIndexStale("Word Bank changed known-term coverage.");
   await saveState();
-  for (const term of added) logLearningEvent("wordbank.added", { term, source: req.file ? "import" : "manual" });
+  const source = req.file ? "import" : String(req.body?.source ?? "manual");
+  for (const term of added) {
+    logLearningEvent("wordbank.added", { term, source });
+    if (source === "readable-suggestion") {
+      logLearningEvent("reader.readable-suggestion-added", {
+        term,
+        documentId: String(req.body?.documentId ?? "")
+      });
+    }
+  }
   res.json({ imported: incoming.length, added: added.length, total: state.knownTerms.length });
 });
 
@@ -3459,6 +4017,7 @@ app.delete("/api/known-terms", async (req, res) => {
   const deletedTerms = moveKnownTermsToTrash(terms);
   const deleted = deletedTerms.length;
   clearDocumentCache();
+  invalidateReadabilityContext();
   if (deleted > 0) markMlIndexStale("Word Bank changed known-term coverage.");
   await saveState();
   for (const term of deletedTerms) logLearningEvent("wordbank.deleted", { term });
@@ -3491,6 +4050,7 @@ app.post("/api/known-terms/sync-anki", async (req, res, next) => {
     if (removedTerms.length > 0) {
       moveKnownTermsToTrash(removedTerms, "anki-sync");
       clearDocumentCache();
+      invalidateReadabilityContext();
       markMlIndexStale("Anki sync removed Word Bank terms.");
       await saveState();
     }
@@ -3531,6 +4091,7 @@ app.post("/api/trash/known-terms/restore", async (req, res) => {
 
   state.trash.knownTerms = remainingTrash;
   clearDocumentCache();
+  invalidateReadabilityContext();
   if (restoredTerms.length > 0) markMlIndexStale("Word Bank changed known-term coverage.");
   await saveState();
   for (const term of restoredTerms) logLearningEvent("wordbank.restored", { term });
@@ -3586,6 +4147,7 @@ app.post("/api/dictionaries", upload.array("dictionary", 20), async (req, res, n
     if (files.length === 0) return res.status(400).json({ error: "No dictionary uploaded." });
 
     clearDocumentCache();
+    invalidateReadabilityContext();
     const displayName = files.length === 1 ? req.body.name ?? "" : "";
     const imports = [];
     for (const file of files) {
@@ -3612,6 +4174,7 @@ app.patch("/api/dictionaries/:id/settings", async (req, res, next) => {
   try {
     const dictionary = await dictionaryService.updateSettings(req.params.id, req.body ?? {});
     markMlIndexStale("Dictionary settings changed lookup metadata.");
+    invalidateReadabilityContext();
     await saveDictionariesState();
     await saveState();
     clearDocumentCache();
@@ -3625,6 +4188,7 @@ app.delete("/api/dictionaries/:id", async (req, res, next) => {
   try {
     const dictionary = await dictionaryService.deleteDictionary(req.params.id);
     markMlIndexStale("Dictionary was deleted.");
+    invalidateReadabilityContext();
     await saveDictionariesState();
     await saveState();
     clearDocumentCache();
@@ -3638,6 +4202,7 @@ app.patch("/api/dictionaries/settings", async (req, res, next) => {
   try {
     const settings = await dictionaryService.updateLookupSettings(req.body ?? {});
     markMlIndexStale("Dictionary lookup settings changed.");
+    invalidateReadabilityContext();
     await saveState();
     res.json({ settings });
   } catch (error) {
@@ -3649,6 +4214,7 @@ app.get("/api/dictionary/lookup", async (req, res, next) => {
   try {
     const term = String(req.query.term ?? "");
     const result = await lookupDictionaryForms(term, { prefix: req.query.prefix === "true" });
+    result.readability = await readabilityForLookupTerm(term, result);
     if (result.knownTerm?.ankiNoteIds?.length) {
       try {
         const liveNoteId = await firstExistingAnkiNoteId(result.knownTerm.ankiNoteIds);
@@ -3664,6 +4230,7 @@ app.get("/api/dictionary/lookup", async (req, res, next) => {
       entries: result.entries?.length ?? 0,
       frequencies: result.frequencies?.length ?? 0
     });
+    invalidateReadabilityContext();
     res.json(result);
   } catch (error) {
     next(error);
@@ -3946,6 +4513,47 @@ app.get("/api/ml/index/status", async (req, res, next) => {
   }
 });
 
+app.get("/api/ml/providers", async (req, res, next) => {
+  try {
+    res.json({
+      models: EMBEDDING_MODELS,
+      settings: publicMlSettings(state.ml),
+      status: await mlService.status()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+async function updateMlSettings(req, res, next) {
+  try {
+    const previousMl = normalizeMlSettings(state.ml);
+    state.ml = normalizeMlSettings({
+      ...state.ml,
+      embeddingProviderId: req.body?.embeddingProviderId ?? state.ml?.embeddingProviderId,
+      embeddingPythonPath: req.body?.embeddingPythonPath ?? state.ml?.embeddingPythonPath,
+      embeddingBatchSize: req.body?.embeddingBatchSize ?? state.ml?.embeddingBatchSize
+    });
+    if (previousMl.embeddingProviderId !== state.ml.embeddingProviderId) {
+      markMlIndexStale("Embedding model changed. Rebuild the local semantic index.");
+    } else if (previousMl.embeddingPythonPath !== state.ml.embeddingPythonPath) {
+      markMlIndexStale("Embedding Python runtime changed. Rebuild the local semantic index.");
+    } else if (previousMl.embeddingBatchSize !== state.ml.embeddingBatchSize) {
+      markMlIndexStale("Embedding batch size changed. Rebuild the local semantic index.");
+    }
+    await saveState();
+    res.json({
+      settings: publicMlSettings(state.ml),
+      status: await mlService.status()
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+app.patch("/api/ml/settings", updateMlSettings);
+app.post("/api/ml/settings", updateMlSettings);
+
 app.post("/api/ml/index/rebuild", async (req, res, next) => {
   try {
     await mlService.rebuildIndex();
@@ -3999,9 +4607,10 @@ app.post("/api/reader/assistant", async (req, res, next) => {
     const contextText = task === "translate" ? compactReaderContext(translationPromptText(question), 2500) : question;
     const analysis = await analyzeText(contextText);
     const termNotes = assistantTermNotes(analysis.tokens);
-    const query = compactReaderContext(question, 700) || contextText.slice(0, 250);
-    const exposeCitations = task !== "translate" && assistantWantsLocalCitations(question);
-    const useRagContext = task === "recap" || exposeCitations;
+    const query = assistantRetrievalQuery(question, contextText, history);
+    const exposeCitations = task !== "translate" && assistantWantsExplicitCitations(question);
+    const useRagContext = task === "recap" || (task !== "translate" && assistantWantsLocalRetrieval(query));
+    const exampleSearch = task !== "translate" && assistantWantsExamples(query);
     const currentPage = Number(req.body.page) || 0;
     const searchResult = !useRagContext
       ? { results: [], status: { ready: false, skipped: true } }
@@ -4012,6 +4621,7 @@ app.post("/api/reader/assistant", async (req, res, next) => {
           currentPage
         });
     const citations = searchResult.results ?? [];
+    const nameNotes = assistantNameReadingNotes({ document, question, contextText, citations });
     let chat;
     try {
       chat = await aiService.chat({
@@ -4023,12 +4633,15 @@ app.post("/api/reader/assistant", async (req, res, next) => {
           contextText,
           history,
           termNotes,
+          nameNotes,
           citations,
           document,
           page: currentPage,
-          includeCitations: useRagContext
+          includeRetrievedContext: useRagContext,
+          includeCitations: exposeCitations,
+          exampleSearch
         }),
-        maxTokens: assistantMaxTokens(task, contextText),
+        maxTokens: assistantMaxTokens(task, contextText, { useRagContext, exampleSearch }),
         temperature: task === "translate" ? 0.1 : 0.25
       });
     } catch (error) {
@@ -4113,9 +4726,10 @@ app.post("/api/reader/assistant/stream", async (req, res, next) => {
     const contextText = task === "translate" ? compactReaderContext(translationPromptText(question), 2500) : question;
     const analysis = await analyzeText(contextText);
     const termNotes = assistantTermNotes(analysis.tokens);
-    const query = compactReaderContext(question, 700) || contextText.slice(0, 250);
-    const exposeCitations = task !== "translate" && assistantWantsLocalCitations(question);
-    const useRagContext = task === "recap" || exposeCitations;
+    const query = assistantRetrievalQuery(question, contextText, history);
+    const exposeCitations = task !== "translate" && assistantWantsExplicitCitations(question);
+    const useRagContext = task === "recap" || (task !== "translate" && assistantWantsLocalRetrieval(query));
+    const exampleSearch = task !== "translate" && assistantWantsExamples(query);
     const currentPage = Number(req.body.page) || 0;
     const searchResult = !useRagContext
       ? { results: [], status: { ready: false, skipped: true } }
@@ -4126,6 +4740,7 @@ app.post("/api/reader/assistant/stream", async (req, res, next) => {
           currentPage
         });
     const citations = searchResult.results ?? [];
+    const nameNotes = assistantNameReadingNotes({ document, question, contextText, citations });
 
     writeAssistantStream(res, "meta", {
       task,
@@ -4153,12 +4768,15 @@ app.post("/api/reader/assistant/stream", async (req, res, next) => {
           contextText,
           history,
           termNotes,
+          nameNotes,
           citations,
           document,
           page: currentPage,
-          includeCitations: useRagContext
+          includeRetrievedContext: useRagContext,
+          includeCitations: exposeCitations,
+          exampleSearch
         }),
-        maxTokens: assistantMaxTokens(task, contextText),
+        maxTokens: assistantMaxTokens(task, contextText, { useRagContext, exampleSearch }),
         temperature: task === "translate" ? 0.1 : 0.25,
         onToken: (delta) => writeAssistantStream(res, "delta", { delta })
       });
@@ -4228,6 +4846,7 @@ app.post("/api/anki/export-card", async (req, res, next) => {
       deckName: exported.deckName,
       modelName: exported.modelName
     });
+    invalidateReadabilityContext();
     markMlIndexStale("Anki export added mined-card source data.");
     await saveState();
     res.status(201).json(exported);

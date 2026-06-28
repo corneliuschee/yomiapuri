@@ -72,6 +72,23 @@ try {
   const compoundCandidate = readingAlignmentData.candidates.find((candidate) => candidate.expression === "\u5f8c\u8f2a");
   assert(compoundCandidate?.reading === "\u3053\u3046\u308a\u3093", "Sentence mining should use the same compound reading as reader furigana.");
   assert(readingAlignmentData.pages[0]?.html?.includes('data-base="\u5f8c\u8f2a" data-reading="\u3053\u3046\u308a\u3093"'), "Reader furigana should use the compound dictionary reading.");
+  const readabilityFrequencyPath = await writeReadabilityFrequencyDictionaryFixture();
+  await uploadFile("/api/dictionaries", "dictionary", readabilityFrequencyPath);
+  await postJson("/api/known-terms", { terms: ["\u5f8c", "\u8f2a"] });
+  const inferredReadableData = await getJson(`/api/documents/${readingAlignmentImport.document.id}?candidates=1&page=0`);
+  const inferredSuggestion = inferredReadableData.readabilitySuggestions.find((item) => item.expression === "\u5f8c\u8f2a");
+  assert(inferredSuggestion?.readabilityStatus === "inferred-readable", "\u5f8c\u8f2a should be suggested as inferred readable.");
+  assert(inferredSuggestion?.readabilityScore >= 85, "Inferred readable suggestion should meet the conservative threshold.");
+  assert(inferredReadableData.pages[0]?.html?.includes('data-readability-status="inferred-readable"'), "Reader should expose inferred readable metadata.");
+  await postJson("/api/reader/settings", { hideInferredReadableFurigana: true });
+  const hiddenInferredData = await getJson(`/api/documents/${readingAlignmentImport.document.id}?candidates=1&page=0`);
+  assert(!hiddenInferredData.pages[0]?.html?.includes('<ruby data-base="\u5f8c\u8f2a"'), "Inferred readable terms should hide generated furigana when enabled.");
+  assert(!hiddenInferredData.candidates.some((candidate) => candidate.expression === "\u5f8c\u8f2a"), "Hidden inferred readable terms should be excluded from mining candidates.");
+  await postJson("/api/reader/settings", { hideInferredReadableFurigana: false });
+  const dismissedReadable = await postJson("/api/reader/readable-suggestion/dismiss", { term: "\u5f8c\u8f2a", documentId: readingAlignmentImport.document.id });
+  assert(dismissedReadable.dismissed === true, "Readable suggestions should support dismissal events.");
+  const addedReadable = await postJson("/api/known-terms", { term: "\u5f8c\u8f2a", source: "readable-suggestion", documentId: readingAlignmentImport.document.id });
+  assert(addedReadable.added === 1, "Readable suggestions should be addable to Word Bank.");
   const authorRubyNameDocumentPath = await writeAuthorRubyNameDocumentFixture();
   const authorRubyNameImport = await uploadFile("/api/documents", "book", authorRubyNameDocumentPath);
   const authorRubyNameData = await getJson(`/api/documents/${authorRubyNameImport.document.id}?candidates=1&page=0`);
@@ -82,6 +99,15 @@ try {
   assert(redirectedVerbCandidate?.dictionaryForm === "\u53d6\u308a\u4ed8\u3051\u308b", "Sentence mining should canonicalize redirected verb forms.");
   assert(redirectedVerbCandidate?.reading === "\u3068\u308a\u3064\u3051\u308b", "Canonical redirected verb should use dictionary-form reading.");
   await assertWordCardCss();
+  const mlProviders = await getJson("/api/ml/providers");
+  assert(mlProviders.models.some((model) => model.id === "multilingual-e5-small"), "ML providers should include multilingual-e5-small.");
+  assert(!mlProviders.models.some((model) => ["jina-embeddings-v3", "bge-m3", "paraphrase-multilingual-minilm"].includes(model.id)), "ML providers should expose only E5 plus the local fallback.");
+  const mlSettings = await postJson("/api/ml/settings", { embeddingProviderId: "local-hash-ngram-v1" });
+  assert(mlSettings.settings.embeddingProviderId === "local-hash-ngram-v1", "ML embedding settings should persist provider selection.");
+  const mlIndex = await postJson("/api/ml/index/rebuild", {});
+  assert(mlIndex.embeddingProvider === "local-hash-ngram-v1", "Rebuilt ML index should report the selected embedding provider.");
+  const semanticResult = await postJson("/api/search/semantic", { query: smokeDictionaryTerm, limit: 5 });
+  assert(semanticResult.results[0]?.text?.includes(smokeDictionaryTerm), "Exact semantic search query should rank exact text matches first.");
 
   const card = await postJson("/api/cards", {
     documentId,
@@ -191,6 +217,15 @@ async function writeFrequencyDictionaryFixture() {
   zip.addFile("index.json", Buffer.from(JSON.stringify({ title: "JPDB", targetLanguage: "ja" }), "utf8"));
   zip.addFile("term_meta_bank_1.json", Buffer.from(JSON.stringify([[source[0][0], "freq", { value: 440 }]]), "utf8"));
   const fixturePath = path.join(dataDir, "frequency-dictionary.zip");
+  await fs.writeFile(fixturePath, zip.toBuffer());
+  return path.relative(rootDir, fixturePath);
+}
+
+async function writeReadabilityFrequencyDictionaryFixture() {
+  const zip = new AdmZip();
+  zip.addFile("index.json", Buffer.from(JSON.stringify({ title: "Readability Freq", targetLanguage: "ja" }), "utf8"));
+  zip.addFile("term_meta_bank_1.json", Buffer.from(JSON.stringify([["\u5f8c\u8f2a", "freq", { value: 440 }]]), "utf8"));
+  const fixturePath = path.join(dataDir, "readability-frequency.zip");
   await fs.writeFile(fixturePath, zip.toBuffer());
   return path.relative(rootDir, fixturePath);
 }
