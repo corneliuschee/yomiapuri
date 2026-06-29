@@ -17,7 +17,7 @@ export function createJsonStateStore({ getState, setState, saveState }) {
       getSettings() {
         return getState().anki;
       },
-      async updateSettings(patch) {
+      async updateSettings(patch, options = {}) {
         return update((state) => {
           state.anki = {
             ...state.anki,
@@ -26,7 +26,7 @@ export function createJsonStateStore({ getState, setState, saveState }) {
             modelFieldMaps: { ...(state.anki.modelFieldMaps ?? {}), ...(patch.modelFieldMaps ?? {}) }
           };
           return state.anki;
-        });
+        }, options);
       },
       async saveRetentionStats(retentionStats) {
         return update((state) => {
@@ -46,7 +46,7 @@ export function createJsonStateStore({ getState, setState, saveState }) {
       getSettings() {
         return getState().media;
       },
-      async updateSettings(patch, normalizeMediaSettings) {
+      async updateSettings(patch, normalizeMediaSettings, options = {}) {
         return update((state) => {
           state.media = normalizeMediaSettings({
             ...(state.media ?? {}),
@@ -55,7 +55,7 @@ export function createJsonStateStore({ getState, setState, saveState }) {
             image: { ...(state.media?.image ?? {}), ...(patch.image ?? {}) }
           });
           return state.media;
-        });
+        }, options);
       }
     },
     cards: {

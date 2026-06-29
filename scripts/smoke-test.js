@@ -39,6 +39,9 @@ try {
   await uploadFile("/api/dictionaries", "dictionary", readingAlignmentDictionaryPath);
   const imported = await uploadFile("/api/documents", "book", "samples/sample-novel.txt");
   const documentId = imported.document.id;
+  const stateSnapshot = await getJson("/api/state");
+  const publicDocument = stateSnapshot.documents.find((document) => document.id === documentId);
+  assert(publicDocument && !Object.hasOwn(publicDocument, "text") && !Object.hasOwn(publicDocument, "chapters"), "/api/state should not expose full document text or chapters.");
   const ingestEvents = await readSse(`/api/documents/${documentId}/ingest-stream`);
   assert(ingestEvents.some((event) => event.event === "progress"), "Document ingestion stream should report progress.");
   assert(ingestEvents.some((event) => event.event === "done" && event.data.rebuilt === true), "Document ingestion should build a local cache on first open.");
@@ -68,6 +71,8 @@ try {
   assert(conjugatedLookup.entries.some((entry) => entry.term === "\u8003\u3048\u308b" && entry.definitions.includes("to think")), "Conjugated lookup should resolve to dictionary form.");
   const readingAlignmentDocumentPath = await writeReadingAlignmentDocumentFixture();
   const readingAlignmentImport = await uploadFile("/api/documents", "book", readingAlignmentDocumentPath);
+  const reordered = await postJson("/api/documents/reorder", { ids: [readingAlignmentImport.document.id, documentId] });
+  assert(reordered.documents[0]?.id === readingAlignmentImport.document.id, "/api/documents/reorder should not be captured by /api/documents/:id.");
   const readingAlignmentData = await getJson(`/api/documents/${readingAlignmentImport.document.id}?candidates=1&page=0`);
   const compoundCandidate = readingAlignmentData.candidates.find((candidate) => candidate.expression === "\u5f8c\u8f2a");
   assert(compoundCandidate?.reading === "\u3053\u3046\u308a\u3093", "Sentence mining should use the same compound reading as reader furigana.");
@@ -108,6 +113,19 @@ try {
   assert(mlIndex.embeddingProvider === "local-hash-ngram-v1", "Rebuilt ML index should report the selected embedding provider.");
   const semanticResult = await postJson("/api/search/semantic", { query: smokeDictionaryTerm, limit: 5 });
   assert(semanticResult.results[0]?.text?.includes(smokeDictionaryTerm), "Exact semantic search query should rank exact text matches first.");
+  const progress = await postJson(`/api/documents/${documentId}/progress`, {
+    percentage: 42,
+    page: 3,
+    mode: "paged",
+    chapterId: "chapter-route-test",
+    zoom: 999,
+    bookmarks: [{ page: 3, label: "Route check" }],
+    highlights: { pages: { 3: "<mark>route</mark>" }, scrollHtml: "" }
+  });
+  assert(progress.mode === "paged" && progress.zoom === 175 && progress.bookmarks[0]?.page === 3, "Progress route should preserve mode/bookmarks and clamp zoom.");
+  assert(progress.highlights?.pages?.[3] === "<mark>route</mark>" && progress.chapterId === "chapter-route-test", "Progress route should preserve highlights and chapter id.");
+  const assistantEvents = await postSse("/api/reader/assistant/stream", { documentId, question: "", history: [] });
+  assert(assistantEvents.some((event) => event.event === "error"), "Assistant stream should emit SSE errors without using Express error middleware.");
 
   const card = await postJson("/api/cards", {
     documentId,
@@ -119,6 +137,9 @@ try {
     meaning: "library"
   });
   assert(card.fields.Expression === "図書館", "Card field mapping failed.");
+
+  const exportedCsv = await getText("/api/cards/export");
+  assert(exportedCsv.includes("Expression") && exportedCsv.includes(card.fields.Expression), "Cards CSV export should include mapped fields.");
 
   console.log("Smoke test passed.");
 } finally {
@@ -144,10 +165,29 @@ async function getJson(route) {
   return response.json();
 }
 
+async function getText(route) {
+  const response = await fetch(`${baseUrl}${route}`);
+  if (!response.ok) throw new Error(`${route} failed with ${response.status}`);
+  return response.text();
+}
+
 async function readSse(route) {
   const response = await fetch(`${baseUrl}${route}`);
   if (!response.ok) throw new Error(`${route} failed with ${response.status}`);
-  const text = await response.text();
+  return parseSseText(await response.text());
+}
+
+async function postSse(route, body) {
+  const response = await fetch(`${baseUrl}${route}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) throw new Error(`${route} failed with ${response.status}: ${await response.text()}`);
+  return parseSseText(await response.text());
+}
+
+function parseSseText(text) {
   return text
     .split(/\n\n/)
     .map((block) => block.trim())

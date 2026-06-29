@@ -12,6 +12,8 @@ export function createSqliteStateStore({ dbPath }) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     db = new Database(dbPath);
     db.pragma("journal_mode = WAL");
+    db.pragma("synchronous = NORMAL");
+    db.pragma("busy_timeout = 5000");
     db.pragma("foreign_keys = ON");
     ensureSchema(db);
     return db;
@@ -107,12 +109,108 @@ export function createSqliteStateStore({ dbPath }) {
     transaction(state);
   };
 
+  const saveDocumentsState = (state) => {
+    const database = open();
+    const transaction = database.transaction((snapshot) => {
+      database.prepare("DELETE FROM documents").run();
+      database.prepare("DELETE FROM trash_documents").run();
+      insertDocuments(database, "documents", snapshot.documents ?? []);
+      insertDocuments(database, "trash_documents", snapshot.trash?.documents ?? []);
+      insertProgress(database, snapshot.progress ?? {}, { replace: true });
+      saveSettings(database, snapshot, ["ml"]);
+      writeSavedAt(database);
+    });
+    transaction(state);
+  };
+
+  const saveProgress = (documentId, payload) => {
+    const database = open();
+    const transaction = database.transaction(() => {
+      upsertProgress(database, documentId, payload);
+      writeSavedAt(database);
+    });
+    transaction();
+  };
+
+  const saveKnownTermsState = (state) => {
+    const database = open();
+    const transaction = database.transaction((snapshot) => {
+      database.prepare("DELETE FROM known_terms").run();
+      database.prepare("DELETE FROM trash_known_terms").run();
+      insertKnownTerms(database, snapshot.knownTerms ?? [], snapshot.knownTermMeta ?? {});
+      insertTrashKnownTerms(database, snapshot.trash?.knownTerms ?? []);
+      saveSettings(database, snapshot, ["ml"]);
+      writeSavedAt(database);
+    });
+    transaction(state);
+  };
+
+  const saveDictionariesState = (state) => {
+    const database = open();
+    const transaction = database.transaction((snapshot) => {
+      database.prepare("DELETE FROM dictionaries").run();
+      insertDictionaries(database, snapshot.dictionaries ?? []);
+      saveSettings(database, snapshot, ["dictionarySettings", "ml"]);
+      writeSavedAt(database);
+    });
+    transaction(state);
+  };
+
+  const saveTemplatesState = (state) => {
+    const database = open();
+    const transaction = database.transaction((snapshot) => {
+      database.prepare("DELETE FROM templates").run();
+      insertPayloadRows(database, "templates", snapshot.templates ?? [], "id");
+      writeSavedAt(database);
+    });
+    transaction(state);
+  };
+
+  const saveSettingsState = (state, keys = []) => {
+    const database = open();
+    const transaction = database.transaction((snapshot) => {
+      saveSettings(database, snapshot, keys);
+      writeSavedAt(database);
+    });
+    transaction(state);
+  };
+
+  const saveCardsAndKnownTermsState = (state) => {
+    const database = open();
+    const transaction = database.transaction((snapshot) => {
+      database.prepare("DELETE FROM cards").run();
+      database.prepare("DELETE FROM known_terms").run();
+      database.prepare("DELETE FROM trash_known_terms").run();
+      insertPayloadRows(database, "cards", snapshot.cards ?? [], "id");
+      insertKnownTerms(database, snapshot.knownTerms ?? [], snapshot.knownTermMeta ?? {});
+      insertTrashKnownTerms(database, snapshot.trash?.knownTerms ?? []);
+      saveSettings(database, snapshot, ["anki", "ml"]);
+      writeSavedAt(database);
+    });
+    transaction(state);
+  };
+
   function close() {
     db?.close();
     db = null;
   }
 
-  return { open, hasState, loadState, saveState, saveAnkiExportState, close, dbPath };
+  return {
+    open,
+    hasState,
+    loadState,
+    saveState,
+    saveAnkiExportState,
+    saveDocumentsState,
+    saveProgress,
+    saveKnownTermsState,
+    saveDictionariesState,
+    saveTemplatesState,
+    saveSettingsState,
+    saveCardsAndKnownTermsState,
+    close,
+    dbPath
+  };
 }
 
 function ensureSchema(database) {
@@ -203,6 +301,23 @@ function ensureSchema(database) {
       payload_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS document_tombstones (
+      document_id TEXT PRIMARY KEY,
+      deleted_at TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT 'deleted',
+      origin_device_id TEXT NOT NULL DEFAULT '',
+      synced_at TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS anki_export_journal (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      request_json TEXT NOT NULL,
+      result_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 }
 
@@ -282,11 +397,21 @@ function rowToDocument(row) {
   };
 }
 
-function insertProgress(database, progress = {}) {
-  const statement = database.prepare("INSERT INTO reading_progress (document_id, payload_json, updated_at) VALUES (?, ?, ?)");
+function insertProgress(database, progress = {}, options = {}) {
+  if (options.replace) database.prepare("DELETE FROM reading_progress").run();
   for (const [documentId, payload] of Object.entries(progress)) {
-    statement.run(documentId, stringifyJson(payload ?? {}), String(payload?.updatedAt ?? new Date().toISOString()));
+    upsertProgress(database, documentId, payload);
   }
+}
+
+function upsertProgress(database, documentId, payload = {}) {
+  database.prepare(`
+    INSERT INTO reading_progress (document_id, payload_json, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(document_id) DO UPDATE SET
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at
+  `).run(String(documentId), stringifyJson(payload ?? {}), String(payload?.updatedAt ?? new Date().toISOString()));
 }
 
 function insertKnownTerms(database, terms = [], metadata = {}) {
@@ -362,6 +487,12 @@ function saveSettings(database, state = {}, keys = []) {
     if (!Object.hasOwn(settings, key)) continue;
     statement.run(key, stringifyJson(settings[key]), updatedAt);
   }
+}
+
+function writeSavedAt(database) {
+  database.prepare("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)").run("saved_at", new Date().toISOString());
+  database.prepare("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)").run("initialized", "true");
+  database.prepare("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)").run("schema_version", String(SCHEMA_VERSION));
 }
 
 function stringifyJson(value) {

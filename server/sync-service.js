@@ -74,6 +74,8 @@ export function publicSyncSettings(settings = {}) {
 export function createSyncService({
   getState,
   saveState,
+  saveSyncState = saveState,
+  savePulledState = saveState,
   mediaDir,
   eventLog,
   clearDocumentCache = () => {},
@@ -99,7 +101,7 @@ export function createSyncService({
       ...(patch.supabaseAnonKey !== undefined ? { supabaseAnonKey: patch.supabaseAnonKey } : {}),
       ...(patch.deviceName !== undefined ? { deviceName: patch.deviceName } : {})
     });
-    await saveState();
+    await saveSyncState();
     return publicStatus();
   }
 
@@ -126,7 +128,7 @@ export function createSyncService({
       lastError: "",
       status: "signed-in"
     });
-    await saveState();
+    await saveSyncState();
     await registerDevice();
     return publicStatus();
   }
@@ -149,7 +151,7 @@ export function createSyncService({
       status: "disabled",
       lastError: ""
     });
-    await saveState();
+    await saveSyncState();
     return publicStatus();
   }
 
@@ -193,7 +195,7 @@ export function createSyncService({
       lastError: "",
       status: "synced"
     });
-    await saveState();
+    await saveSyncState();
     return publicStatus({
       pushed: {
         documents: payload.documents.length,
@@ -228,7 +230,7 @@ export function createSyncService({
     });
     markVectorIndexStale(state);
     clearDocumentCache();
-    await saveState();
+    await savePulledState();
     await importRemoteEvents(eventLog, remote.learning_events ?? []);
     return publicStatus({
       pulled: {
@@ -244,8 +246,8 @@ export function createSyncService({
   }
 
   async function syncNow() {
-    await push();
-    return pull();
+    await pull();
+    return push();
   }
 
   async function cleanupDeletedRemoteItems() {
@@ -260,7 +262,7 @@ export function createSyncService({
       lastError: "",
       status: "synced"
     });
-    await saveState();
+    await saveSyncState();
     return publicStatus({ purged });
   }
 
@@ -297,7 +299,7 @@ export function createSyncService({
           userId: data.user?.id ?? sync.userId,
           userEmail: data.user?.email ?? sync.userEmail
         });
-        await saveState();
+        await saveSyncState();
       }
     } else if (!allowMissingSession) {
       throw syncError("Sign in to Supabase before syncing.");

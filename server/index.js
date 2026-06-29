@@ -20,6 +20,15 @@ import { createHashEmbeddingProvider, createMlService } from "./ml-service.js";
 import { createLocalMediaProvider, defaultMediaSettings, normalizeMediaSettings } from "./media-providers.js";
 import { createSqliteStateStore } from "./sqlite-state-store.js";
 import { createSyncService, defaultSyncSettings, normalizeSyncSettings, publicSyncSettings } from "./sync-service.js";
+import { registerAssistantRoutes } from "./routes/assistant-routes.js";
+import { registerCardRoutes } from "./routes/card-routes.js";
+import { registerDictionaryRoutes } from "./routes/dictionary-routes.js";
+import { registerDocumentRoutes } from "./routes/document-routes.js";
+import { registerIntegrationRoutes } from "./routes/integration-routes.js";
+import { registerMlRoutes } from "./routes/ml-routes.js";
+import { registerStateRoutes } from "./routes/state-routes.js";
+import { registerSyncRoutes } from "./routes/sync-routes.js";
+import { registerWordBankRoutes } from "./routes/wordbank-routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -150,7 +159,7 @@ const aiService = createAiService({
   getSettings: () => state.ai,
   saveSettings: async (settings) => {
     state.ai = normalizeAiSettings(settings);
-    await saveState();
+    await saveSettingsState(["ai"]);
   },
   runtimeCommand: String(process.env.LOCAL_TRANSLATION_COMMAND ?? "").trim()
 });
@@ -158,7 +167,8 @@ const dictionaryService = createDictionaryService({
   store: stateStore,
   normalizeJapaneseTerm,
   repairMojibake,
-  crypto
+  crypto,
+  deferStoreSave: true
 });
 const eventLog = createLearningEventLog({ eventsPath });
 const embeddingProvider = createRuntimeEmbeddingProvider({
@@ -180,6 +190,8 @@ const ftsSearchService = createFtsSearchService({
 const syncService = createSyncService({
   getState: () => state,
   saveState,
+  saveSyncState: async () => saveSettingsState(["sync"]),
+  savePulledState: saveState,
   mediaDir,
   eventLog,
   clearDocumentCache
@@ -339,6 +351,60 @@ async function saveAnkiExportState() {
   return saveStateQueue;
 }
 
+async function saveDocumentsState() {
+  saveStateQueue = saveStateQueue
+    .catch(() => {})
+    .then(async () => {
+      sqliteStateStore.saveDocumentsState(state);
+    });
+  return saveStateQueue;
+}
+
+async function saveProgressState(documentId, payload) {
+  saveStateQueue = saveStateQueue
+    .catch(() => {})
+    .then(async () => {
+      sqliteStateStore.saveProgress(documentId, payload);
+    });
+  return saveStateQueue;
+}
+
+async function saveKnownTermsState() {
+  saveStateQueue = saveStateQueue
+    .catch(() => {})
+    .then(async () => {
+      sqliteStateStore.saveKnownTermsState(state);
+    });
+  return saveStateQueue;
+}
+
+async function saveCardsAndKnownTermsState() {
+  saveStateQueue = saveStateQueue
+    .catch(() => {})
+    .then(async () => {
+      sqliteStateStore.saveCardsAndKnownTermsState(state);
+    });
+  return saveStateQueue;
+}
+
+async function saveTemplatesState() {
+  saveStateQueue = saveStateQueue
+    .catch(() => {})
+    .then(async () => {
+      sqliteStateStore.saveTemplatesState(state);
+    });
+  return saveStateQueue;
+}
+
+async function saveSettingsState(keys = []) {
+  saveStateQueue = saveStateQueue
+    .catch(() => {})
+    .then(async () => {
+      sqliteStateStore.saveSettingsState(state, keys);
+    });
+  return saveStateQueue;
+}
+
 function mainStateSnapshot() {
   return {
     ...state,
@@ -430,7 +496,12 @@ function jsonPropertyValueRange(raw = "", property = "") {
 
 async function saveDictionariesState(dictionaries = state.dictionaries) {
   state.dictionaries = dictionaries;
-  await saveState();
+  saveStateQueue = saveStateQueue
+    .catch(() => {})
+    .then(async () => {
+      sqliteStateStore.saveDictionariesState(state);
+    });
+  return saveStateQueue;
 }
 
 async function backupJsonStateFiles() {
@@ -828,7 +899,7 @@ async function ensureDocumentIngestionCache(document = {}, options = {}) {
   if (!shouldBuild) return { ...cacheState, rebuilt: false, cacheDir };
   if (cacheState.state === "dictionary-stale" && options.force !== true && options.rebuildDictionaryStale !== true) {
     markMlIndexStale("Dictionary normalization changed. Rebuild the local semantic index when convenient.");
-    await saveState();
+    await saveSettingsState(["ml"]);
     return { ...cacheState, rebuilt: false, deferred: true, cacheDir };
   }
 
@@ -861,10 +932,10 @@ async function ensureDocumentIngestionCache(document = {}, options = {}) {
   await writeDocumentCacheManifest(document, cacheState.current);
   if (cacheState.state === "dictionary-stale") {
     markMlIndexStale("Dictionary normalization changed. Rebuild the local semantic index when convenient.");
-    await saveState();
+    await saveSettingsState(["ml"]);
   } else if (cacheState.state === "full-stale" || options.force === true) {
     markMlIndexStale("Document ingestion cache changed. Rebuild the local semantic index.");
-    await saveState();
+    await saveSettingsState(["ml"]);
   }
   return { ...cacheState, rebuilt: true, cacheDir };
 }
@@ -3724,7 +3795,7 @@ function syncDiagnostics() {
   };
 }
 
-app.get("/api/state", (req, res) => {
+const getState = (req, res) => {
   const sync = publicSyncSettings(state.sync);
   res.json({
     documents: state.documents.map(({ text, chapters, ...document }) => document),
@@ -3745,9 +3816,11 @@ app.get("/api/state", (req, res) => {
     sync: { ...sync, diagnostics: syncDiagnostics() },
     templates: state.templates
   });
-});
+};
 
-app.get("/api/known-terms", (req, res) => {
+
+
+const getKnownTerms = (req, res) => {
   const query = normalizeJapaneseTerm(String(req.query.q ?? "")).toLowerCase();
   const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 100));
   const offset = Math.max(0, Number(req.query.offset) || 0);
@@ -3760,14 +3833,18 @@ app.get("/api/known-terms", (req, res) => {
     .map((term) => ({ term, dictionaryEntries: lookupCachedWordBankMeaning(term, dictionaryId) }));
 
   res.json({ total: filtered.length, allTotal: state.knownTerms.length, offset, limit, sort, terms });
-});
+};
 
-app.get("/api/cache/wordbank-meanings/status", (req, res) => {
+
+
+const getCacheWordbankMeaningsStatus = (req, res) => {
   const dictionaryId = String(req.query.dictionaryId ?? "") || selectedWordBankDictionaryId();
   res.json(wordBankMeaningCacheStatus(dictionaryId));
-});
+};
 
-app.post("/api/cache/wordbank-meanings/rebuild", async (req, res, next) => {
+
+
+const postCacheWordbankMeaningsRebuild = async (req, res, next) => {
   try {
     const dictionaryId = String(req.body?.dictionaryId ?? "") || selectedWordBankDictionaryId();
     const result = await rebuildWordBankMeaningCache(dictionaryId);
@@ -3775,7 +3852,9 @@ app.post("/api/cache/wordbank-meanings/rebuild", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
+
+
 
 async function updateReaderSettings(req, res) {
   state.reader = {
@@ -3785,14 +3864,14 @@ async function updateReaderSettings(req, res) {
   };
   clearDocumentCache();
   invalidateReadabilityContext();
-  await saveState();
+  await saveSettingsState(["reader"]);
   res.json({ reader: state.reader });
 }
 
-app.patch("/api/reader/settings", updateReaderSettings);
-app.post("/api/reader/settings", updateReaderSettings);
 
-app.post("/api/reader/readable-suggestion/dismiss", async (req, res) => {
+
+
+const postReaderReadableSuggestionDismiss = async (req, res) => {
   const term = normalizeJapaneseTerm(req.body?.term ?? "");
   if (!term) return res.status(400).json({ error: "No vocabulary selected." });
   logLearningEvent("reader.readable-suggestion-dismissed", {
@@ -3800,79 +3879,97 @@ app.post("/api/reader/readable-suggestion/dismiss", async (req, res) => {
     documentId: String(req.body?.documentId ?? "")
   });
   res.json({ dismissed: true, term });
-});
+};
 
-app.get("/api/sync/status", (req, res) => {
+
+
+const getSyncStatus = (req, res) => {
   res.json({ ...syncService.status(), diagnostics: syncDiagnostics() });
-});
+};
 
-app.post("/api/sync/settings", async (req, res, next) => {
+
+
+const postSyncSettings = async (req, res, next) => {
   try {
     res.json(await syncService.updateSettings(req.body ?? {}));
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/sync/sign-in", async (req, res, next) => {
+
+
+const postSyncSignIn = async (req, res, next) => {
   try {
     res.json(await syncService.signIn(req.body ?? {}));
   } catch (error) {
     state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
-    await saveState();
+    await saveSettingsState(["sync"]);
     next(error);
   }
-});
+};
 
-app.post("/api/sync/sign-out", async (req, res, next) => {
+
+
+const postSyncSignOut = async (req, res, next) => {
   try {
     res.json(await syncService.signOut());
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/sync/push", async (req, res, next) => {
+
+
+const postSyncPush = async (req, res, next) => {
   try {
     res.json(await syncService.push());
   } catch (error) {
     state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
-    await saveState();
+    await saveSettingsState(["sync"]);
     next(error);
   }
-});
+};
 
-app.post("/api/sync/pull", async (req, res, next) => {
+
+
+const postSyncPull = async (req, res, next) => {
   try {
     res.json(await syncService.pull());
   } catch (error) {
     state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
-    await saveState();
+    await saveSettingsState(["sync"]);
     next(error);
   }
-});
+};
 
-app.post("/api/sync/run", async (req, res, next) => {
+
+
+const postSyncRun = async (req, res, next) => {
   try {
     res.json(await syncService.syncNow());
   } catch (error) {
     state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
-    await saveState();
+    await saveSettingsState(["sync"]);
     next(error);
   }
-});
+};
 
-app.post("/api/sync/cleanup-deleted", async (req, res, next) => {
+
+
+const postSyncCleanupDeleted = async (req, res, next) => {
   try {
     res.json(await syncService.cleanupDeletedRemoteItems());
   } catch (error) {
     state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
-    await saveState();
+    await saveSettingsState(["sync"]);
     next(error);
   }
-});
+};
 
-app.post("/api/documents", upload.single("book"), async (req, res, next) => {
+
+
+const postDocuments = async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded." });
     const id = crypto.randomUUID();
@@ -3904,15 +4001,17 @@ app.post("/api/documents", upload.single("book"), async (req, res, next) => {
     state.progress[document.id] = { percentage: 0, updatedAt: new Date().toISOString() };
     clearDocumentCache();
     markMlIndexStale("Imported book added new source text.");
-    await saveState();
+    await saveDocumentsState();
     logLearningEvent("document.imported", { documentId: document.id, title: document.title, type: document.type });
     res.status(201).json({ document: { ...document, text: undefined } });
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/documents/reorder", async (req, res) => {
+
+
+const postDocumentsReorder = async (req, res) => {
   const ids = Array.isArray(req.body.ids) ? req.body.ids.map(String) : [];
   if (ids.length === 0) return res.status(400).json({ error: "Document order is required." });
   const order = new Map(ids.map((id, index) => [id, index]));
@@ -3922,17 +4021,19 @@ app.post("/api/documents/reorder", async (req, res) => {
     return aOrder - bOrder;
   });
   markMlIndexStale("Book order changed.");
-  await saveState();
+  await saveDocumentsState();
   const documents = state.documents.map(({ text, chapters, ...document }) => document);
   res.json({ documents });
-});
+};
+
+
 
 function writeSse(res, event, data) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-app.get("/api/documents/:id/ingest-stream", async (req, res) => {
+const getDocumentsByIdIngestStream = async (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
@@ -3952,7 +4053,7 @@ app.get("/api/documents/:id/ingest-stream", async (req, res) => {
     });
     if (result.state === "dictionary-stale" && result.rebuilt) {
       markMlIndexFresh();
-      await saveState();
+      await saveSettingsState(["ml"]);
     }
     writeSse(res, "done", {
       state: result.state,
@@ -3966,9 +4067,11 @@ app.get("/api/documents/:id/ingest-stream", async (req, res) => {
     writeSse(res, "error", { error: error.message });
     res.end();
   }
-});
+};
 
-app.get("/api/documents/:id", async (req, res, next) => {
+
+
+const getDocumentsById = async (req, res, next) => {
   try {
     const document = state.documents.find((item) => item.id === req.params.id);
     if (!document) return res.status(404).json({ error: "Document not found." });
@@ -4083,9 +4186,11 @@ app.get("/api/documents/:id", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.patch("/api/documents/:id", async (req, res) => {
+
+
+const patchDocumentsById = async (req, res) => {
   const document = state.documents.find((item) => item.id === req.params.id);
   if (!document) return res.status(404).json({ error: "Document not found." });
 
@@ -4096,12 +4201,14 @@ app.patch("/api/documents/:id", async (req, res) => {
   document.updatedAt = new Date().toISOString();
   clearDocumentCache();
   markMlIndexStale("Book metadata changed.");
-  await saveState();
+  await saveDocumentsState();
   const { text, chapters, ...publicDocument } = document;
   res.json(publicDocument);
-});
+};
 
-app.delete("/api/documents/:id", async (req, res) => {
+
+
+const deleteDocumentsById = async (req, res) => {
   const index = state.documents.findIndex((item) => item.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: "Document not found." });
 
@@ -4111,11 +4218,13 @@ app.delete("/api/documents/:id", async (req, res) => {
   if (trashIndex >= 0) state.trash.documents.splice(trashIndex, 1, trashedDocument);
   else state.trash.documents.unshift(trashedDocument);
   clearDocumentCache();
-  await saveState();
+  await saveDocumentsState();
   res.json({ ok: true });
-});
+};
 
-app.post("/api/trash/documents/:id/restore", async (req, res) => {
+
+
+const postTrashDocumentsByIdRestore = async (req, res) => {
   const index = state.trash.documents.findIndex((item) => item.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: "Deleted book not found." });
 
@@ -4125,34 +4234,41 @@ app.post("/api/trash/documents/:id/restore", async (req, res) => {
     state.documents.push(document);
   }
   clearDocumentCache();
-  await saveState();
+  markMlIndexStale("Deleted book was restored.");
+  await saveDocumentsState();
   const { text, chapters, ...publicDocument } = document;
   res.json({ document: publicDocument });
-});
+};
 
-app.delete("/api/trash/documents/:id", async (req, res) => {
+
+
+const deleteTrashDocumentsById = async (req, res) => {
   const index = state.trash.documents.findIndex((item) => item.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: "Deleted book not found." });
   const [deleted] = state.trash.documents.splice(index, 1);
   clearDocumentCache();
   await deleteDocumentVectorsFromMlIndex(deleted.id);
   markMlIndexStale("Deleted book was permanently removed.");
-  await saveState();
+  await saveDocumentsState();
   res.json({ deleted: 1, documentId: deleted.id, total: state.trash.documents.length });
-});
+};
 
-app.delete("/api/trash/documents", async (req, res) => {
+
+
+const deleteTrashDocuments = async (req, res) => {
   const deletedIds = state.trash.documents.map((document) => document.id).filter(Boolean);
   const deleted = state.trash.documents.length;
   state.trash.documents = [];
   clearDocumentCache();
   for (const id of deletedIds) await deleteDocumentVectorsFromMlIndex(id);
   if (deleted > 0) markMlIndexStale("Deleted books were permanently removed.");
-  await saveState();
+  await saveDocumentsState();
   res.json({ deleted, total: 0 });
-});
+};
 
-app.post("/api/documents/:id/progress", async (req, res) => {
+
+
+const postDocumentsByIdProgress = async (req, res) => {
   const document = state.documents.find((item) => item.id === req.params.id);
   if (!document) return res.status(404).json({ error: "Document not found." });
 
@@ -4168,7 +4284,7 @@ app.post("/api/documents/:id/progress", async (req, res) => {
     bookmarks: Array.isArray(req.body.bookmarks) ? req.body.bookmarks.slice(0, 100) : state.progress[document.id]?.bookmarks ?? [],
     updatedAt: new Date().toISOString()
   };
-  await saveState();
+  await saveProgressState(document.id, state.progress[document.id]);
   logLearningEvent("reading.progress", {
     documentId: document.id,
     title: document.title,
@@ -4177,9 +4293,11 @@ app.post("/api/documents/:id/progress", async (req, res) => {
     percentage
   });
   res.json(state.progress[document.id]);
-});
+};
 
-app.post("/api/known-terms", upload.single("terms"), async (req, res) => {
+
+
+const postKnownTerms = async (req, res) => {
   const incoming = req.file
     ? parseKnownTerms(req.file.buffer)
     : [
@@ -4191,7 +4309,7 @@ app.post("/api/known-terms", upload.single("terms"), async (req, res) => {
   clearDocumentCache();
   invalidateReadabilityContext();
   if (added.length > 0) markMlIndexStale("Word Bank changed known-term coverage.");
-  await saveState();
+  await saveKnownTermsState();
   const source = req.file ? "import" : String(req.body?.source ?? "manual");
   for (const term of added) {
     logLearningEvent("wordbank.added", { term, source });
@@ -4203,9 +4321,11 @@ app.post("/api/known-terms", upload.single("terms"), async (req, res) => {
     }
   }
   res.json({ imported: incoming.length, added: added.length, total: state.knownTerms.length });
-});
+};
 
-app.delete("/api/known-terms", async (req, res) => {
+
+
+const deleteKnownTerms = async (req, res) => {
   const body = req.body ?? {};
   const normalizedTerms = state.knownTerms.map(normalizeJapaneseTerm).filter(Boolean);
   const terms = body.all === true
@@ -4217,12 +4337,14 @@ app.delete("/api/known-terms", async (req, res) => {
   clearDocumentCache();
   invalidateReadabilityContext();
   if (deleted > 0) markMlIndexStale("Word Bank changed known-term coverage.");
-  await saveState();
+  await saveKnownTermsState();
   for (const term of deletedTerms) logLearningEvent("wordbank.deleted", { term });
   res.json({ deleted, total: state.knownTerms.length });
-});
+};
 
-app.post("/api/known-terms/sync-anki", async (req, res, next) => {
+
+
+const postKnownTermsSyncAnki = async (req, res, next) => {
   try {
     const normalizedTerms = state.knownTerms.map(normalizeJapaneseTerm).filter(Boolean);
     const noteIdsByTerm = new Map();
@@ -4250,7 +4372,7 @@ app.post("/api/known-terms/sync-anki", async (req, res, next) => {
       clearDocumentCache();
       invalidateReadabilityContext();
       markMlIndexStale("Anki sync removed Word Bank terms.");
-      await saveState();
+      await saveKnownTermsState();
     }
     logLearningEvent("wordbank.synced-anki", { checked: noteIdsByTerm.size, removed: removedTerms.length });
 
@@ -4263,9 +4385,11 @@ app.post("/api/known-terms/sync-anki", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/trash/known-terms/restore", async (req, res) => {
+
+
+const postTrashKnownTermsRestore = async (req, res) => {
   const terms = Array.isArray(req.body.terms) ? req.body.terms.map(normalizeJapaneseTerm).filter(Boolean) : [];
   if (terms.length === 0) return res.status(400).json({ error: "No vocabulary selected." });
   const selected = new Set(terms);
@@ -4292,12 +4416,14 @@ app.post("/api/trash/known-terms/restore", async (req, res) => {
   clearDocumentCache();
   invalidateReadabilityContext();
   if (restoredTerms.length > 0) markMlIndexStale("Word Bank changed known-term coverage.");
-  await saveState();
+  await saveKnownTermsState();
   for (const term of restoredTerms) logLearningEvent("wordbank.restored", { term });
   res.json({ restored: restoredTerms.length, total: state.knownTerms.length });
-});
+};
 
-app.delete("/api/trash/known-terms", async (req, res) => {
+
+
+const deleteTrashKnownTerms = async (req, res) => {
   const body = req.body ?? {};
   const selected = body.all === true
     ? new Set(state.trash.knownTerms.map((entry) => trashTermValue(entry)).filter(Boolean))
@@ -4310,11 +4436,13 @@ app.delete("/api/trash/known-terms", async (req, res) => {
   });
   const deleted = before - state.trash.knownTerms.length;
   if (deleted > 0) markMlIndexStale("Deleted vocabulary was permanently removed.");
-  await saveState();
+  await saveKnownTermsState();
   res.json({ deleted, total: state.trash.knownTerms.length });
-});
+};
 
-app.post("/api/templates", upload.single("template"), async (req, res) => {
+
+
+const postTemplates = async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded." });
 
   const raw = req.file.buffer.toString("utf8");
@@ -4336,11 +4464,13 @@ app.post("/api/templates", upload.single("template"), async (req, res) => {
     fields
   };
   state.templates.unshift(template);
-  await saveState();
+  await saveTemplatesState();
   res.status(201).json(template);
-});
+};
 
-app.post("/api/dictionaries", upload.array("dictionary", 20), async (req, res, next) => {
+
+
+const postDictionaries = async (req, res, next) => {
   try {
     const files = req.files ?? [];
     if (files.length === 0) return res.status(400).json({ error: "No dictionary uploaded." });
@@ -4355,7 +4485,6 @@ app.post("/api/dictionaries", upload.array("dictionary", 20), async (req, res, n
     }
     markMlIndexStale("Dictionary imports changed lookup metadata.");
     await saveDictionariesState();
-    await saveState();
     res.status(201).json({
       dictionary: imports[0]?.dictionary ?? null,
       dictionaries: imports.map((item) => item.dictionary),
@@ -4364,13 +4493,17 @@ app.post("/api/dictionaries", upload.array("dictionary", 20), async (req, res, n
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.get("/api/dictionaries", (req, res) => {
+
+
+const getDictionaries = (req, res) => {
   res.json({ dictionaries: dictionaryService.listMetadata(), settings: state.dictionarySettings });
-});
+};
 
-app.patch("/api/dictionaries/:id/settings", async (req, res, next) => {
+
+
+const patchDictionariesByIdSettings = async (req, res, next) => {
   try {
     const patch = req.body ?? {};
     const dictionary = await dictionaryService.updateSettings(req.params.id, req.body ?? {});
@@ -4381,41 +4514,45 @@ app.patch("/api/dictionaries/:id/settings", async (req, res, next) => {
       clearDocumentCache();
     }
     await saveDictionariesState();
-    await saveState();
     res.json({ dictionary, dictionaries: dictionaryService.listMetadata(), settings: state.dictionarySettings });
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.delete("/api/dictionaries/:id", async (req, res, next) => {
+
+
+const deleteDictionariesById = async (req, res, next) => {
   try {
     const dictionary = await dictionaryService.deleteDictionary(req.params.id);
     invalidateWordBankMeaningCache(req.params.id);
     markMlIndexStale("Dictionary was deleted.");
     invalidateReadabilityContext();
     await saveDictionariesState();
-    await saveState();
     clearDocumentCache();
     res.json({ dictionary, dictionaries: dictionaryService.listMetadata(), settings: state.dictionarySettings });
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.patch("/api/dictionaries/settings", async (req, res, next) => {
+
+
+const patchDictionariesSettings = async (req, res, next) => {
   try {
     const settings = await dictionaryService.updateLookupSettings(req.body ?? {});
     markMlIndexStale("Dictionary lookup settings changed.");
     invalidateReadabilityContext();
-    await saveState();
+    await saveDictionariesState();
     res.json({ settings });
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.get("/api/dictionary/lookup", async (req, res, next) => {
+
+
+const getDictionaryLookup = async (req, res, next) => {
   try {
     const term = String(req.query.term ?? "");
     const result = await lookupDictionaryForms(term, { prefix: req.query.prefix === "true" });
@@ -4440,7 +4577,9 @@ app.get("/api/dictionary/lookup", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
+
+
 
 async function firstExistingAnkiNoteId(noteIds = []) {
   for (const noteId of noteIds.map(Number).filter(Number.isFinite)) {
@@ -4449,16 +4588,18 @@ async function firstExistingAnkiNoteId(noteIds = []) {
   return null;
 }
 
-app.get("/api/dictionary", async (req, res, next) => {
+const getDictionary = async (req, res, next) => {
   try {
     const result = await lookupDictionaryForms(String(req.query.term ?? ""));
     res.json(result);
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/anki/settings", async (req, res) => {
+
+
+const postAnkiSettings = async (req, res) => {
   const hasAutoLaunch = Object.prototype.hasOwnProperty.call(req.body, "autoLaunchAnki");
   const hasExecutablePath = Object.prototype.hasOwnProperty.call(req.body, "ankiExecutablePath");
   const nextExecutablePath = hasExecutablePath
@@ -4478,30 +4619,36 @@ app.post("/api/anki/settings", async (req, res) => {
   if (Object.prototype.hasOwnProperty.call(req.body, "instantExport")) {
     patch.instantExport = Boolean(req.body.instantExport);
   }
-  const nextSettings = await stateStore.anki.updateSettings({
-    ...patch
-  });
+  const nextSettings = await stateStore.anki.updateSettings({ ...patch }, { save: false });
+  await saveSettingsState(["anki"]);
   res.json(nextSettings);
-});
+};
 
-app.get("/api/media/providers", async (req, res, next) => {
+
+
+const getMediaProviders = async (req, res, next) => {
   try {
     res.json(await mediaProvider.providers());
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/media/settings", async (req, res, next) => {
+
+
+const postMediaSettings = async (req, res, next) => {
   try {
-    const settings = await stateStore.media.updateSettings(req.body ?? {}, normalizeMediaSettings);
+    const settings = await stateStore.media.updateSettings(req.body ?? {}, normalizeMediaSettings, { save: false });
+    await saveSettingsState(["media"]);
     res.json({ settings, providers: await mediaProvider.providers() });
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/media/voice-models", async (req, res, next) => {
+
+
+const postMediaVoiceModels = async (req, res, next) => {
   try {
     const url = String(req.body.url ?? "").trim();
     const name = String(req.body.name ?? "").trim() || voiceModelNameFromUrl(url);
@@ -4522,55 +4669,68 @@ app.post("/api/media/voice-models", async (req, res, next) => {
       ...current,
       audio: { ...current.audio, voiceModelId: model.id },
       voiceModels: [...existing, model]
-    }, normalizeMediaSettings);
+    }, normalizeMediaSettings, { save: false });
+    await saveSettingsState(["media"]);
     res.status(201).json({ model, settings, providers: await mediaProvider.providers() });
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.get("/api/ai/providers", async (req, res, next) => {
+
+
+const getAiProviders = async (req, res, next) => {
   try {
     res.json(await aiService.providers());
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.get("/api/ai/runtime", async (req, res, next) => {
+
+
+const getAiRuntime = async (req, res, next) => {
   try {
     res.json(await aiRuntimeStatus());
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/ai/runtime/stop", async (req, res, next) => {
+
+
+const postAiRuntimeStop = async (req, res, next) => {
   try {
     const stopped = await stopAiRuntime();
     res.json({ stopped, ...(await aiRuntimeStatus()) });
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/ai/settings", async (req, res, next) => {
+
+
+const postAiSettings = async (req, res, next) => {
   try {
     res.json(await aiService.updateSettings(req.body ?? {}));
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/ai/models", async (req, res, next) => {
+
+
+const postAiModels = async (req, res, next) => {
   try {
     res.status(201).json(await aiService.importModel(req.body ?? {}));
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/ai/test-translation", async (req, res, next) => {
+
+
+const postAiTestTranslation = async (req, res, next) => {
   try {
     res.json(await aiService.translate({
       text: req.body.text,
@@ -4580,9 +4740,11 @@ app.post("/api/ai/test-translation", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/media/test-audio", async (req, res, next) => {
+
+
+const postMediaTestAudio = async (req, res, next) => {
   try {
     const value = await mediaProvider.createAudio({
       expression: req.body.expression || "図書館",
@@ -4592,9 +4754,11 @@ app.post("/api/media/test-audio", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/media/test-image", async (req, res, next) => {
+
+
+const postMediaTestImage = async (req, res, next) => {
   try {
     const value = await mediaProvider.createImage({
       expression: req.body.expression || "図書館",
@@ -4606,30 +4770,36 @@ app.post("/api/media/test-image", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
+
+
 
 function voiceModelNameFromUrl(url = "") {
   return url.split("/").filter(Boolean).slice(-2).join("/") || "Imported voice model";
 }
 
-app.get("/api/anki/connect", async (req, res, next) => {
+const getAnkiConnect = async (req, res, next) => {
   try {
     const result = await ankiService.listDecksAndModels();
     res.json({ ok: true, ...result });
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.get("/api/anki/model-fields", async (req, res, next) => {
+
+
+const getAnkiModelFields = async (req, res, next) => {
   try {
     res.json(await ankiService.modelFields(String(req.query.modelName ?? "")));
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/anki/import", async (req, res, next) => {
+
+
+const postAnkiImport = async (req, res, next) => {
   try {
     const result = await ankiService.importReviewedTerms({
       preset: req.body.preset,
@@ -4641,9 +4811,11 @@ app.post("/api/anki/import", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/anki/card-preview", async (req, res, next) => {
+
+
+const postAnkiCardPreview = async (req, res, next) => {
   try {
     const preview = await ankiService.previewCard(req.body);
     logLearningEvent("sentence.previewed", {
@@ -4655,9 +4827,11 @@ app.post("/api/anki/card-preview", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/anki/open-known-term", async (req, res, next) => {
+
+
+const postAnkiOpenKnownTerm = async (req, res, next) => {
   try {
     const requestedTerm = normalizeJapaneseTerm(req.body.term ?? "");
     const queryTerms = await dictionaryLookupTerms(requestedTerm);
@@ -4667,9 +4841,11 @@ app.post("/api/anki/open-known-term", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/cards", async (req, res) => {
+
+
+const postCards = async (req, res) => {
   const document = state.documents.find((item) => item.id === req.body.documentId);
   if (!document) return res.status(404).json({ error: "Document not found." });
 
@@ -4698,27 +4874,33 @@ app.post("/api/cards", async (req, res) => {
 
   card.fields = mapCardFields(template, card);
   state.cards.unshift(card);
-  await saveState();
+  await saveCardsAndKnownTermsState();
   res.status(201).json(card);
-});
+};
 
-app.get("/api/ml/analytics", async (req, res, next) => {
+
+
+const getMlAnalytics = async (req, res, next) => {
   try {
     res.json(await mlService.analytics());
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.get("/api/ml/index/status", async (req, res, next) => {
+
+
+const getMlIndexStatus = async (req, res, next) => {
   try {
     res.json(await mlService.status());
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.get("/api/ml/providers", async (req, res, next) => {
+
+
+const getMlProviders = async (req, res, next) => {
   try {
     res.json({
       models: EMBEDDING_MODELS,
@@ -4728,7 +4910,9 @@ app.get("/api/ml/providers", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
+
+
 
 async function updateMlSettings(req, res, next) {
   try {
@@ -4746,7 +4930,7 @@ async function updateMlSettings(req, res, next) {
     } else if (previousMl.embeddingBatchSize !== state.ml.embeddingBatchSize) {
       markMlIndexStale("Embedding batch size changed. Rebuild the local semantic index.");
     }
-    await saveState();
+    await saveSettingsState(["ml"]);
     res.json({
       settings: publicMlSettings(state.ml),
       status: await mlService.status()
@@ -4756,24 +4940,26 @@ async function updateMlSettings(req, res, next) {
   }
 }
 
-app.patch("/api/ml/settings", updateMlSettings);
-app.post("/api/ml/settings", updateMlSettings);
 
-app.post("/api/ml/index/rebuild", async (req, res, next) => {
+
+
+const postMlIndexRebuild = async (req, res, next) => {
   try {
     const shouldSaveFreshState = Boolean(state.ml?.indexStale || state.ml?.indexStaleReason);
     await mlService.rebuildIndex();
     markMlIndexFresh();
-    if (shouldSaveFreshState) await saveState();
+    if (shouldSaveFreshState) await saveSettingsState(["ml"]);
     const result = await mlService.status();
     logLearningEvent("ml.index-rebuilt", { chunks: result.chunks, provider: result.provider, embeddingProvider: result.embeddingProvider });
     res.json(result);
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/search/semantic", async (req, res, next) => {
+
+
+const postSearchSemantic = async (req, res, next) => {
   try {
     const result = await mlService.search(req.body.query, {
       limit: req.body.limit,
@@ -4787,9 +4973,11 @@ app.post("/api/search/semantic", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/search/fts", async (req, res, next) => {
+
+
+const postSearchFts = async (req, res, next) => {
   try {
     const result = await ftsSearchService.search(req.body.query, {
       limit: req.body.limit,
@@ -4800,9 +4988,11 @@ app.post("/api/search/fts", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/rag/ask", async (req, res, next) => {
+
+
+const postRagAsk = async (req, res, next) => {
   try {
     const result = await mlService.ragAnswer(req.body.question, {
       readSafe: req.body.readSafe !== false,
@@ -4814,9 +5004,11 @@ app.post("/api/rag/ask", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.post("/api/reader/assistant", async (req, res, next) => {
+
+
+const postReaderAssistant = async (req, res, next) => {
   try {
     const document = state.documents.find((item) => item.id === req.body.documentId);
     const question = compactReaderContext(req.body.question, 2500);
@@ -4918,14 +5110,16 @@ app.post("/api/reader/assistant", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
+
+
 
 function writeAssistantStream(res, event, data) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-app.post("/api/reader/assistant/stream", async (req, res, next) => {
+const postReaderAssistantStream = async (req, res, next) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
@@ -5052,9 +5246,11 @@ app.post("/api/reader/assistant/stream", async (req, res, next) => {
     writeAssistantStream(res, "error", { error: error.message });
     res.end();
   }
-});
+};
 
-app.post("/api/anki/export-card", async (req, res, next) => {
+
+
+const postAnkiExportCard = async (req, res, next) => {
   try {
     const exported = await ankiService.exportCard(req.body);
     logLearningEvent("anki.exported", {
@@ -5071,9 +5267,11 @@ app.post("/api/anki/export-card", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
 
-app.get("/api/cards/export", (req, res) => {
+
+
+const getCardsExport = (req, res) => {
   const rows = state.cards.map((card) => card.fields);
   const fieldNames = [...new Set(rows.flatMap((row) => Object.keys(row)))];
   const csv = [
@@ -5084,7 +5282,115 @@ app.get("/api/cards/export", (req, res) => {
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", "attachment; filename=\"anki-cards.csv\"");
   res.send(csv);
-});
+};
+
+
+
+const routeContext = {
+  getState: () => state,
+  upload,
+  persistence: {
+    saveState,
+    saveAnkiExportState
+  },
+  services: {
+    stateStore,
+    syncService,
+    dictionaryService,
+    mlService,
+    ftsSearchService,
+    ankiService,
+    mediaProvider,
+    aiService
+  },
+  cache: {
+    clearDocumentCache,
+    invalidateReadabilityContext,
+    invalidateWordBankMeaningCache,
+    markMlIndexStale,
+    markMlIndexFresh,
+    deleteDocumentVectorsFromMlIndex
+  },
+  handlers: {
+    getState,
+    getKnownTerms,
+    getCacheWordbankMeaningsStatus,
+    postCacheWordbankMeaningsRebuild,
+    updateReaderSettings,
+    postReaderReadableSuggestionDismiss,
+    getSyncStatus,
+    postSyncSettings,
+    postSyncSignIn,
+    postSyncSignOut,
+    postSyncPush,
+    postSyncPull,
+    postSyncRun,
+    postSyncCleanupDeleted,
+    postDocuments,
+    postDocumentsReorder,
+    getDocumentsByIdIngestStream,
+    getDocumentsById,
+    patchDocumentsById,
+    deleteDocumentsById,
+    postTrashDocumentsByIdRestore,
+    deleteTrashDocumentsById,
+    deleteTrashDocuments,
+    postDocumentsByIdProgress,
+    postKnownTerms,
+    deleteKnownTerms,
+    postKnownTermsSyncAnki,
+    postTrashKnownTermsRestore,
+    deleteTrashKnownTerms,
+    postTemplates,
+    postDictionaries,
+    getDictionaries,
+    patchDictionariesByIdSettings,
+    deleteDictionariesById,
+    patchDictionariesSettings,
+    getDictionaryLookup,
+    getDictionary,
+    postAnkiSettings,
+    getMediaProviders,
+    postMediaSettings,
+    postMediaVoiceModels,
+    getAiProviders,
+    getAiRuntime,
+    postAiRuntimeStop,
+    postAiSettings,
+    postAiModels,
+    postAiTestTranslation,
+    postMediaTestAudio,
+    postMediaTestImage,
+    getAnkiConnect,
+    getAnkiModelFields,
+    postAnkiImport,
+    postAnkiCardPreview,
+    postAnkiOpenKnownTerm,
+    postCards,
+    getMlAnalytics,
+    getMlIndexStatus,
+    getMlProviders,
+    updateMlSettings,
+    postMlIndexRebuild,
+    postSearchSemantic,
+    postSearchFts,
+    postRagAsk,
+    postReaderAssistant,
+    postReaderAssistantStream,
+    postAnkiExportCard,
+    getCardsExport
+  }
+};
+
+registerStateRoutes(app, routeContext);
+registerSyncRoutes(app, routeContext);
+registerDocumentRoutes(app, routeContext);
+registerWordBankRoutes(app, routeContext);
+registerDictionaryRoutes(app, routeContext);
+registerIntegrationRoutes(app, routeContext);
+registerMlRoutes(app, routeContext);
+registerAssistantRoutes(app, routeContext);
+registerCardRoutes(app, routeContext);
 
 app.use((error, req, res, next) => {
   console.error(error);

@@ -10,6 +10,7 @@ const store = createSqliteStateStore({ dbPath });
 
 assert.equal(store.hasState(), false);
 assert.equal(store.open().pragma("journal_mode", { simple: true }).toLowerCase(), "wal");
+assert.equal(Number(store.open().pragma("busy_timeout", { simple: true })), 5000);
 
 const source = {
   documents: [{
@@ -89,6 +90,56 @@ store.saveState(updatedWordBank);
 const wordBankUpdated = store.loadState();
 assert.deepEqual(wordBankUpdated.knownTerms, ["å›³æ›¸é¤¨", "å±±"]);
 assert.equal(wordBankUpdated.knownTermMeta["å±±"].addedAt, "2026-01-05T00:00:00.000Z");
+
+store.saveProgress("doc-1", { page: 9, percentage: 75, updatedAt: "2026-01-06T00:00:00.000Z" });
+const progressUpdated = store.loadState();
+assert.equal(progressUpdated.progress["doc-1"].page, 9);
+assert.equal(progressUpdated.documents[0].title, "Book");
+assert.equal(progressUpdated.dictionaries[0].name, "Jitendex");
+
+const knownOnlyUpdate = {
+  ...progressUpdated,
+  knownTerms: ["山"],
+  knownTermMeta: { 山: { addedAt: "2026-01-07T00:00:00.000Z" } },
+  trash: { ...progressUpdated.trash, knownTerms: [{ term: "海", deletedAt: "2026-01-08T00:00:00.000Z" }] }
+};
+store.saveKnownTermsState(knownOnlyUpdate);
+const knownOnlyLoaded = store.loadState();
+assert.deepEqual(knownOnlyLoaded.knownTerms, ["山"]);
+assert.equal(knownOnlyLoaded.trash.knownTerms[0].term, "海");
+assert.equal(knownOnlyLoaded.documents[0].id, "doc-1");
+assert.equal(knownOnlyLoaded.dictionaries[0].name, "Jitendex");
+
+const dictionaryOnlyUpdate = {
+  ...knownOnlyLoaded,
+  dictionaries: [{ ...knownOnlyLoaded.dictionaries[0], name: "Updated Dictionary", sortOrder: 2 }]
+};
+store.saveDictionariesState(dictionaryOnlyUpdate);
+const dictionaryOnlyLoaded = store.loadState();
+assert.equal(dictionaryOnlyLoaded.dictionaries[0].name, "Updated Dictionary");
+assert.equal(dictionaryOnlyLoaded.documents[0].id, "doc-1");
+assert.deepEqual(dictionaryOnlyLoaded.knownTerms, ["山"]);
+
+const documentOnlyUpdate = {
+  ...dictionaryOnlyLoaded,
+  documents: [{ ...dictionaryOnlyLoaded.documents[0], title: "Updated Book" }]
+};
+store.saveDocumentsState(documentOnlyUpdate);
+const documentOnlyLoaded = store.loadState();
+assert.equal(documentOnlyLoaded.documents[0].title, "Updated Book");
+assert.equal(documentOnlyLoaded.dictionaries[0].name, "Updated Dictionary");
+
+const cardAndKnownUpdate = {
+  ...documentOnlyLoaded,
+  knownTerms: ["山", "川"],
+  knownTermMeta: { 山: { addedAt: "2026-01-07T00:00:00.000Z" }, 川: { addedAt: "2026-01-09T00:00:00.000Z" } },
+  cards: [{ id: "card-2", expression: "川", fields: { Word: "川" }, updatedAt: "2026-01-09T00:00:00.000Z" }]
+};
+store.saveCardsAndKnownTermsState(cardAndKnownUpdate);
+const cardAndKnownLoaded = store.loadState();
+assert.deepEqual(cardAndKnownLoaded.knownTerms, ["山", "川"]);
+assert.equal(cardAndKnownLoaded.cards[0].id, "card-2");
+assert.equal(cardAndKnownLoaded.documents[0].title, "Updated Book");
 
 store.close();
 await fs.rm(tmp, { recursive: true, force: true });

@@ -1,9 +1,10 @@
 import AdmZip from "adm-zip";
 import path from "node:path";
 
-export function createDictionaryService({ store, normalizeJapaneseTerm, repairMojibake, crypto }) {
+export function createDictionaryService({ store, normalizeJapaneseTerm, repairMojibake, crypto, deferStoreSave = false }) {
   const getState = () => store.getState();
   const indexCache = new Map();
+  const storeUpdateOptions = deferStoreSave ? { save: false } : {};
 
   return {
     listMetadata() {
@@ -40,7 +41,7 @@ export function createDictionaryService({ store, normalizeJapaneseTerm, repairMo
         state.dictionaries.push(created);
         enforceDictionaryRoles(state);
         return created;
-      });
+      }, storeUpdateOptions);
       return { dictionary: dictionaryMetadata([created])[0], validation: parsed.validation };
     },
 
@@ -57,7 +58,7 @@ export function createDictionaryService({ store, normalizeJapaneseTerm, repairMo
         enforceDictionaryRoles(state, dictionary.id);
         updated = dictionaryMetadata([dictionary])[0];
         return updated;
-      });
+      }, storeUpdateOptions);
       return updated;
     },
 
@@ -71,7 +72,7 @@ export function createDictionaryService({ store, normalizeJapaneseTerm, repairMo
         state.dictionaries.splice(index, 1);
         enforceDictionaryRoles(state);
         return deleted;
-      });
+      }, storeUpdateOptions);
       return deleted;
     },
 
@@ -122,7 +123,7 @@ export function createDictionaryService({ store, normalizeJapaneseTerm, repairMo
         };
         settings = state.dictionarySettings;
         return settings;
-      });
+      }, storeUpdateOptions);
       return settings;
     }
   };
