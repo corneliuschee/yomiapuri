@@ -57,10 +57,10 @@ try {
   const driftDictionaryPath = await writeDictionaryDriftFixture();
   await uploadFile("/api/dictionaries", "dictionary", driftDictionaryPath);
   const driftEvents = await readSse(`/api/documents/${documentId}/ingest-stream`);
-  assert(driftEvents.some((event) => event.event === "progress" && event.data.phase === "dictionary-stale"), "Dictionary drift should trigger dictionary-stale cache rebuild.");
-  assert(driftEvents.some((event) => event.event === "progress" && event.data.phase === "vector-index"), "Dictionary drift should rewrite the semantic index.");
   const driftDone = driftEvents.find((event) => event.event === "done")?.data;
-  assert(driftDone?.indexStale === false, `Dictionary-stale ingestion should leave the semantic index fresh. Events: ${JSON.stringify(driftEvents)}`);
+  assert(driftDone?.state === "dictionary-stale" && driftDone?.deferred === true, "Dictionary drift should be detected and deferred during normal open.");
+  assert(!driftEvents.some((event) => event.event === "progress" && event.data.phase === "vector-index"), "Dictionary drift should not rebuild the semantic index during normal open.");
+  assert(driftDone?.indexStale === true, `Dictionary-stale ingestion should mark the semantic index stale. Events: ${JSON.stringify(driftEvents)}`);
   const richLookup = await getJson(`/api/dictionary/lookup?term=${encodeURIComponent(smokeDictionaryTerm)}`);
   assert(richLookup.entries[0]?.dictionary, "Lookup should include dictionary labels.");
   assert(richLookup.frequencies[0]?.displayValue === "440", "Lookup should include frequency data.");

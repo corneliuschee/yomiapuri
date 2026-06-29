@@ -1,7 +1,7 @@
 export function createJsonStateStore({ getState, setState, saveState }) {
-  const update = async (mutator) => {
+  const update = async (mutator, options = {}) => {
     const result = mutator(getState());
-    await saveState();
+    if (options.save !== false) await saveState();
     return result;
   };
 
@@ -34,12 +34,12 @@ export function createJsonStateStore({ getState, setState, saveState }) {
           return state.anki.retentionStats;
         });
       },
-      async saveModelFieldMap(modelName, fieldMap) {
+      async saveModelFieldMap(modelName, fieldMap, options = {}) {
         return update((state) => {
           state.anki.modelFieldMaps ??= {};
           state.anki.modelFieldMaps[modelName] = { ...(state.anki.modelFieldMaps[modelName] ?? {}), ...fieldMap };
           return state.anki.modelFieldMaps[modelName];
-        });
+        }, options);
       }
     },
     media: {
@@ -59,16 +59,16 @@ export function createJsonStateStore({ getState, setState, saveState }) {
       }
     },
     cards: {
-      async add(card) {
+      async add(card, options = {}) {
         return update((state) => {
           state.cards.unshift(card);
           return card;
-        });
+        }, options);
       }
     },
     knownTerms: {
-      async merge(terms, mergeKnownTerms, metadataByTerm = {}) {
-        return update(() => mergeKnownTerms(terms, undefined, metadataByTerm));
+      async merge(terms, mergeKnownTerms, metadataByTerm = {}, options = {}) {
+        return update(() => mergeKnownTerms(terms, undefined, metadataByTerm), options);
       }
     }
   };

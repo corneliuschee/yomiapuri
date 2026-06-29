@@ -88,6 +88,13 @@ const rag = await service.ragAnswer("図書館はどこに出る?");
 assert.equal(rag.citations.length > 0, true);
 assert.match(rag.answer, /Retrieved local evidence/);
 
+const vectorDelete = await service.deleteDocumentVectors("doc-1");
+assert.equal(vectorDelete.deleted > 0, true);
+assert.equal(vectorDelete.chunks, 0);
+const deletedSearch = await service.search("å›³æ›¸é¤¨", { limit: 3 });
+assert.equal(deletedSearch.results.length, 0);
+await service.rebuildIndex();
+
 const unreadState = {
   ...state,
   progress: {
@@ -106,6 +113,75 @@ const unreadService = createMlService({
 });
 const safeSearch = await unreadService.search("山を見る", { readSafe: true, limit: 5 });
 assert.equal(safeSearch.results.some((item) => /山/.test(item.text)), false);
+
+let queryEmbedCalls = 0;
+const countingEmbeddingProvider = {
+  id: "counting-test",
+  label: "Counting test",
+  dimensions: 4,
+  info() {
+    return { id: "counting-test", label: "Counting test", dimensions: 4 };
+  },
+  async embed() {
+    queryEmbedCalls += 1;
+    return [1, 0, 0, 0];
+  },
+  async embedMany(texts = []) {
+    return texts.map(() => [1, 0, 0, 0]);
+  }
+};
+const exactFtsSearch = {
+  rebuild() {
+    return { provider: "sqlite-fts5", ready: true, chunks: 1 };
+  },
+  status() {
+    return { provider: "sqlite-fts5", ready: true, chunks: 1 };
+  },
+  async search() {
+    return {
+      results: [{
+        id: "exact-hit",
+        documentId: "doc-1",
+        title: "Test Novel",
+        chapterId: "chapter-1",
+        chapterTitle: "Chapter One",
+        page: 0,
+        text: "\u544a\u767d\u3055\u308c\u305f\u3002",
+        type: "sentence",
+        lexicalScore: 50,
+        exactScore: 1,
+        source: "fts-exact"
+      }]
+    };
+  },
+  deleteDocument() {
+    return { deleted: 0 };
+  }
+};
+const exactService = createMlService({
+  getState: () => ({
+    ...state,
+    documents: [{
+      ...state.documents[0],
+      text: "\u544a\u767d\u3055\u308c\u305f\u3002",
+      chapters: [{ id: "chapter-1", title: "Chapter One", blocks: [{ type: "text", text: "\u544a\u767d\u3055\u308c\u305f\u3002" }] }]
+    }]
+  }),
+  vectorDir: path.join(tmp, "exact-vector-index"),
+  eventLog,
+  analyzeText,
+  lookupDictionary,
+  normalizeJapaneseTerm,
+  hasJapaneseText,
+  hasKanji,
+  ftsSearch: exactFtsSearch,
+  embeddingProvider: countingEmbeddingProvider
+});
+await exactService.rebuildIndex();
+queryEmbedCalls = 0;
+const exactSearch = await exactService.search("\u544a\u767d", { limit: 3 });
+assert.equal(exactSearch.results[0].source, "fts-exact");
+assert.equal(queryEmbedCalls, 0);
 
 await fs.rm(tmp, { recursive: true, force: true });
 console.log("ML service test passed.");

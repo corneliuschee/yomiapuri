@@ -15,8 +15,10 @@ import { createDictionaryService, repairDictionaryState } from "./dictionary-ser
 import { createRuntimeEmbeddingProvider, defaultMlSettings, EMBEDDING_MODELS, normalizeMlSettings, publicMlSettings } from "./embedding-providers.js";
 import { createJsonStateStore } from "./json-state-store.js";
 import { createLearningEventLog } from "./learning-events.js";
+import { createFtsSearchService } from "./fts-search-service.js";
 import { createHashEmbeddingProvider, createMlService } from "./ml-service.js";
 import { createLocalMediaProvider, defaultMediaSettings, normalizeMediaSettings } from "./media-providers.js";
+import { createSqliteStateStore } from "./sqlite-state-store.js";
 import { createSyncService, defaultSyncSettings, normalizeSyncSettings, publicSyncSettings } from "./sync-service.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +33,8 @@ const dbPath = path.join(dataDir, "state.json");
 const dbTmpPath = path.join(dataDir, "state.json.tmp");
 const dictionaryDbPath = path.join(dataDir, "dictionaries.json");
 const dictionaryDbTmpPath = path.join(dataDir, "dictionaries.json.tmp");
+const sqliteDbPath = path.join(dataDir, "yomiapuri.sqlite");
+const backupDir = path.join(dataDir, "backups");
 const publicDir = path.join(rootDir, "public");
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 60 * 1024 * 1024 } });
 const DOCUMENT_CACHE_VERSION = 1;
@@ -122,6 +126,8 @@ let readabilityContextCache = null;
 const normalizationDictionaryCache = new Map();
 const readerTokenCache = new Map();
 let normalizationDictionarySignatureCache = "";
+const wordBankMeaningCache = new Map();
+const sqliteStateStore = createSqliteStateStore({ dbPath: sqliteDbPath });
 
 await ensureStorage();
 await loadState();
@@ -161,6 +167,16 @@ const embeddingProvider = createRuntimeEmbeddingProvider({
   dataDir,
   hashProvider: createHashEmbeddingProvider()
 });
+const ftsSearchService = createFtsSearchService({
+  dbPath: sqliteDbPath,
+  getState: () => state,
+  analyzeText,
+  normalizeJapaneseTerm,
+  hasJapaneseText,
+  tokenizerVersion: TOKENIZER_VERSION,
+  normalizerVersion: NORMALIZER_VERSION,
+  dictionarySignature: dictionaryNormalizationSignature
+});
 const syncService = createSyncService({
   getState: () => state,
   saveState,
@@ -177,6 +193,7 @@ const mlService = createMlService({
   normalizeJapaneseTerm,
   hasJapaneseText,
   hasKanji,
+  ftsSearch: ftsSearchService,
   embeddingProvider
 });
 const ankiLauncher = createAnkiLauncher();
@@ -198,11 +215,20 @@ function ensureStorage() {
     fs.mkdir(dataDir, { recursive: true }),
     fs.mkdir(mediaDir, { recursive: true }),
     fs.mkdir(vectorDir, { recursive: true }),
-    fs.mkdir(documentCacheDir, { recursive: true })
+    fs.mkdir(documentCacheDir, { recursive: true }),
+    fs.mkdir(backupDir, { recursive: true })
   ]);
 }
 
 async function loadState() {
+  const sqliteState = sqliteStateStore.loadState();
+  if (sqliteState) {
+    state = { ...structuredClone(initialState), ...sqliteState };
+    const repaired = await repairLoadedState();
+    if (repaired) await saveState();
+    return;
+  }
+
   if (!existsSync(dbPath)) {
     await saveState();
     return;
@@ -212,12 +238,18 @@ async function loadState() {
   const migratedDictionaries = !existsSync(dictionaryDbPath) && await migrateDictionariesFromRawState(raw);
   const loadedState = parseStateJson(raw);
   const externalDictionaries = await loadExternalDictionaries();
-  let repaired = Boolean(migratedDictionaries);
   state = { ...structuredClone(initialState), ...loadedState };
   if (externalDictionaries) state.dictionaries = externalDictionaries;
   else if (Array.isArray(loadedState.dictionaries) && loadedState.dictionaries.length > 0) {
     state.dictionaries = loadedState.dictionaries;
   }
+  await backupJsonStateFiles();
+  await repairLoadedState(Boolean(migratedDictionaries));
+  await saveState();
+}
+
+async function repairLoadedState(initialRepaired = false) {
+  let repaired = Boolean(initialRepaired);
   state.knownTermMeta ??= {};
   state.anki = {
     ...structuredClone(initialState.anki),
@@ -282,15 +314,27 @@ async function loadState() {
       repaired = true;
     }
   }
-  if (repaired) await saveState();
+  return repaired;
 }
 
 async function saveState() {
   saveStateQueue = saveStateQueue
     .catch(() => {})
     .then(async () => {
-      await writeStateJson(dbTmpPath, mainStateSnapshot());
-      await replaceStateFile(dbTmpPath, dbPath);
+      sqliteStateStore.saveState(state);
+    });
+  return saveStateQueue;
+}
+
+async function saveAnkiExportState() {
+  saveStateQueue = saveStateQueue
+    .catch(() => {})
+    .then(async () => {
+      if (typeof sqliteStateStore.saveAnkiExportState === "function") {
+        sqliteStateStore.saveAnkiExportState(state);
+      } else {
+        sqliteStateStore.saveState(state);
+      }
     });
   return saveStateQueue;
 }
@@ -385,8 +429,20 @@ function jsonPropertyValueRange(raw = "", property = "") {
 }
 
 async function saveDictionariesState(dictionaries = state.dictionaries) {
-  await writeStateJson(dictionaryDbTmpPath, { dictionaries });
-  await replaceStateFile(dictionaryDbTmpPath, dictionaryDbPath);
+  state.dictionaries = dictionaries;
+  await saveState();
+}
+
+async function backupJsonStateFiles() {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backups = [
+    [dbPath, path.join(backupDir, `state-before-sqlite-${timestamp}.json`)],
+    [dictionaryDbPath, path.join(backupDir, `dictionaries-before-sqlite-${timestamp}.json`)]
+  ];
+  for (const [source, target] of backups) {
+    if (!existsSync(source) || existsSync(target)) continue;
+    await fs.copyFile(source, target);
+  }
 }
 
 async function replaceStateFile(sourcePath, targetPath) {
@@ -594,16 +650,39 @@ function invalidateReadabilityContext() {
   readabilityContextCache = null;
 }
 
+function invalidateWordBankMeaningCache(dictionaryId = "") {
+  if (dictionaryId) wordBankMeaningCache.delete(dictionaryId);
+  else wordBankMeaningCache.clear();
+}
+
 function markMlIndexStale(reason = "Source data changed. Rebuild the local index.") {
   state.ml ??= {};
   state.ml.indexStale = true;
   state.ml.indexStaleReason = reason;
+  try {
+    ftsSearchService?.markStale?.(reason);
+  } catch {
+    // FTS is a derived cache; stale marking should never block app writes.
+  }
 }
 
 function markMlIndexFresh() {
   state.ml ??= {};
   state.ml.indexStale = false;
   state.ml.indexStaleReason = "";
+}
+
+async function deleteDocumentVectorsFromMlIndex(documentId = "") {
+  try {
+    const result = await mlService.deleteDocumentVectors(documentId);
+    if (result.deleted > 0) {
+      markMlIndexStale("Book vectors were removed. Rebuild the local semantic index after restoring books.");
+    }
+    return result;
+  } catch (error) {
+    markMlIndexStale(`Book vector cleanup failed: ${error.message}`);
+    return { deleted: 0, error: error.message };
+  }
 }
 
 function documentCachePath(documentId = "") {
@@ -747,6 +826,11 @@ async function ensureDocumentIngestionCache(document = {}, options = {}) {
   const cacheDir = documentTokenCacheDir(document.id);
   const shouldBuild = cacheState.state !== "valid" || options.force === true;
   if (!shouldBuild) return { ...cacheState, rebuilt: false, cacheDir };
+  if (cacheState.state === "dictionary-stale" && options.force !== true && options.rebuildDictionaryStale !== true) {
+    markMlIndexStale("Dictionary normalization changed. Rebuild the local semantic index when convenient.");
+    await saveState();
+    return { ...cacheState, rebuilt: false, deferred: true, cacheDir };
+  }
 
   onProgress({
     phase: cacheState.state,
@@ -776,14 +860,7 @@ async function ensureDocumentIngestionCache(document = {}, options = {}) {
 
   await writeDocumentCacheManifest(document, cacheState.current);
   if (cacheState.state === "dictionary-stale") {
-    onProgress({
-      phase: "vector-index",
-      label: "Rebuilding local semantic index after dictionary drift...",
-      current: 0,
-      total: 1
-    });
-    await mlService.rebuildIndex();
-    markMlIndexFresh();
+    markMlIndexStale("Dictionary normalization changed. Rebuild the local semantic index when convenient.");
     await saveState();
   } else if (cacheState.state === "full-stale" || options.force === true) {
     markMlIndexStale("Document ingestion cache changed. Rebuild the local semantic index.");
@@ -1486,6 +1563,7 @@ function mergeKnownTerms(incoming = [], addedAt = new Date().toISOString(), meta
     }
   }
   state.knownTerms = [...state.knownTerms.map(normalizeJapaneseTerm).filter(Boolean), ...added];
+  if (added.length > 0) invalidateWordBankMeaningCache();
   return added;
 }
 
@@ -1513,6 +1591,104 @@ function sortKnownTerms(terms = [], sort = "gojuon") {
   return values.sort(jaCompare);
 }
 
+function selectedWordBankDictionaryId() {
+  return state.dictionaries.find((dictionary) => dictionary.type === "term" && dictionary.selectedForWordBank)?.id ?? "";
+}
+
+function wordBankMeaningCacheSignature(dictionaryId = "") {
+  const dictionary = state.dictionaries.find((item) => item.id === dictionaryId && item.type === "term");
+  if (!dictionary) return "";
+  return createHash("sha1")
+    .update(dictionary.id ?? "")
+    .update("\u0000")
+    .update(dictionary.importedAt ?? "")
+    .update("\u0000")
+    .update(dictionary.updatedAt ?? "")
+    .update("\u0000")
+    .update(String(dictionary.entriesCount ?? dictionary.entries?.length ?? 0))
+    .update("\u0000")
+    .update(String(state.knownTerms.length))
+    .update("\u0000")
+    .update(state.knownTerms.map(normalizeJapaneseTerm).sort().join("\u0001"))
+    .digest("hex");
+}
+
+function wordBankMeaningCacheEntry(dictionaryId = "") {
+  const signature = wordBankMeaningCacheSignature(dictionaryId);
+  if (!signature) return null;
+  const cached = wordBankMeaningCache.get(dictionaryId);
+  if (!cached || cached.signature !== signature) return null;
+  return cached;
+}
+
+function lookupCachedWordBankMeaning(term = "", dictionaryId = "") {
+  const resolvedDictionaryId = dictionaryId || selectedWordBankDictionaryId();
+  const normalized = normalizeJapaneseTerm(term);
+  const cache = wordBankMeaningCacheEntry(resolvedDictionaryId);
+  if (cache && cache.entries.has(normalized)) return cache.entries.get(normalized);
+  const entries = dictionaryService.lookupWordBank(normalized, resolvedDictionaryId);
+  if (cache) cache.entries.set(normalized, entries);
+  return entries;
+}
+
+function wordBankMeaningCacheStatus(dictionaryId = "") {
+  const resolvedDictionaryId = dictionaryId || selectedWordBankDictionaryId();
+  const dictionary = state.dictionaries.find((item) => item.id === resolvedDictionaryId && item.type === "term");
+  if (!dictionary) {
+    return {
+      dictionaryId: "",
+      dictionaryName: "",
+      ready: false,
+      stale: false,
+      cachedTerms: 0,
+      totalTerms: state.knownTerms.length,
+      builtAt: "",
+      message: "Choose a term dictionary."
+    };
+  }
+  const signature = wordBankMeaningCacheSignature(resolvedDictionaryId);
+  const cached = wordBankMeaningCache.get(resolvedDictionaryId);
+  const ready = Boolean(cached && cached.signature === signature);
+  return {
+    dictionaryId: resolvedDictionaryId,
+    dictionaryName: dictionary.name,
+    ready,
+    stale: Boolean(cached && cached.signature !== signature),
+    cachedTerms: ready ? cached.entries.size : 0,
+    totalTerms: state.knownTerms.length,
+    builtAt: ready ? cached.builtAt : "",
+    message: ready
+      ? `${cached.entries.size.toLocaleString()} meanings cached.`
+      : "Word Bank meanings have not been rebuilt for this dictionary."
+  };
+}
+
+async function rebuildWordBankMeaningCache(dictionaryId = "") {
+  const resolvedDictionaryId = dictionaryId || selectedWordBankDictionaryId();
+  const dictionary = state.dictionaries.find((item) => item.id === resolvedDictionaryId && item.type === "term");
+  if (!dictionary) {
+    const error = new Error("Choose a term dictionary before rebuilding Word Bank meanings.");
+    error.status = 400;
+    throw error;
+  }
+  const signature = wordBankMeaningCacheSignature(resolvedDictionaryId);
+  const entries = new Map();
+  for (const [index, term] of state.knownTerms.map(normalizeJapaneseTerm).filter(Boolean).entries()) {
+    entries.set(term, dictionaryService.lookupWordBank(term, resolvedDictionaryId));
+    if (index > 0 && index % 250 === 0) await new Promise((resolve) => setImmediate(resolve));
+  }
+  const cache = {
+    dictionaryId: resolvedDictionaryId,
+    dictionaryName: dictionary.name,
+    signature,
+    builtAt: new Date().toISOString(),
+    entries
+  };
+  wordBankMeaningCache.set(resolvedDictionaryId, cache);
+  while (wordBankMeaningCache.size > 6) wordBankMeaningCache.delete(wordBankMeaningCache.keys().next().value);
+  return wordBankMeaningCacheStatus(resolvedDictionaryId);
+}
+
 function trashTermValue(entry) {
   return normalizeJapaneseTerm(typeof entry === "string" ? entry : entry?.term ?? "");
 }
@@ -1537,6 +1713,7 @@ function moveKnownTermsToTrash(terms = [], reason = "manual") {
     delete state.knownTermMeta?.[term];
   }
   state.knownTerms = normalizedTerms.filter((term) => !selected.has(term));
+  if (deletedTerms.length > 0) invalidateWordBankMeaningCache();
   return deletedTerms;
 }
 
@@ -2422,7 +2599,7 @@ async function renderAnkiSentenceHtml(sentence = "", target = "", context = {}) 
 }
 
 function renderAnkiSentenceTokens(tokens = [], target = "", context = {}) {
-  const targetIndexes = targetTokenIndexes(tokens, target);
+  const targetIndexes = targetTokenIndexes(tokens, target, context.targets ?? []);
   const fallbackTargetReading = targetIndexes.size === 1 ? primaryReading(context.reading) : "";
   return tokens
     .map((token, index) => {
@@ -2433,28 +2610,32 @@ function renderAnkiSentenceTokens(tokens = [], target = "", context = {}) {
     .join("");
 }
 
-function targetTokenIndexes(tokens = [], target = "") {
-  const normalizedTarget = normalizeJapaneseTerm(target);
+function targetTokenIndexes(tokens = [], target = "", extraTargets = []) {
+  const normalizedTargets = [...new Set([target, ...extraTargets]
+    .map((value) => normalizeJapaneseTerm(value))
+    .filter((value) => value && hasJapaneseText(value)))];
   const indexes = new Set();
-  if (!normalizedTarget) return indexes;
+  if (normalizedTargets.length === 0) return indexes;
 
-  for (let start = 0; start < tokens.length; start += 1) {
-    const token = tokens[start];
-    if (tokenLookupVariants(token).includes(normalizedTarget)) {
-      indexes.add(start);
-      continue;
-    }
+  for (const normalizedTarget of normalizedTargets) {
+    for (let start = 0; start < tokens.length; start += 1) {
+      const token = tokens[start];
+      if (tokenLookupVariants(token).includes(normalizedTarget)) {
+        indexes.add(start);
+        continue;
+      }
 
-    let joined = "";
-    const current = [];
-    for (let end = start; end < tokens.length && joined.length < normalizedTarget.length; end += 1) {
-      const surface = normalizeJapaneseTerm(tokens[end]?.surface ?? "");
-      if (!surface || /[\u3002\u3001\uff01\uff1f!?\s]/u.test(surface)) break;
-      joined += surface;
-      current.push(end);
-      if (joined === normalizedTarget) {
-        current.forEach((index) => indexes.add(index));
-        break;
+      let joined = "";
+      const current = [];
+      for (let end = start; end < tokens.length && joined.length < normalizedTarget.length; end += 1) {
+        const surface = normalizeJapaneseTerm(tokens[end]?.surface ?? "");
+        if (!surface || /[\u3002\u3001\uff01\uff1f!?\s]/u.test(surface)) break;
+        joined += surface;
+        current.push(end);
+        if (joined === normalizedTarget) {
+          current.forEach((index) => indexes.add(index));
+          break;
+        }
       }
     }
   }
@@ -3576,9 +3757,24 @@ app.get("/api/known-terms", (req, res) => {
   const terms = sortKnownTerms(filtered, sort)
     .slice(offset, offset + limit)
     .slice(0, limit)
-    .map((term) => ({ term, dictionaryEntries: dictionaryService.lookupWordBank(term, dictionaryId) }));
+    .map((term) => ({ term, dictionaryEntries: lookupCachedWordBankMeaning(term, dictionaryId) }));
 
   res.json({ total: filtered.length, allTotal: state.knownTerms.length, offset, limit, sort, terms });
+});
+
+app.get("/api/cache/wordbank-meanings/status", (req, res) => {
+  const dictionaryId = String(req.query.dictionaryId ?? "") || selectedWordBankDictionaryId();
+  res.json(wordBankMeaningCacheStatus(dictionaryId));
+});
+
+app.post("/api/cache/wordbank-meanings/rebuild", async (req, res, next) => {
+  try {
+    const dictionaryId = String(req.body?.dictionaryId ?? "") || selectedWordBankDictionaryId();
+    const result = await rebuildWordBankMeaningCache(dictionaryId);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
 });
 
 async function updateReaderSettings(req, res) {
@@ -3761,6 +3957,7 @@ app.get("/api/documents/:id/ingest-stream", async (req, res) => {
     writeSse(res, "done", {
       state: result.state,
       rebuilt: result.rebuilt,
+      deferred: Boolean(result.deferred),
       reason: result.reason,
       indexStale: Boolean(state.ml?.indexStale)
     });
@@ -3914,7 +4111,6 @@ app.delete("/api/documents/:id", async (req, res) => {
   if (trashIndex >= 0) state.trash.documents.splice(trashIndex, 1, trashedDocument);
   else state.trash.documents.unshift(trashedDocument);
   clearDocumentCache();
-  markMlIndexStale("Book was moved to Trash.");
   await saveState();
   res.json({ ok: true });
 });
@@ -3929,7 +4125,6 @@ app.post("/api/trash/documents/:id/restore", async (req, res) => {
     state.documents.push(document);
   }
   clearDocumentCache();
-  markMlIndexStale("Book was restored from Trash.");
   await saveState();
   const { text, chapters, ...publicDocument } = document;
   res.json({ document: publicDocument });
@@ -3940,15 +4135,18 @@ app.delete("/api/trash/documents/:id", async (req, res) => {
   if (index === -1) return res.status(404).json({ error: "Deleted book not found." });
   const [deleted] = state.trash.documents.splice(index, 1);
   clearDocumentCache();
+  await deleteDocumentVectorsFromMlIndex(deleted.id);
   markMlIndexStale("Deleted book was permanently removed.");
   await saveState();
   res.json({ deleted: 1, documentId: deleted.id, total: state.trash.documents.length });
 });
 
 app.delete("/api/trash/documents", async (req, res) => {
+  const deletedIds = state.trash.documents.map((document) => document.id).filter(Boolean);
   const deleted = state.trash.documents.length;
   state.trash.documents = [];
   clearDocumentCache();
+  for (const id of deletedIds) await deleteDocumentVectorsFromMlIndex(id);
   if (deleted > 0) markMlIndexStale("Deleted books were permanently removed.");
   await saveState();
   res.json({ deleted, total: 0 });
@@ -4090,6 +4288,7 @@ app.post("/api/trash/known-terms/restore", async (req, res) => {
   }
 
   state.trash.knownTerms = remainingTrash;
+  if (restoredTerms.length > 0) invalidateWordBankMeaningCache();
   clearDocumentCache();
   invalidateReadabilityContext();
   if (restoredTerms.length > 0) markMlIndexStale("Word Bank changed known-term coverage.");
@@ -4147,6 +4346,7 @@ app.post("/api/dictionaries", upload.array("dictionary", 20), async (req, res, n
     if (files.length === 0) return res.status(400).json({ error: "No dictionary uploaded." });
 
     clearDocumentCache();
+    invalidateWordBankMeaningCache();
     invalidateReadabilityContext();
     const displayName = files.length === 1 ? req.body.name ?? "" : "";
     const imports = [];
@@ -4172,12 +4372,16 @@ app.get("/api/dictionaries", (req, res) => {
 
 app.patch("/api/dictionaries/:id/settings", async (req, res, next) => {
   try {
+    const patch = req.body ?? {};
     const dictionary = await dictionaryService.updateSettings(req.params.id, req.body ?? {});
-    markMlIndexStale("Dictionary settings changed lookup metadata.");
-    invalidateReadabilityContext();
+    const selectedOnly = Object.keys(patch).every((key) => key === "selectedForWordBank");
+    if (!selectedOnly) {
+      markMlIndexStale("Dictionary settings changed lookup metadata.");
+      invalidateReadabilityContext();
+      clearDocumentCache();
+    }
     await saveDictionariesState();
     await saveState();
-    clearDocumentCache();
     res.json({ dictionary, dictionaries: dictionaryService.listMetadata(), settings: state.dictionarySettings });
   } catch (error) {
     next(error);
@@ -4187,6 +4391,7 @@ app.patch("/api/dictionaries/:id/settings", async (req, res, next) => {
 app.delete("/api/dictionaries/:id", async (req, res, next) => {
   try {
     const dictionary = await dictionaryService.deleteDictionary(req.params.id);
+    invalidateWordBankMeaningCache(req.params.id);
     markMlIndexStale("Dictionary was deleted.");
     invalidateReadabilityContext();
     await saveDictionariesState();
@@ -4556,9 +4761,10 @@ app.post("/api/ml/settings", updateMlSettings);
 
 app.post("/api/ml/index/rebuild", async (req, res, next) => {
   try {
+    const shouldSaveFreshState = Boolean(state.ml?.indexStale || state.ml?.indexStaleReason);
     await mlService.rebuildIndex();
     markMlIndexFresh();
-    await saveState();
+    if (shouldSaveFreshState) await saveState();
     const result = await mlService.status();
     logLearningEvent("ml.index-rebuilt", { chunks: result.chunks, provider: result.provider, embeddingProvider: result.embeddingProvider });
     res.json(result);
@@ -4577,6 +4783,19 @@ app.post("/api/search/semantic", async (req, res, next) => {
       scope: req.body.scope === "document" ? "document" : "library"
     });
     logLearningEvent("search.semantic", { query: req.body.query, results: result.results.length });
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/search/fts", async (req, res, next) => {
+  try {
+    const result = await ftsSearchService.search(req.body.query, {
+      limit: req.body.limit,
+      documentId: req.body.documentId ? String(req.body.documentId) : ""
+    });
+    logLearningEvent("search.fts", { query: req.body.query, results: result.results.length });
     res.json(result);
   } catch (error) {
     next(error);
@@ -4847,8 +5066,7 @@ app.post("/api/anki/export-card", async (req, res, next) => {
       modelName: exported.modelName
     });
     invalidateReadabilityContext();
-    markMlIndexStale("Anki export added mined-card source data.");
-    await saveState();
+    await saveAnkiExportState();
     res.status(201).json(exported);
   } catch (error) {
     next(error);

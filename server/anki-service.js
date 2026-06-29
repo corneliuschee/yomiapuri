@@ -202,12 +202,15 @@ export function createAnkiService({
       if (isEmptyFieldPayload(fields)) {
         throw Object.assign(new Error("Reviewed Anki fields are empty. Check the note field mapping before exporting."), { status: 422 });
       }
-      const fieldMap = fieldMapForModel(settings, modelName, Object.keys(fields));
+      const fieldMap = {
+        ...fieldMapForModel(settings, modelName, Object.keys(fields)),
+        ...sanitizeFields(input.fieldMapUpdates ?? {})
+      };
       await ensureHighlightedSentenceFields({
         fields,
         fieldMap,
         sentence: input.sentence ?? "",
-        target: input.surface || expression || dictionaryForm,
+        targets: [input.surface, expression, dictionaryForm, input.originalExpression, input.reading],
         renderSentenceHtml,
         reading: input.reading ?? "",
         expression,
@@ -237,9 +240,16 @@ export function createAnkiService({
           tags: ["sentence-mining", "kanji-reader"]
         }
       });
+      scheduleGeneratedAudioUpdates({
+        connect,
+        noteId,
+        pendingAudioFields: mediaFill.pendingAudioFields,
+        mediaProvider,
+        expression
+      });
 
       if (input.fieldMapUpdates && Object.keys(input.fieldMapUpdates).length > 0) {
-        await store.anki.saveModelFieldMap(modelName, sanitizeFields(input.fieldMapUpdates));
+        await store.anki.saveModelFieldMap(modelName, sanitizeFields(input.fieldMapUpdates), { save: false });
       }
 
       const exported = {
@@ -257,11 +267,12 @@ export function createAnkiService({
         fields,
         media: {
           stored: storedMedia,
-          skippedAudioFields: mediaFill.skippedAudioFields
+          skippedAudioFields: mediaFill.skippedAudioFields,
+          pendingAudioFields: mediaFill.pendingAudioFields.map((item) => item.fieldName)
         },
         createdAt: new Date().toISOString()
       };
-      await store.cards.add(exported);
+      await store.cards.add(exported, { save: false });
       await store.knownTerms.merge([expression], mergeKnownTerms, {
         [expression]: {
           ankiNoteIds: [Number(noteId)].filter(Number.isFinite),
@@ -269,7 +280,7 @@ export function createAnkiService({
           ankiModelName: modelName,
           importedAt: exported.createdAt
         }
-      });
+      }, { save: false });
       clearDocumentCache();
       return exported;
     },
@@ -454,14 +465,15 @@ async function fillGeneratedMediaFields({
 } = {}) {
   const fieldNames = Object.keys(fields);
   const skippedAudioFields = [];
+  const pendingAudioFields = [];
   const fillTasks = [];
   for (const fieldName of fieldNames) {
     if (stripHtml(String(fields[fieldName] ?? "")).trim()) continue;
     const canonical = canonicalFieldForAnkiField(fieldName, fieldMap);
     if (["Audio", "WordAudio"].includes(canonical)) {
       fillTasks.push((async () => {
-        fields[fieldName] = await mediaProvider.createAudio(vocabAudioPayload(expression), { generate: true });
-        if (!fields[fieldName]) skippedAudioFields.push(fieldName);
+        fields[fieldName] = await mediaProvider.createAudio(vocabAudioPayload(expression), { generate: false });
+        if (!fields[fieldName]) pendingAudioFields.push({ fieldName, payload: vocabAudioPayload(expression) });
       })());
     } else if (canonical === "Image") {
       fillTasks.push((async () => {
@@ -470,7 +482,41 @@ async function fillGeneratedMediaFields({
     }
   }
   await Promise.all(fillTasks);
-  return { skippedAudioFields };
+  return { skippedAudioFields, pendingAudioFields };
+}
+
+function scheduleGeneratedAudioUpdates({
+  connect,
+  noteId,
+  pendingAudioFields = [],
+  mediaProvider,
+  expression = ""
+} = {}) {
+  if (!noteId || pendingAudioFields.length === 0) return;
+  Promise.resolve().then(async () => {
+    const updatedFields = {};
+    for (const item of pendingAudioFields) {
+      try {
+        const value = await mediaProvider.createAudio(item.payload ?? vocabAudioPayload(expression), { generate: true });
+        if (!value) continue;
+        updatedFields[item.fieldName] = value;
+        await mediaProvider.storeMediaFiles(connect, { [item.fieldName]: value });
+      } catch (error) {
+        console.warn(`Background Anki audio generation failed for ${item.fieldName}: ${error.message}`);
+      }
+    }
+    if (Object.keys(updatedFields).length === 0) return;
+    try {
+      await connect("updateNoteFields", {
+        note: {
+          id: Number(noteId),
+          fields: updatedFields
+        }
+      });
+    } catch (error) {
+      console.warn(`Background Anki audio update failed for note ${noteId}: ${error.message}`);
+    }
+  });
 }
 
 async function ensureHighlightedSentenceFields({
@@ -478,12 +524,16 @@ async function ensureHighlightedSentenceFields({
   fieldMap = {},
   sentence = "",
   target = "",
+  targets = [],
   renderSentenceHtml = null,
   reading = "",
   expression = "",
   dictionaryForm = ""
 } = {}) {
-  if (!sentence || !target) return;
+  const candidateTargets = [...new Set([target, ...targets]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean))];
+  if (!sentence || candidateTargets.length === 0) return;
   let rendered = "";
   for (const fieldName of Object.keys(fields)) {
     const canonical = canonicalFieldForAnkiField(fieldName, fieldMap);
@@ -491,10 +541,11 @@ async function ensureHighlightedSentenceFields({
     const value = String(fields[fieldName] ?? "");
     if (hasTargetHighlight(value)) continue;
     if (!rendered) {
-      rendered = await renderCardSentenceHtml(sentence, target, renderSentenceHtml, {
+      rendered = await renderCardSentenceHtml(sentence, candidateTargets[0], renderSentenceHtml, {
         reading,
         expression,
-        dictionaryForm
+        dictionaryForm,
+        targets: candidateTargets
       });
     }
     fields[fieldName] = rendered;

@@ -32,8 +32,10 @@ export function createMlService({
   normalizeJapaneseTerm,
   hasJapaneseText,
   hasKanji,
+  ftsSearch = null,
   embeddingProvider = createHashEmbeddingProvider()
 }) {
+  const queryVectorCache = new Map();
   let indexStatus = {
     provider: "lancedb",
     embeddingProvider: embeddingProvider.id,
@@ -48,28 +50,62 @@ export function createMlService({
   async function rebuildIndex() {
     await fs.mkdir(vectorDir, { recursive: true });
     const state = getState();
-    const sourceChunks = await buildChunks(state, {
+    const existingChunkSidecar = await readChunkSidecar(vectorDir);
+    const activeSidecarCount = countActiveSidecarChunks(existingChunkSidecar, state);
+    const targetInfo = typeof embeddingProvider.configuredInfo === "function" ? embeddingProvider.configuredInfo() : embeddingInfo();
+    const canReturnNoop = await canReturnFastRebuild(state, existingChunkSidecar, targetInfo, vectorDir);
+    if (canReturnNoop) {
+      const runtimeInfo = embeddingInfo();
+      const ftsStatus = ftsSearch && typeof ftsSearch.status === "function" ? ftsSearch.status() : null;
+      indexStatus = {
+        ...(await status()),
+        provider: "lancedb",
+        embeddingProvider: runtimeInfo.id,
+        embeddingProviderLabel: runtimeInfo.label,
+        embeddingDimensions: runtimeInfo.dimensions,
+        embeddingDevice: runtimeInfo.device || "",
+        embeddingFallback: Boolean(runtimeInfo.fallback),
+        embeddingError: runtimeInfo.error || "",
+        vectorDir,
+        ready: true,
+        chunks: activeSidecarCount,
+        reusedVectors: activeSidecarCount,
+        embeddedVectors: 0,
+        vectorRowsInsertedOrUpdated: 0,
+        vectorRowsSkipped: activeSidecarCount,
+        rebuiltAt: new Date().toISOString(),
+        error: "",
+        fts: ftsStatus
+      };
+      await fs.writeFile(path.join(vectorDir, "status.json"), JSON.stringify(indexStatus, null, 2), "utf8");
+      return withRuntimeStatus(indexStatus);
+    }
+    const sourceChunks = uniqueChunksById(await buildChunksIncremental(state, existingChunkSidecar, {
       analyzeText,
       lookupDictionary,
       normalizeJapaneseTerm,
       hasJapaneseText,
       hasKanji
-    });
+    }));
     const chunks = [];
     const texts = sourceChunks.map((chunk) => `${chunk.title}\n${chunk.chapterTitle}\n${chunk.text}`);
-    const targetInfo = typeof embeddingProvider.configuredInfo === "function" ? embeddingProvider.configuredInfo() : embeddingInfo();
     const vectorCache = await readVectorCache(vectorDir);
+    const vectorWritePlan = vectorRowsNeedingWrite(sourceChunks, texts, vectorCache, existingChunkSidecar, targetInfo);
     const { vectors, reused, embedded } = await vectorsForChunks(sourceChunks, texts, vectorCache, targetInfo);
     for (const [index, chunk] of sourceChunks.entries()) {
       chunks.push({ ...chunk, vector: vectors[index] });
     }
     let runtimeInfo = embeddingInfo();
+    let ftsStatus = null;
+    if (ftsSearch && typeof ftsSearch.rebuild === "function") {
+      ftsStatus = await ftsSearch.rebuild(sourceChunks);
+    }
 
     const db = await lancedb.connect(vectorDir);
     const vectorRows = chunks.map(encodeChunkForVectorTable);
-    if (chunks.length > 0) {
-      await db.createTable("chunks", vectorRows, { mode: "overwrite" });
-    } else {
+    const changedVectorRows = vectorRows.filter((row) => vectorWritePlan.changedIds.has(row.id));
+    const vectorTableResult = await updateVectorTableIncremental(db, vectorRows, changedVectorRows);
+    if (vectorTableResult.createdEmpty) {
       await db.createTable("chunks", [{
         id: "empty",
         documentId: "",
@@ -80,8 +116,8 @@ export function createMlService({
         text: "",
         type: "empty",
         knownCoverage: 0,
-        terms: [],
-        dictionaryForms: [],
+        terms: [""],
+        dictionaryForms: [""],
         mined: false,
         readAtIndex: false,
         vector: await embeddingProvider.embed("", { providerId: runtimeInfo.id })
@@ -102,11 +138,19 @@ export function createMlService({
       chunks: chunks.length,
       reusedVectors: reused,
       embeddedVectors: embedded,
+      vectorRowsInsertedOrUpdated: vectorTableResult.changedRows,
+      vectorRowsSkipped: Math.max(0, chunks.length - vectorTableResult.changedRows),
       rebuiltAt: new Date().toISOString(),
-      error: ""
+      error: "",
+      fts: ftsStatus
     };
-    await fs.writeFile(path.join(vectorDir, "chunks.json"), JSON.stringify(chunks.map(({ vector, ...chunk }) => chunk)), "utf8");
-    await writeVectorCache(vectorDir, chunks, texts, runtimeInfo);
+    const shouldRewriteSidecars = embedded > 0
+      || vectorTableResult.changedRows > 0
+      || activeSidecarCount !== chunks.length;
+    if (shouldRewriteSidecars) {
+      await fs.writeFile(path.join(vectorDir, "chunks.json"), JSON.stringify(chunks.map(({ vector, ...chunk }) => chunk)), "utf8");
+      await writeVectorCache(vectorDir, chunks, texts, runtimeInfo);
+    }
     await fs.writeFile(path.join(vectorDir, "status.json"), JSON.stringify(indexStatus, null, 2), "utf8");
     return withRuntimeStatus(indexStatus);
   }
@@ -182,14 +226,34 @@ export function createMlService({
     const currentStatus = await status();
     if (!currentStatus.ready) return { query: normalizedQuery, results: [], status: currentStatus };
 
-    const db = await lancedb.connect(vectorDir);
-    const table = await db.openTable("chunks");
     const resultLimit = Math.max(1, Math.min(20, Number(limit) || 8));
     const queryVariants = await queryVariantsForSearch(normalizedQuery, { analyzeText, normalizeJapaneseTerm });
-    const [vectorRows, lexicalRows] = await Promise.all([
-      vectorSearch(table, normalizedQuery, currentStatus, resultLimit * 6),
-      lexicalSearch(normalizedQuery, queryVariants, vectorDir, resultLimit * 8)
-    ]);
+    const state = getState();
+    const activeDocumentIds = new Set((state.documents ?? []).map((document) => String(document.id ?? "")).filter(Boolean));
+    const lexicalRows = await hybridLexicalSearch(normalizedQuery, queryVariants, {
+      ftsSearch,
+      vectorDir,
+      limit: resultLimit * 8,
+      documentId: scope === "document" ? documentId : ""
+    });
+    let vectorRows = [];
+    if (shouldRunVectorSearch(normalizedQuery, lexicalRows, { resultLimit, hasJapaneseText })) {
+      try {
+        const db = await lancedb.connect(vectorDir);
+        const table = await db.openTable("chunks");
+        vectorRows = await vectorSearch(table, normalizedQuery, currentStatus, resultLimit * 6, {
+          activeDocumentIds,
+          includeCards,
+          scope,
+          documentId,
+          readSafe,
+          currentPage,
+          state
+        });
+      } catch {
+        vectorRows = [];
+      }
+    }
 
     const byId = new Map();
     for (const row of vectorRows.filter((row) => row.id !== "empty")) {
@@ -209,8 +273,8 @@ export function createMlService({
       });
     }
 
-    const state = getState();
     const rows = [...byId.values()]
+      .filter((row) => activeDocumentIds.has(String(row.documentId ?? "")))
       .filter((row) => includeCards || row.type !== "card")
       .filter((row) => scope !== "document" || !documentId || row.documentId === documentId)
       .filter((row) => !readSafe || isChunkReadSafe(row, state, { documentId, currentPage }))
@@ -238,6 +302,45 @@ export function createMlService({
           })
         ].join("\n\n");
     return { question: String(question ?? "").trim(), answer, citations, status: result.status };
+  }
+
+  async function deleteDocumentVectors(documentId = "") {
+    const normalizedDocumentId = String(documentId ?? "");
+    if (!normalizedDocumentId) return { deleted: 0, ready: (await status()).ready };
+
+    const existingStatus = await status();
+    const ftsDeleted = ftsSearch && typeof ftsSearch.deleteDocument === "function"
+      ? ftsSearch.deleteDocument(normalizedDocumentId).deleted
+      : 0;
+    const lancedbDeleted = await deleteLanceDocumentRows(vectorDir, normalizedDocumentId);
+    const chunksPath = path.join(vectorDir, "chunks.json");
+    let chunks = [];
+    try {
+      const raw = await fs.readFile(chunksPath, "utf8");
+      chunks = JSON.parse(raw);
+    } catch {
+      return { deleted: 0, lancedbDeleted, ftsDeleted, ready: existingStatus.ready };
+    }
+
+    if (!Array.isArray(chunks) || chunks.length === 0) return { deleted: 0, lancedbDeleted, ftsDeleted, ready: existingStatus.ready };
+    const remainingChunks = chunks.filter((chunk) => chunk.documentId !== normalizedDocumentId);
+    const deleted = chunks.length - remainingChunks.length;
+    if (deleted === 0) return { deleted: 0, lancedbDeleted, ftsDeleted, ready: existingStatus.ready };
+
+    await fs.mkdir(vectorDir, { recursive: true });
+    await fs.writeFile(chunksPath, JSON.stringify(remainingChunks), "utf8");
+    await pruneVectorCacheToChunkIds(vectorDir, new Set(remainingChunks.map((chunk) => chunk.id)));
+
+    indexStatus = {
+      ...existingStatus,
+      ready: true,
+      chunks: remainingChunks.length,
+      rebuiltAt: existingStatus.rebuiltAt || "",
+      updatedAt: new Date().toISOString(),
+      error: ""
+    };
+    await fs.writeFile(path.join(vectorDir, "status.json"), JSON.stringify(indexStatus, null, 2), "utf8");
+    return { deleted, lancedbDeleted, ftsDeleted, ready: true, chunks: remainingChunks.length };
   }
 
   async function analytics() {
@@ -342,6 +445,14 @@ export function createMlService({
   function withRuntimeStatus(statusValue = {}) {
     const mlState = getState().ml ?? {};
     const runtimeInfo = embeddingInfo();
+    let ftsStatus = statusValue.fts;
+    if (ftsSearch && typeof ftsSearch.status === "function") {
+      try {
+        ftsStatus = ftsSearch.status();
+      } catch (error) {
+        ftsStatus = { provider: "sqlite-fts5", ready: false, stale: true, error: error.message };
+      }
+    }
     const storedProvider = statusValue.embeddingProvider || runtimeInfo.id;
     const storedDimensions = statusValue.embeddingDimensions || runtimeInfo.dimensions;
     const providerMismatch = Boolean(statusValue.ready && storedProvider && runtimeInfo.id && storedProvider !== runtimeInfo.id);
@@ -357,6 +468,7 @@ export function createMlService({
       || (dimensionMismatch ? "Embedding vector dimensions changed." : "");
     return {
       ...statusValue,
+      fts: ftsStatus,
       embeddingProvider: storedProvider,
       embeddingProviderLabel: statusValue.embeddingProviderLabel || runtimeInfo.label,
       embeddingDimensions: storedDimensions,
@@ -378,17 +490,34 @@ export function createMlService({
         };
   }
 
-  async function vectorSearch(table, query, currentStatus, limit) {
+  async function vectorSearch(table, query, currentStatus, limit, filterContext = {}) {
     try {
-      const vector = await embeddingProvider.embed(query, { providerId: currentStatus.embeddingProvider });
+      const vector = await cachedQueryVector(query, currentStatus);
       if (currentStatus.embeddingDimensions && vector.length !== Number(currentStatus.embeddingDimensions)) return [];
-      return await table.search(vector).limit(Math.max(limit, 30)).toArray();
+      let searchQuery = table.search(vector);
+      const predicate = vectorFilterPredicate(filterContext);
+      if (predicate) searchQuery = searchQuery.where(predicate);
+      return await searchQuery.limit(Math.max(limit, 30)).toArray();
     } catch {
       return [];
     }
   }
 
-  return { rebuildIndex, status, search, ragAnswer, analytics, rankCandidates };
+  async function cachedQueryVector(query, currentStatus) {
+    const key = [
+      currentStatus.embeddingProvider || embeddingProvider.id,
+      currentStatus.embeddingDimensions || embeddingProvider.dimensions,
+      String(query ?? "").normalize("NFKC").trim()
+    ].join("\u0001");
+    const cached = queryVectorCache.get(key);
+    if (cached) return cached;
+    const vector = await embeddingProvider.embed(query, { providerId: currentStatus.embeddingProvider });
+    queryVectorCache.set(key, vector);
+    if (queryVectorCache.size > 100) queryVectorCache.delete(queryVectorCache.keys().next().value);
+    return vector;
+  }
+
+  return { rebuildIndex, status, search, ragAnswer, analytics, rankCandidates, deleteDocumentVectors };
 }
 
 async function buildChunks(state, context) {
@@ -398,6 +527,195 @@ async function buildChunks(state, context) {
     chunks.push(...documentChunks.slice(0, MAX_INDEX_SENTENCES_PER_DOCUMENT));
   }
   return chunks;
+}
+
+async function buildChunksIncremental(state, existingChunkSidecar = new Map(), context) {
+  const chunks = [];
+  const existingByDocument = chunksByDocument(existingChunkSidecar);
+  for (const document of state.documents ?? []) {
+    const cachedChunks = existingByDocument.get(document.id) ?? [];
+    if (cachedChunks.length > 0 && !documentIndexNeedsRebuild(document, cachedChunks)) {
+      chunks.push(...cachedChunks.map((chunk) => refreshCachedChunkMetadata(chunk, document)));
+      continue;
+    }
+    const documentChunks = await buildDocumentChunks(document, state, context);
+    chunks.push(...documentChunks.slice(0, MAX_INDEX_SENTENCES_PER_DOCUMENT));
+  }
+  return chunks;
+}
+
+function chunksByDocument(existingChunkSidecar = new Map()) {
+  const byDocument = new Map();
+  for (const chunk of existingChunkSidecar.values()) {
+    const documentId = String(chunk.documentId ?? "");
+    if (!documentId || chunk.type === "empty") continue;
+    if (!byDocument.has(documentId)) byDocument.set(documentId, []);
+    byDocument.get(documentId).push(chunk);
+  }
+  for (const chunks of byDocument.values()) chunks.sort((a, b) => Number(a.page) - Number(b.page));
+  return byDocument;
+}
+
+function countActiveSidecarChunks(existingChunkSidecar = new Map(), state = {}) {
+  const activeIds = new Set((state.documents ?? []).map((document) => String(document.id ?? "")).filter(Boolean));
+  let count = 0;
+  for (const chunk of existingChunkSidecar.values()) {
+    if (activeIds.has(String(chunk.documentId ?? ""))) count += 1;
+  }
+  return count;
+}
+
+async function canReturnFastRebuild(state = {}, existingChunkSidecar = new Map(), targetInfo = {}, vectorDir = "") {
+  if (existingChunkSidecar.size === 0) return false;
+  const byDocument = chunksByDocument(existingChunkSidecar);
+  for (const document of state.documents ?? []) {
+    const cachedChunks = byDocument.get(document.id) ?? [];
+    if (cachedChunks.length === 0 || documentIndexNeedsRebuild(document, cachedChunks)) return false;
+  }
+  try {
+    const raw = await fs.readFile(path.join(vectorDir, "status.json"), "utf8");
+    const stored = JSON.parse(raw);
+    if (!stored.ready) return false;
+    if (stored.embeddingProvider !== targetInfo.id) return false;
+    if (Number(stored.embeddingDimensions) !== Number(targetInfo.dimensions)) return false;
+    if (stored.fts && stored.fts.ready === false) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function documentIndexNeedsRebuild(document = {}, cachedChunks = []) {
+  if (!cachedChunks.length) return true;
+  const expectedSignature = documentSourceFingerprint(document);
+  const cachedSignature = cachedChunks.find((chunk) => chunk.documentSourceFingerprint)?.documentSourceFingerprint;
+  return Boolean(cachedSignature && expectedSignature && cachedSignature !== expectedSignature);
+}
+
+function refreshCachedChunkMetadata(chunk = {}, document = {}) {
+  return {
+    ...chunk,
+    title: document.title || chunk.title || "Untitled",
+    documentSourceFingerprint: chunk.documentSourceFingerprint || documentSourceFingerprint(document),
+    vector: undefined
+  };
+}
+
+function documentSourceFingerprint(document = {}) {
+  const blockParts = [];
+  for (const chapter of document.chapters ?? []) {
+    blockParts.push(chapter.id ?? "", chapter.title ?? "");
+    for (const block of chapter.blocks ?? []) blockParts.push(blockFingerprint(block));
+  }
+  return createHash("sha1")
+    .update(String(document.id ?? ""))
+    .update("\u0001")
+    .update(String(document.type ?? ""))
+    .update("\u0001")
+    .update(String(document.text?.length ?? 0))
+    .update("\u0001")
+    .update(blockParts.join("\u0001"))
+    .digest("hex");
+}
+
+function blockFingerprint(block = {}) {
+  if (typeof block === "string") return block.length > 120 ? `${block.length}:${block.slice(0, 60)}:${block.slice(-60)}` : block;
+  if (!block || typeof block !== "object") return "";
+  const text = String(block.text ?? "");
+  const asset = String(block.src || block.href || block.fileName || "");
+  return [
+    block.type ?? "",
+    block.pageNumber ?? "",
+    text.length,
+    text.slice(0, 60),
+    text.slice(-60),
+    asset
+  ].join(":");
+}
+
+function uniqueChunksById(chunks = []) {
+  const byId = new Map();
+  for (const chunk of chunks) {
+    if (!chunk?.id || byId.has(chunk.id)) continue;
+    byId.set(chunk.id, chunk);
+  }
+  return [...byId.values()];
+}
+
+async function readChunkSidecar(vectorDir) {
+  try {
+    const raw = await fs.readFile(path.join(vectorDir, "chunks.json"), "utf8");
+    const chunks = JSON.parse(raw);
+    return new Map(Array.isArray(chunks) ? chunks.filter((chunk) => chunk?.id).map((chunk) => [chunk.id, chunk]) : []);
+  } catch {
+    return new Map();
+  }
+}
+
+function vectorRowsNeedingWrite(sourceChunks = [], texts = [], vectorCache = new Map(), existingChunkSidecar = new Map(), targetInfo = {}) {
+  const changedIds = new Set();
+  const targetProvider = targetInfo.id;
+  const targetDimensions = Number(targetInfo.dimensions) || 0;
+  for (const [index, chunk] of sourceChunks.entries()) {
+    const cacheEntry = vectorCache.get(chunk.id);
+    const cached = cacheEntry
+      && cacheEntry.hash === chunkContentHash(texts[index])
+      && cacheEntry.embeddingProvider === targetProvider
+      && Number(cacheEntry.embeddingDimensions) === targetDimensions
+      && Array.isArray(cacheEntry.vector)
+      && cacheEntry.vector.length === targetDimensions;
+    if (!cached || !existingChunkSidecar.has(chunk.id)) changedIds.add(chunk.id);
+  }
+  return { changedIds };
+}
+
+async function updateVectorTableIncremental(db, vectorRows = [], changedVectorRows = []) {
+  if (vectorRows.length === 0) {
+    try {
+      await db.openTable("chunks");
+      return { changedRows: 0, createdEmpty: false };
+    } catch {
+      return { changedRows: 0, createdEmpty: true };
+    }
+  }
+
+  let table;
+  try {
+    table = await db.openTable("chunks");
+  } catch {
+    await db.createTable("chunks", vectorRows, { mode: "overwrite" });
+    return { changedRows: vectorRows.length, createdEmpty: false };
+  }
+
+  if (changedVectorRows.length === 0) return { changedRows: 0, createdEmpty: false };
+
+  try {
+    await table.mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute(changedVectorRows);
+  } catch {
+    for (const row of changedVectorRows) {
+      try {
+        await table.delete(`id = ${sqlStringLiteral(row.id)}`);
+      } catch {
+        // Continue with add fallback.
+      }
+    }
+    await table.add(changedVectorRows, { mode: "append" });
+  }
+  return { changedRows: changedVectorRows.length, createdEmpty: false };
+}
+
+async function deleteLanceDocumentRows(vectorDir, documentId = "") {
+  try {
+    const db = await lancedb.connect(vectorDir);
+    const table = await db.openTable("chunks");
+    const result = await table.delete(`documentId = ${sqlStringLiteral(documentId)}`);
+    return Number(result?.numDeletedRows ?? 0);
+  } catch {
+    return 0;
+  }
 }
 
 async function readVectorCache(vectorDir) {
@@ -430,6 +748,24 @@ async function writeVectorCache(vectorDir, chunks, texts, runtimeInfo) {
   }), "utf8");
 }
 
+async function pruneVectorCacheToChunkIds(vectorDir, chunkIds = new Set()) {
+  const cachePath = path.join(vectorDir, VECTOR_CACHE_FILE);
+  try {
+    const raw = await fs.readFile(cachePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const entries = Array.isArray(parsed?.entries) ? parsed.entries : Array.isArray(parsed) ? parsed : [];
+    const nextEntries = entries.filter((entry) => chunkIds.has(entry?.id));
+    await fs.writeFile(cachePath, JSON.stringify({
+      ...(Array.isArray(parsed) ? {} : parsed),
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entries: nextEntries
+    }), "utf8");
+  } catch {
+    // No vector cache exists yet.
+  }
+}
+
 function chunkContentHash(text = "") {
   return createHash("sha256").update(String(text ?? ""), "utf8").digest("hex");
 }
@@ -451,6 +787,7 @@ async function buildDocumentChunks(document, state, context) {
       const pageIndex = pageCursor;
       pageCursor += Math.max(1, page.pageSpan || 1);
       const cleanPageText = cleanChunkText(page.text);
+      const authorRubyReadings = rubyReadingsFromText(page.text);
       if (!cleanPageText || cleanPageText.length < 6) continue;
 
       const paragraphTexts = compactParagraphs(cleanPageText);
@@ -465,6 +802,7 @@ async function buildDocumentChunks(document, state, context) {
             text: paragraph,
             known,
             minedSentences,
+            authorRubyReadings,
             state,
             context
           }));
@@ -484,6 +822,7 @@ async function buildDocumentChunks(document, state, context) {
           text: clean,
           known,
           minedSentences,
+          authorRubyReadings,
           state,
           context
         }));
@@ -494,7 +833,7 @@ async function buildDocumentChunks(document, state, context) {
   return chunks;
 }
 
-async function createTextChunk({ document, chapterId, chapterTitle, page, type, text, known, minedSentences, state, context }) {
+async function createTextChunk({ document, chapterId, chapterTitle, page, type, text, known, minedSentences, authorRubyReadings = [], state, context }) {
   const analysis = await safeAnalyzeText(context.analyzeText, text);
   const terms = chunkTermsFromAnalysis(analysis, context);
   const dictionaryForms = [...new Set(terms.map((term) => term.base).filter(Boolean))];
@@ -511,6 +850,7 @@ async function createTextChunk({ document, chapterId, chapterTitle, page, type, 
     id: createChunkId(document.id, chapterId, page, type, text),
     documentId: document.id,
     title: document.title,
+    documentSourceFingerprint: documentSourceFingerprint(document),
     chapterId,
     chapterTitle,
     page,
@@ -520,6 +860,9 @@ async function createTextChunk({ document, chapterId, chapterTitle, page, type, 
     terms: [...new Set(terms.map((term) => term.surface).filter(Boolean))].slice(0, 40),
     dictionaryForms: dictionaryForms.slice(0, 40),
     dictionaryMatches: dictionaryMatches.slice(0, 20),
+    authorRubyReadings: authorRubyReadings
+      .filter((item) => text.includes(item.surface))
+      .slice(0, 40),
     mined: minedSentences.has(context.normalizeJapaneseTerm(text)),
     readAtIndex: isChunkReadSafe({ documentId: document.id, page, type }, state, {})
   };
@@ -659,6 +1002,24 @@ function cleanChunkText(value = "") {
     .trim();
 }
 
+function rubyReadingsFromText(value = "") {
+  const readings = [];
+  for (const match of String(value ?? "").matchAll(/\[\[RUBY:([^|]*)\|([^\]]*)\]\]/g)) {
+    const surface = decodeRubyMarker(match[1]);
+    const reading = decodeRubyMarker(match[2]);
+    if (surface && reading) readings.push({ surface, reading });
+  }
+  return readings;
+}
+
+function decodeRubyMarker(value = "") {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function hashEmbedText(text = "") {
   const vector = Array.from({ length: HASH_VECTOR_DIMENSIONS }, () => 0);
   const normalized = String(text ?? "").normalize("NFKC").toLowerCase();
@@ -706,6 +1067,60 @@ async function lexicalSearch(query = "", queryVariants = [], vectorDir, limit = 
   }
 }
 
+async function hybridLexicalSearch(query = "", queryVariants = [], context = {}) {
+  const { ftsSearch, vectorDir, limit = 20, documentId = "" } = context;
+  if (ftsSearch && typeof ftsSearch.search === "function") {
+    try {
+      const result = await ftsSearch.search(query, { limit, documentId });
+      if (Array.isArray(result.results) && result.results.length > 0) return result.results;
+    } catch {
+      // Fall through to the sidecar lexical scan below.
+    }
+  }
+  return lexicalSearch(query, queryVariants, vectorDir, limit);
+}
+
+function shouldRunVectorSearch(query = "", lexicalRows = [], context = {}) {
+  const resultLimit = Math.max(1, Number(context.resultLimit) || 8);
+  const isJapanese = typeof context.hasJapaneseText === "function"
+    ? context.hasJapaneseText(query)
+    : /[\u3040-\u30ff\u3400-\u9fff]/u.test(String(query ?? ""));
+  if (!isJapanese) return true;
+  if (lexicalRows.some((row) => Number(row.exactScore) > 0)) return false;
+  if (lexicalRows.length >= resultLimit) return false;
+  return true;
+}
+
+function vectorFilterPredicate(context = {}) {
+  const clauses = [];
+  const activeIds = [...(context.activeDocumentIds ?? [])].filter(Boolean);
+  if (activeIds.length === 0) return "documentId = '__no_active_documents__'";
+  clauses.push(`documentId IN (${activeIds.map(sqlStringLiteral).join(", ")})`);
+
+  if (context.scope === "document" && context.documentId) {
+    clauses.push(`documentId = ${sqlStringLiteral(context.documentId)}`);
+  }
+  if (context.includeCards === false) {
+    clauses.push(`type != 'card'`);
+  }
+  if (context.readSafe) {
+    const safeClauses = [];
+    const state = context.state ?? {};
+    for (const documentId of activeIds) {
+      const progressPage = Number(state.progress?.[documentId]?.page);
+      const currentPage = context.documentId === documentId && Number.isFinite(Number(context.currentPage))
+        ? Number(context.currentPage)
+        : NaN;
+      const page = Number.isFinite(currentPage) ? currentPage : progressPage;
+      if (Number.isFinite(page)) safeClauses.push(`(documentId = ${sqlStringLiteral(documentId)} AND page <= ${Math.max(-1, Math.floor(page))})`);
+    }
+    if (context.includeCards !== false) safeClauses.push(`type = 'card'`);
+    clauses.push(`(${safeClauses.length ? safeClauses.join(" OR ") : "documentId = '__no_read_safe_documents__'"})`);
+  }
+
+  return clauses.join(" AND ");
+}
+
 function lexicalScore(query = "", queryVariants = [], text = "", chunk = {}) {
   const normalizedQuery = String(query ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, "");
   const normalizedText = String(text ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, "");
@@ -739,6 +1154,7 @@ function lexicalScoreTerm(term = "", normalizedText = "") {
 
 function retrievalScore(row = {}, query = "", options = {}) {
   let score = combinedScore(row);
+  if (Number(row.exactScore) > 0) score += 20;
   const normalizedText = String(row.text ?? "").normalize("NFKC").replace(/\s+/g, "");
   const normalizedQuery = String(query ?? "").normalize("NFKC").replace(/\s+/g, "");
   if (normalizedQuery && normalizedText.includes(normalizedQuery)) score += 12;
@@ -777,6 +1193,9 @@ function publicSearchResult(row = {}, query = "", options = {}, state = {}) {
     dictionaryMatches: arrayFromPossiblyLanceList(row.dictionaryMatches).slice(0, 20),
     mined: Boolean(row.mined),
     readSafe: isChunkReadSafe(row, state, options),
+    source: row.source || (row.lexicalScore ? "lexical" : "vector"),
+    exactScore: Number(row.exactScore) || 0,
+    bm25Score: Number.isFinite(Number(row.bm25Score)) ? Number(row.bm25Score) : null,
     score: Number(retrievalScore(row, query, options).toFixed(3))
   };
 }
@@ -800,7 +1219,8 @@ function encodeChunkForVectorTable(chunk = {}) {
     ...chunk,
     terms: JSON.stringify(chunk.terms ?? []),
     dictionaryForms: JSON.stringify(chunk.dictionaryForms ?? []),
-    dictionaryMatches: JSON.stringify(chunk.dictionaryMatches ?? [])
+    dictionaryMatches: JSON.stringify(chunk.dictionaryMatches ?? []),
+    authorRubyReadings: JSON.stringify(chunk.authorRubyReadings ?? [])
   };
 }
 
@@ -938,4 +1358,8 @@ function countTermOccurrences(text = "", term = "") {
 
 function createChunkId(...parts) {
   return createHash("sha1").update(parts.join("\u0001")).digest("hex");
+}
+
+function sqlStringLiteral(value = "") {
+  return `'${String(value).replace(/'/g, "''")}'`;
 }

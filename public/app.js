@@ -200,6 +200,10 @@ const elements = {
   aiModelList: $("#ai-model-list"),
   importAiModel: $("#import-ai-model"),
   stopAiRuntime: $("#stop-ai-runtime"),
+  cacheWordbankDictionary: $("#cache-wordbank-dictionary"),
+  cacheRebuildWordbank: $("#cache-rebuild-wordbank"),
+  cacheWordbankStatus: $("#cache-wordbank-status"),
+  cacheNotice: $("#cache-notice"),
   dictionaryForm: $("#dictionary-form"),
   dictionaryFile: $("#dictionary-file"),
   dictionaryAttachment: $("#dictionary-attachment"),
@@ -273,6 +277,7 @@ async function loadState() {
   renderDocuments();
   renderBooksGrid();
   renderDictionaries();
+  refreshWordBankMeaningCacheStatus();
   renderAnkiSummary();
   renderSyncStatus();
   await loadMediaProviders();
@@ -425,6 +430,7 @@ let libraryDragInsertAfter = false;
 let libraryNoticeTimer;
 let ankiNoticeTimer;
 let dictionaryNoticeTimer;
+let cacheNoticeTimer;
 
 function showLibraryNotice(message, type = "success") {
   libraryNoticeTimer = showNotice(elements.libraryNotice, libraryNoticeTimer, message, type);
@@ -436,6 +442,10 @@ function showAnkiNotice(message, type = "success") {
 
 function showDictionaryNotice(message, type = "success") {
   dictionaryNoticeTimer = showNotice(elements.dictionaryNotice, dictionaryNoticeTimer, message, type);
+}
+
+function showCacheNotice(message, type = "success") {
+  cacheNoticeTimer = showNotice(elements.cacheNotice, cacheNoticeTimer, message, type);
 }
 
 function showNotice(target, timer, message, type = "success") {
@@ -1779,6 +1789,8 @@ async function exportReviewedCard(event) {
 
 function exportResultMessage(exported = {}) {
   const skipped = exported.media?.skippedAudioFields ?? [];
+  const pending = exported.media?.pendingAudioFields ?? [];
+  if (pending.length > 0) return `Created Anki note. Audio will be added shortly: ${pending.join(", ")}.`;
   if (skipped.length > 0) return `Created Anki note. Uncached audio skipped: ${skipped.join(", ")}.`;
   return "Created Anki note.";
 }
@@ -1831,6 +1843,54 @@ async function loadWordBank() {
   }
   updateWordbankDeleteButton();
   renderWordbankPagination(result.total, result.limit);
+}
+
+async function refreshWordBankMeaningCacheStatus() {
+  if (!elements.cacheWordbankStatus) return;
+  const dictionaryId = elements.cacheWordbankDictionary?.value || selectedWordBankDictionaryId();
+  try {
+    const status = await api(`/api/cache/wordbank-meanings/status?dictionaryId=${encodeURIComponent(dictionaryId)}`);
+    const rebuiltAt = status.builtAt ? new Date(status.builtAt).toLocaleString() : "Never";
+    elements.cacheWordbankStatus.innerHTML = `
+      <strong>${escapeHtml(status.dictionaryName || "No dictionary")}</strong>
+      <span>${escapeHtml(status.message)}</span>
+      <span>Last rebuilt: ${escapeHtml(rebuiltAt)}</span>
+    `;
+    elements.cacheWordbankStatus.classList.toggle("ready", Boolean(status.ready));
+    elements.cacheWordbankStatus.classList.toggle("stale", Boolean(status.stale || !status.ready));
+  } catch (error) {
+    elements.cacheWordbankStatus.textContent = error.message;
+    elements.cacheWordbankStatus.classList.remove("ready");
+    elements.cacheWordbankStatus.classList.add("stale");
+  }
+}
+
+async function rebuildWordBankMeaningCache() {
+  if (!elements.cacheRebuildWordbank) return;
+  const dictionaryId = elements.cacheWordbankDictionary?.value || selectedWordBankDictionaryId();
+  if (!dictionaryId) {
+    showCacheNotice("Choose a term dictionary first.", "error");
+    return;
+  }
+  const previousText = elements.cacheRebuildWordbank.textContent;
+  elements.cacheRebuildWordbank.disabled = true;
+  elements.cacheRebuildWordbank.textContent = "Rebuilding...";
+  try {
+    const status = await api("/api/cache/wordbank-meanings/rebuild", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dictionaryId })
+    });
+    state.wordbankCache.clear();
+    await refreshWordBankMeaningCacheStatus();
+    if (elements.wordbankList.closest(".page.active")) await loadWordBank();
+    showCacheNotice(`${Number(status.cachedTerms ?? 0).toLocaleString()} Word Bank meanings rebuilt for ${status.dictionaryName}.`, "success");
+  } catch (error) {
+    showCacheNotice(error.message, "error");
+  } finally {
+    elements.cacheRebuildWordbank.disabled = false;
+    elements.cacheRebuildWordbank.textContent = previousText;
+  }
 }
 
 function toggleWordSelection(term) {
@@ -1974,9 +2034,15 @@ function renderMlIndexStatus(status = {}) {
   const embeddingError = String(status.embeddingError || "");
   const visibleEmbeddingError = embeddingError.includes("cache_dir") && embeddingError.includes("deprecated") ? "" : embeddingError;
   const fallback = status.embeddingFallback && visibleEmbeddingError ? `<em>Embedding fallback active: ${escapeHtml(visibleEmbeddingError)}</em>` : "";
+  const fts = status.fts ?? {};
+  const ftsReady = fts.stale ? "stale" : fts.ready ? "ready" : "not built";
+  const ftsLine = fts.provider
+    ? `<span>Lexical BM25: ${escapeHtml(ftsReady)} - ${Number(fts.chunks ?? 0).toLocaleString()} chunks${fts.rebuiltAt ? ` - rebuilt ${escapeHtml(new Date(fts.rebuiltAt).toLocaleString())}` : ""}</span>`
+    : "";
   elements.mlIndexStatus.innerHTML = `
     <strong>${escapeHtml(ready)}</strong>
     <span>${Number(status.chunks ?? 0).toLocaleString()} chunks - ${escapeHtml(provider)}${escapeHtml(dimensions)}${device}${vectorCounts} - rebuilt ${escapeHtml(rebuilt)}</span>
+    ${ftsLine}
     ${staleReason}
     ${fallback}
   `;
@@ -2515,15 +2581,7 @@ function compactPageNumbers(current, total) {
 function renderDictionaries() {
   elements.dictionaryList.innerHTML = "";
   const termDictionaries = state.dictionaries.filter((dictionary) => dictionary.type === "term");
-  elements.wordbankDictionary.innerHTML = `<option value="">No dictionary selected</option>`;
-  for (const dictionary of termDictionaries) {
-    const option = document.createElement("option");
-    option.value = dictionary.id;
-    option.textContent = dictionary.name;
-    option.selected = Boolean(dictionary.selectedForWordBank);
-    elements.wordbankDictionary.append(option);
-  }
-  elements.wordbankDictionary.disabled = termDictionaries.length === 0;
+  renderWordBankDictionarySelects(termDictionaries);
   elements.dictionaryPrefixToggle.checked = Boolean(state.dictionarySettings?.prefixWildcardSearch);
 
   if (state.dictionaries.length === 0) {
@@ -2565,6 +2623,33 @@ function renderDictionaries() {
     row.querySelector("[data-dictionary-delete]")?.addEventListener("click", () => deleteDictionary(dictionary));
     elements.dictionaryList.append(row);
   }
+}
+
+function renderWordBankDictionarySelects(termDictionaries = state.dictionaries.filter((dictionary) => dictionary.type === "term")) {
+  const selectedId = selectedWordBankDictionaryId();
+  for (const select of [elements.wordbankDictionary, elements.cacheWordbankDictionary].filter(Boolean)) {
+    select.innerHTML = `<option value="">No dictionary selected</option>`;
+    for (const dictionary of termDictionaries) {
+      const option = document.createElement("option");
+      option.value = dictionary.id;
+      option.textContent = dictionary.name;
+      option.selected = dictionary.id === selectedId;
+      select.append(option);
+    }
+    select.disabled = termDictionaries.length === 0;
+  }
+}
+
+function selectedWordBankDictionaryId() {
+  return state.dictionaries.find((dictionary) => dictionary.type === "term" && dictionary.selectedForWordBank)?.id ?? "";
+}
+
+function setSelectedWordBankDictionaryLocal(id) {
+  state.dictionaries = state.dictionaries.map((dictionary) => ({
+    ...dictionary,
+    selectedForWordBank: dictionary.type === "term" && dictionary.id === id
+  }));
+  renderWordBankDictionarySelects();
 }
 
 function orderedDictionariesForUi(dictionaries = []) {
@@ -2622,9 +2707,11 @@ async function dropDictionary(event, targetId) {
     ));
     state.dictionaries = results.at(-1)?.dictionaries ?? state.dictionaries;
     renderDictionaries();
+    await refreshWordBankMeaningCacheStatus();
   } catch (error) {
     state.dictionaries = previousDictionaries;
     renderDictionaries();
+    await refreshWordBankMeaningCacheStatus();
     showDictionaryNotice(error.message, "error");
   }
 }
@@ -2688,6 +2775,7 @@ async function deleteDictionary(dictionary) {
     state.dictionarySettings = result.settings ?? state.dictionarySettings;
     state.wordbankCache.clear();
     renderDictionaries();
+    await refreshWordBankMeaningCacheStatus();
     if (elements.wordbankList.closest(".page.active")) loadWordBank();
     showDictionaryNotice("Dictionary deleted", "success");
   } catch (error) {
@@ -4753,6 +4841,7 @@ elements.dictionaryForm.addEventListener("submit", async (event) => {
       showDictionaryNotice(`${dictionary?.name ?? "Dictionary"} imported (${Number(importedCount ?? 0).toLocaleString()} rows)`, "success");
     }
     if (state.activeDocumentId) await openDocument(state.activeDocumentId);
+    await refreshWordBankMeaningCacheStatus();
   } catch (error) {
     showDictionaryNotice(error.message, "error");
   } finally {
@@ -4762,25 +4851,28 @@ elements.dictionaryForm.addEventListener("submit", async (event) => {
 
 elements.dictionaryFile?.addEventListener("change", renderDictionaryAttachment);
 
-elements.wordbankDictionary.addEventListener("change", async () => {
-  const id = elements.wordbankDictionary.value;
+async function changeWordBankDictionary(id) {
   if (!id) return;
   const previousDictionaries = state.dictionaries.map((dictionary) => ({ ...dictionary }));
-  state.dictionaries = state.dictionaries.map((dictionary) => ({
-    ...dictionary,
-    selectedForWordBank: dictionary.type === "term" && dictionary.id === id
-  }));
-  renderDictionaries();
-  loadWordBank();
+  setSelectedWordBankDictionaryLocal(id);
+  state.wordbankCache.clear();
+  refreshWordBankMeaningCacheStatus();
+  if (elements.wordbankList.closest(".page.active")) loadWordBank();
   try {
     await updateDictionarySettings(id, { selectedForWordBank: true }, { render: false, reloadWordBank: false, clearCache: false });
+    await refreshWordBankMeaningCacheStatus();
   } catch (error) {
     state.dictionaries = previousDictionaries;
-    renderDictionaries();
-    loadWordBank();
+    renderWordBankDictionarySelects();
+    if (elements.wordbankList.closest(".page.active")) loadWordBank();
+    await refreshWordBankMeaningCacheStatus();
     showDictionaryNotice(error.message, "error");
   }
-});
+}
+
+elements.wordbankDictionary.addEventListener("change", () => changeWordBankDictionary(elements.wordbankDictionary.value));
+elements.cacheWordbankDictionary?.addEventListener("change", () => changeWordBankDictionary(elements.cacheWordbankDictionary.value));
+elements.cacheRebuildWordbank?.addEventListener("click", rebuildWordBankMeaningCache);
 
 elements.dictionaryPrefixToggle.addEventListener("change", async () => {
   const result = await api("/api/dictionaries/settings", {

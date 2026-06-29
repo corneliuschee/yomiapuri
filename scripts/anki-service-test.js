@@ -241,11 +241,14 @@ const generatedAudioExport = await generatedAudioExportService.exportCard({
   }
 });
 const generatedAudioAddNote = ankiCalls.slice(callCountBeforeGeneratedAudioExport).find((call) => call.action === "addNote");
-assert.equal(generatedAudioAddNote.params.note.fields.WordAudio, "[sound:word-audio.wav]");
+assert.equal(generatedAudioAddNote.params.note.fields.WordAudio, "");
 assert.equal(generatedAudioAddNote.params.note.fields.SentenceAudio, "");
-assert.equal(ankiCalls.slice(callCountBeforeGeneratedAudioExport).some((call) => call.action === "updateNoteFields"), false);
 assert.deepEqual(generatedAudioExport.media.skippedAudioFields, []);
-assert.deepEqual(audioCalls.map((call) => call.options), [{ generate: true }]);
+assert.deepEqual(generatedAudioExport.media.pendingAudioFields, ["WordAudio"]);
+await waitFor(() => ankiCalls.slice(callCountBeforeGeneratedAudioExport).some((call) => call.action === "updateNoteFields"));
+const generatedAudioUpdateNote = ankiCalls.slice(callCountBeforeGeneratedAudioExport).find((call) => call.action === "updateNoteFields");
+assert.equal(generatedAudioUpdateNote.params.note.fields.WordAudio, "[sound:word-audio.wav]");
+assert.deepEqual(audioCalls.map((call) => call.options), [{ generate: false }, { generate: true }]);
 assert.deepEqual(audioCalls[0].payload, { expression: "fast-word", sentence: "" });
 
 const concurrentAudioEvents = [];
@@ -273,6 +276,7 @@ const concurrentAudioService = createAnkiService({
   clearDocumentCache: () => {},
   crypto
 });
+const concurrentCallStart = ankiCalls.length;
 await concurrentAudioService.exportCard({
   documentId: "doc-1",
   expression: "parallel-word",
@@ -286,6 +290,10 @@ await concurrentAudioService.exportCard({
     SentenceAudio: ""
   }
 });
+const concurrentAddNote = ankiCalls.slice(concurrentCallStart).find((call) => call.action === "addNote");
+assert.equal(concurrentAddNote.params.note.fields.WordAudio, "");
+assert.equal(concurrentAddNote.params.note.fields.SentenceAudio, "");
+await waitFor(() => concurrentAudioEvents.includes("end:word"));
 assert.deepEqual(concurrentAudioEvents, ["start:word", "end:word"]);
 
 const mediaExportService = createAnkiService({
@@ -397,3 +405,12 @@ await assert.rejects(
 globalThis.fetch = previousFetch;
 
 console.log("Anki service test passed.");
+
+async function waitFor(predicate, timeoutMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(predicate(), true);
+}

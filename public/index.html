@@ -442,6 +442,24 @@
             <section class="page-card">
               <div class="page-card-head">
                 <div>
+                  <h2>Cache</h2>
+                  <p>Manual rebuilds for derived local data. Rebuild only when meanings look stale.</p>
+                </div>
+              </div>
+              <div class="cache-controls">
+                <label>
+                  Word Bank meaning dictionary
+                  <select id="cache-wordbank-dictionary" aria-label="Cache Word Bank meaning dictionary"></select>
+                </label>
+                <button id="cache-rebuild-wordbank" type="button">Rebuild Word Bank meanings</button>
+              </div>
+              <div id="cache-wordbank-status" class="cache-status">Word Bank meaning cache not checked.</div>
+              <div id="cache-notice" class="library-notice integration-notice" role="status" aria-live="polite"></div>
+            </section>
+
+            <section class="page-card">
+              <div class="page-card-head">
+                <div>
                   <h2>Dictionary</h2>
                   <p>Manage Word Bank meanings, reader lookup dictionaries, and frequency dictionaries.</p>
                 </div>
