@@ -101,7 +101,7 @@ export function createFtsSearchService({
     }
   }
 
-  async function rebuild(chunks = []) {
+  async function rebuild(chunks = [], options = {}) {
     const database = open();
     if (!ftsAvailable) {
       const unavailable = {
@@ -136,7 +136,11 @@ export function createFtsSearchService({
         skipped += 1;
         continue;
       }
-      const row = await ftsRowForChunk(chunk);
+      if (options.existingOnly === true && (!existing || !existingFts.get(id))) {
+        skipped += 1;
+        continue;
+      }
+      const row = await ftsRowForChunk(chunk, options);
       if (!rowsById.has(row.id)) rowsById.set(row.id, row);
     }
     const rows = [...rowsById.values()];
@@ -184,9 +188,11 @@ export function createFtsSearchService({
     `);
     const deleteFts = database.prepare(`DELETE FROM ${FTS_TABLE} WHERE chunkId = ?`);
     const deleteChunk = database.prepare(`DELETE FROM ${CHUNKS_TABLE} WHERE id = ?`);
+    const idsByPruneDocument = pruneIdSets(rows, options.pruneDocuments);
     const now = new Date().toISOString();
     let inserted = 0;
     let updated = 0;
+    let deleted = 0;
     const txn = database.transaction(() => {
       for (const row of rows) {
         const payload = { ...row, updatedAt: now };
@@ -215,12 +221,25 @@ export function createFtsSearchService({
         if (updateResult.changes > 0 || existing) updated += 1;
         else inserted += 1;
       }
+      for (const [documentId, keepIds] of idsByPruneDocument.entries()) {
+        const obsoleteRows = database.prepare(`
+          SELECT id FROM ${CHUNKS_TABLE}
+          WHERE document_id = ?
+        `).all(documentId);
+        for (const obsolete of obsoleteRows) {
+          if (keepIds.has(obsolete.id)) continue;
+          deleteFts.run(obsolete.id);
+          const result = deleteChunk.run(obsolete.id);
+          deleted += result.changes;
+        }
+      }
       writeStatus(database, {
         ready: true,
         stale: false,
         chunks: countActiveChunks(database),
         inserted,
         updated,
+        deleted,
         skipped,
         rebuiltAt: now,
         tokenizerMode: DEFAULT_TOKENIZER_MODE,
@@ -234,13 +253,13 @@ export function createFtsSearchService({
     return status();
   }
 
-  async function ftsRowForChunk(chunk = {}) {
+  async function ftsRowForChunk(chunk = {}, options = {}) {
     const rawText = String(chunk.text ?? "");
     const title = String(chunk.title ?? "");
     const chapterTitle = String(chunk.chapterTitle ?? "");
     const normalizedText = normalizeText(rawText);
     const titleText = uniqueText([title, chapterTitle]);
-    const payload = await payloadForText(rawText, chunk);
+    const payload = await payloadForText(rawText, chunk, { analyze: options.analyze !== false });
     return {
       id: chunkIdFor(chunk),
       documentId: String(chunk.documentId ?? ""),
@@ -265,7 +284,7 @@ export function createFtsSearchService({
     };
   }
 
-  async function payloadForText(text = "", chunk = {}) {
+  async function payloadForText(text = "", chunk = {}, options = {}) {
     const terms = [];
     const readings = [];
     const dictionaryForms = [];
@@ -289,6 +308,7 @@ export function createFtsSearchService({
     }
 
     try {
+      if (options.analyze === false) throw new Error("Analysis disabled for fast FTS rebuild.");
       const analysis = await analyzeText(text);
       for (const token of analysis.tokens ?? []) {
         const tokenTerms = [
@@ -335,20 +355,8 @@ export function createFtsSearchService({
       addTerm(terms, marker.surface);
       addReading(readings, marker.reading);
     }
-    try {
-      const analysis = await analyzeText(raw);
-      for (const token of analysis.tokens ?? []) {
-        for (const value of [
-          token.surface,
-          token.base,
-          token.dictionaryForm,
-          token.normalized,
-          ...(Array.isArray(token.lookupTerms) ? token.lookupTerms : [])
-        ]) addTerm(terms, value);
-        for (const value of [token.reading, token.dictionaryReading, token.displayReading, token.authorReading]) addReading(readings, value);
-      }
-    } catch {
-      // Query normalization is best-effort.
+    for (const match of raw.matchAll(/[\u3040-\u30ff\u3400-\u9fff]{2,}/gu)) {
+      addTerm(terms, match[0]);
     }
     return {
       raw,
@@ -368,6 +376,24 @@ export function createFtsSearchService({
     if (activeIds.size === 0) return { query: plan.raw, results: [], status: status() };
 
     const exactRows = exactSearch(database, plan, { ...options, limit: limit * 2, activeIds });
+    if (exactRows.length >= limit) {
+      return {
+        query: plan.raw,
+        queryPlan: plan,
+        results: exactRows
+          .sort((a, b) => b.lexicalScore - a.lexicalScore)
+          .slice(0, limit),
+        status: status()
+      };
+    }
+    if (hasJapaneseText(plan.raw)) {
+      return {
+        query: plan.raw,
+        queryPlan: plan,
+        results: exactRows,
+        status: status()
+      };
+    }
     const bm25Rows = plan.match ? bm25Search(database, plan, { ...options, limit: limit * 4, activeIds }) : [];
     const merged = mergeFtsRows(exactRows, bm25Rows)
       .sort((a, b) => b.lexicalScore - a.lexicalScore)
@@ -376,10 +402,20 @@ export function createFtsSearchService({
   }
 
   function exactSearch(database, plan, options) {
-    const clauses = ["c.normalized_text LIKE @likeRaw ESCAPE '\\'"];
-    const params = { likeRaw: `%${escapeLike(plan.normalizedRaw)}%`, limit: options.limit };
+    const japaneseQuery = hasJapaneseText(plan.raw);
+    const clauses = japaneseQuery
+      ? [
+          "instr(c.raw_text, @rawNeedle) > 0",
+          "instr(c.normalized_text, @rawNeedle) > 0",
+          "instr(c.terms_text, @rawNeedle) > 0",
+          "instr(c.readings_text, @rawNeedle) > 0"
+        ]
+      : ["c.normalized_text LIKE @likeRaw ESCAPE '\\'"];
+    const params = japaneseQuery
+      ? { rawNeedle: plan.normalizedRaw, limit: options.limit }
+      : { likeRaw: `%${escapeLike(plan.normalizedRaw)}%`, limit: options.limit };
     let index = 0;
-    for (const term of plan.terms.slice(0, 16)) {
+    for (const term of (japaneseQuery ? [] : plan.terms.slice(0, 16))) {
       const normalized = normalizeText(term);
       if (!normalized || normalized === plan.normalizedRaw) continue;
       index += 1;
@@ -515,8 +551,10 @@ export function createFtsSearchService({
       cachedChunks: countChunks(database),
       inserted: Number(stored.inserted) || 0,
       updated: Number(stored.updated) || 0,
+      deleted: Number(stored.deleted) || 0,
       skipped: Number(stored.skipped) || 0,
       rebuiltAt: stored.rebuiltAt || "",
+      updatedAt: stored.updatedAt || stored.rebuiltAt || "",
       tokenizerMode: stored.tokenizerMode || DEFAULT_TOKENIZER_MODE,
       tokenizerVersion: stored.tokenizerVersion || tokenizerVersion,
       normalizerVersion: stored.normalizerVersion || normalizerVersion,
@@ -545,6 +583,75 @@ export function createFtsSearchService({
     }
   }
 
+  function documentAnalytics(known = new Set(), helpers = {}) {
+    const database = open();
+    const activeIds = [...activeDocumentIds()];
+    const result = new Map();
+    if (activeIds.length === 0) return result;
+    const normalize = typeof helpers.normalizeJapaneseTerm === "function" ? helpers.normalizeJapaneseTerm : defaultNormalize;
+    const hasJapanese = typeof helpers.hasJapaneseText === "function" ? helpers.hasJapaneseText : defaultHasJapaneseText;
+    const placeholders = activeIds.map((_, index) => `@id${index}`).join(", ");
+    const params = Object.fromEntries(activeIds.map((id, index) => [`id${index}`, id]));
+    const rows = database.prepare(`
+      SELECT document_id, known_coverage, terms_json, dictionary_forms_json
+        FROM ${CHUNKS_TABLE}
+      WHERE document_id IN (${placeholders})
+    `).all(params);
+
+    for (const row of rows) {
+      const documentId = String(row.document_id ?? "");
+      if (!documentId) continue;
+      const entry = result.get(documentId) ?? {
+        chunks: 0,
+        knownTokens: 0,
+        unknownTokens: 0,
+        unknownTerms: new Set(),
+        fallbackCoverageSum: 0,
+        fallbackRows: 0
+      };
+      const dictionaryForms = parseJsonArray(row.dictionary_forms_json);
+      const forms = uniqueValues(dictionaryForms.length > 0 ? dictionaryForms : parseJsonArray(row.terms_json))
+        .map((term) => normalize(term))
+        .filter((term) => term && hasJapanese(term) && term.length <= 24);
+
+      if (forms.length === 0) {
+        entry.fallbackCoverageSum += Number(row.known_coverage) || 0;
+        entry.fallbackRows += 1;
+        entry.chunks += 1;
+        result.set(documentId, entry);
+        continue;
+      }
+
+      for (const term of forms) {
+        if (known.has(term)) entry.knownTokens += 1;
+        else {
+          entry.unknownTokens += 1;
+          entry.unknownTerms.add(term);
+        }
+      }
+      entry.chunks += 1;
+      result.set(documentId, entry);
+    }
+
+    for (const [documentId, entry] of result.entries()) {
+      const total = entry.knownTokens + entry.unknownTokens;
+      const coverage = total
+        ? Math.round((entry.knownTokens / total) * 100)
+        : entry.fallbackRows
+          ? Math.round(entry.fallbackCoverageSum / entry.fallbackRows)
+          : 0;
+      result.set(documentId, {
+        source: "fts",
+        chunks: entry.chunks,
+        coverage,
+        knownTokens: entry.knownTokens,
+        unknownTokens: entry.unknownTokens,
+        uniqueUnknown: entry.unknownTerms.size
+      });
+    }
+    return result;
+  }
+
   function writeStatus(database, value) {
     database.prepare(`
       INSERT INTO search_index_status (key, value_json, updated_at)
@@ -571,7 +678,20 @@ export function createFtsSearchService({
     db = null;
   }
 
-  return { rebuild, search, queryPlan, deleteDocument, markStale, status, payloadForText, close };
+  return { rebuild, search, queryPlan, deleteDocument, markStale, status, documentAnalytics, payloadForText, close };
+}
+
+function pruneIdSets(rows = [], documentIds = []) {
+  const targets = new Set((documentIds ?? []).map(String).filter(Boolean));
+  const result = new Map();
+  for (const documentId of targets) result.set(documentId, new Set());
+  if (result.size === 0) return result;
+  for (const row of rows) {
+    const documentId = String(row.documentId ?? "");
+    if (!result.has(documentId)) continue;
+    result.get(documentId).add(String(row.id ?? ""));
+  }
+  return result;
 }
 
 export function escapeFtsTerm(value = "") {

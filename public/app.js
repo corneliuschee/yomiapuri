@@ -19,11 +19,7 @@ const state = {
   knownTermsCount: 0,
   activeDocumentId: null,
   activeDocumentTitle: "",
-  activeCandidates: [],
-  readabilitySuggestions: [],
   dismissedReadableSuggestions: new Set(),
-  pageCandidates: {},
-  candidateRequestId: 0,
   activeHtml: "",
   activePages: [""],
   activeChapters: [],
@@ -45,6 +41,7 @@ const state = {
   wordbankPageSize: 60,
   wordbankSort: "gojuon",
   wordbankCache: new Map(),
+  dictionaryLookupCache: new Map(),
   selectedTerms: new Set(),
   trashTab: "books",
   selectedTrashDocuments: new Set(),
@@ -62,6 +59,9 @@ let hoverLookupRequest = 0;
 let readerAssistantTimer = null;
 let readerAssistantMessageId = 0;
 let readerAssistantHistory = [];
+let readerOpenRequestId = 0;
+let readerIngestionAbortController = null;
+const readerPageWindowRequests = new Map();
 let shiftLookupAnchorRange = null;
 let shiftHoverAnchorRange = null;
 let lookupPreviewElement = null;
@@ -134,9 +134,7 @@ const elements = {
   chapterResizeHandle: $("#chapter-resize-handle"),
   bookmarkPage: $("#bookmark-page"),
   bookmarkFeedback: $("#bookmark-feedback"),
-  candidateList: $("#candidate-list"),
   readableSuggestions: $("#readable-suggestions"),
-  candidateTemplate: $("#candidate-template"),
   wordbankSearch: $("#wordbank-search"),
   wordbankSort: $("#wordbank-sort"),
   wordbankSyncAnki: $("#wordbank-sync-anki"),
@@ -148,6 +146,8 @@ const elements = {
   mlMetrics: $("#ml-metrics"),
   mlDocumentList: $("#ml-document-list"),
   mlRebuildIndex: $("#ml-rebuild-index"),
+  mlRefreshTextIndex: $("#ml-refresh-text-index"),
+  mlUpdateVectors: $("#ml-update-vectors"),
   mlIndexStatus: $("#ml-index-status"),
   mlEmbeddingProvider: $("#ml-embedding-provider"),
   semanticSearchForm: $("#semantic-search-form"),
@@ -259,7 +259,7 @@ async function loadState() {
   state.dictionarySettings = snapshot.dictionarySettings ?? { prefixWildcardSearch: false };
   state.reader = snapshot.reader ?? state.reader;
   if (elements.hideInferredFurigana) elements.hideInferredFurigana.checked = Boolean(state.reader.hideInferredReadableFurigana);
-  state.wordbankCache.clear();
+  clearLookupRelatedCaches();
   state.cards = snapshot.cards ?? [];
   state.progress = snapshot.progress ?? {};
   state.trash = snapshot.trash ?? { documents: [], knownTerms: [] };
@@ -446,6 +446,11 @@ function showDictionaryNotice(message, type = "success") {
 
 function showCacheNotice(message, type = "success") {
   cacheNoticeTimer = showNotice(elements.cacheNotice, cacheNoticeTimer, message, type);
+}
+
+function clearLookupRelatedCaches() {
+  state.wordbankCache.clear();
+  state.dictionaryLookupCache.clear();
 }
 
 function showNotice(target, timer, message, type = "success") {
@@ -693,12 +698,9 @@ async function deleteDocument(item) {
     state.activePages = [""];
     state.activeChapters = [];
     state.activeChapterId = "";
-    state.activeCandidates = [];
-    state.pageCandidates = {};
     state.highlights = { pages: {}, scrollHtml: "" };
     state.bookmarks = [];
     elements.reader.innerHTML = `<p class="empty">Import or select a book.</p>`;
-    elements.candidateList.innerHTML = "";
     renderChapters();
     renderBookmarks();
     renderBooksGrid();
@@ -710,24 +712,28 @@ async function deleteDocument(item) {
 }
 
 async function openDocument(id) {
+  const openRequestId = ++readerOpenRequestId;
+  readerIngestionAbortController?.abort();
+  readerIngestionAbortController = new AbortController();
   const previousDocumentId = state.activeDocumentId;
   state.activeDocumentId = id;
   if (previousDocumentId !== id) readerAssistantHistory = [];
   setPage("reader-page");
+  setAssistantPanelHidden(true);
   renderDocuments();
   renderReaderLoadStatus("Checking local book cache...", 0, 1);
-  elements.candidateList.innerHTML = "";
 
   try {
-    await streamDocumentIngestion(id);
+    await streamDocumentIngestion(id, { signal: readerIngestionAbortController.signal });
   } catch (error) {
+    if (openRequestId !== readerOpenRequestId || error.name === "AbortError") return;
     console.warn("Document ingestion stream failed; falling back to normal load.", error);
     renderReaderLoadStatus("Loading book without cache progress...", 0, 1);
   }
-  const documentData = await api(`/api/documents/${id}`);
-  state.activeCandidates = documentData.candidates ?? [];
-  state.readabilitySuggestions = documentData.readabilitySuggestions ?? [];
-  state.pageCandidates = {};
+  if (openRequestId !== readerOpenRequestId) return;
+  renderReaderLoadStatus("Rendering book...", 1, 1);
+  const documentData = await api(`/api/documents/${id}?initial=1`);
+  if (openRequestId !== readerOpenRequestId) return;
   
   state.activeChapters = documentData.chapters ?? [];
 
@@ -756,8 +762,6 @@ async function openDocument(id) {
   renderBookmarks();
   updateReaderToolbar();
   renderReader(documentData.progress);
-  renderCandidates();
-  renderReadableSuggestions();
 }
 
 function renderReaderLoadStatus(label = "Loading book...", current = 0, total = 1) {
@@ -785,8 +789,8 @@ function renderReaderLoadStatus(label = "Loading book...", current = 0, total = 
   `;
 }
 
-async function streamDocumentIngestion(id) {
-  const response = await fetch(`/api/documents/${encodeURIComponent(id)}/ingest-stream`);
+async function streamDocumentIngestion(id, options = {}) {
+  const response = await fetch(`/api/documents/${encodeURIComponent(id)}/ingest-stream`, { signal: options.signal });
   if (!response.ok) return;
   if (!response.body) return;
   const reader = response.body.getReader();
@@ -798,9 +802,41 @@ async function streamDocumentIngestion(id) {
     buffer += decoder.decode(value, { stream: true });
     const blocks = buffer.split(/\n\n/);
     buffer = blocks.pop() ?? "";
-    for (const block of blocks) handleDocumentIngestionBlock(block);
+    for (const block of blocks) {
+      const eventName = handleDocumentIngestionBlock(block);
+      if (eventName === "done") {
+        await reader.cancel().catch(() => {});
+        return;
+      }
+    }
   }
   if (buffer.trim()) handleDocumentIngestionBlock(buffer);
+}
+
+async function loadDocumentPagesAround(page = state.currentPage, limit = 8) {
+  if (!state.activeDocumentId) return;
+  const total = Math.max(1, state.activePages.length);
+  const safeLimit = Math.max(1, Math.min(24, Number(limit) || 8));
+  const safePage = Math.max(0, Math.min(Number(page) || 0, total - 1));
+  const start = Math.max(0, Math.min(safePage - Math.floor(safeLimit / 2), Math.max(0, total - safeLimit)));
+  const key = `${state.activeDocumentId}:${start}:${safeLimit}`;
+  if (readerPageWindowRequests.has(key)) return readerPageWindowRequests.get(key);
+  const request = api(`/api/documents/${encodeURIComponent(state.activeDocumentId)}/pages?start=${start}&limit=${safeLimit}`)
+    .then((result) => {
+      for (const pageData of result.pages ?? []) {
+        const index = Number(pageData.index);
+        if (!Number.isInteger(index) || index < 0) continue;
+        state.activePages[index] = {
+          chapterId: pageData.chapterId,
+          html: pageData.html ?? "",
+          unloaded: false
+        };
+      }
+      return result;
+    })
+    .finally(() => readerPageWindowRequests.delete(key));
+  readerPageWindowRequests.set(key, request);
+  return request;
 }
 
 function handleDocumentIngestionBlock(block = "") {
@@ -821,12 +857,20 @@ function handleDocumentIngestionBlock(block = "") {
     renderReaderLoadStatus(label, 1, 1);
   }
   if (eventName === "error") throw new Error(payload.error || "Book ingestion failed.");
+  return eventName;
 }
 
-async function refreshActiveDocumentForKnownTerms() {
+async function refreshActiveDocumentForKnownTerms(term = "") {
   if (!state.activeDocumentId) return;
   hideDictionaryLookup();
   hoverLookupLastTerm = "";
+  if (term) {
+    patchKnownTermInActivePages(term);
+    applyKnownTermToRenderedReader(term);
+    renderReader({ mode: state.readerMode, page: state.currentPage, scrollTop: elements.reader.scrollTop, zoom: state.readerZoom });
+    applyKnownTermToRenderedReader(term);
+    return;
+  }
   const page = state.currentPage;
   const mode = state.readerMode;
   const scrollTop = elements.reader.scrollTop;
@@ -838,26 +882,50 @@ async function refreshActiveDocumentForKnownTerms() {
   renderReader({ mode, page: state.currentPage, scrollTop, zoom });
 }
 
-async function loadDocumentCandidates(id, page = state.currentPage) {
-  const key = String(page);
-  if (state.pageCandidates[key]) {
-    state.activeCandidates = state.pageCandidates[key];
-    renderCandidates();
-    return;
+function applyKnownTermToRenderedReader(term = "") {
+  const normalized = normalizeTermForUi(term);
+  if (!normalized || !elements.reader) return;
+  for (const ruby of [...elements.reader.querySelectorAll("ruby[data-base]")]) {
+    const base = normalizeTermForUi(ruby.dataset.base || "");
+    const surface = normalizeTermForUi(rubySurfaceText(ruby));
+    if (base !== normalized && surface !== normalized) continue;
+    const span = document.createElement("span");
+    span.className = "lookup-token";
+    for (const attribute of ruby.attributes) span.setAttribute(attribute.name, attribute.value);
+    span.textContent = rubySurfaceText(ruby);
+    ruby.replaceWith(span);
   }
-  const requestId = ++state.candidateRequestId;
-  elements.candidateList.innerHTML = `<p class="empty">Loading candidates for page ${page + 1}...</p>`;
-  try {
-    const documentData = await api(`/api/documents/${id}?candidates=1&page=${page}`);
-    if (state.activeDocumentId !== id || state.currentPage !== page || requestId !== state.candidateRequestId) return;
-    state.activeCandidates = documentData.candidates ?? [];
-    state.readabilitySuggestions = documentData.readabilitySuggestions ?? [];
-    state.pageCandidates[key] = state.activeCandidates;
-    renderCandidates();
-    renderReadableSuggestions();
-  } catch (error) {
-    if (state.activeDocumentId === id && requestId === state.candidateRequestId) elements.candidateList.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+}
+
+function patchKnownTermInActivePages(term = "") {
+  const normalized = normalizeTermForUi(term);
+  if (!normalized) return;
+  state.activeHtml = hideKnownTermInHtml(state.activeHtml, normalized);
+  state.activePages = (state.activePages ?? []).map((page) => ({
+    ...page,
+    html: hideKnownTermInHtml(page?.html ?? "", normalized)
+  }));
+}
+
+function hideKnownTermInHtml(html = "", normalizedTerm = "") {
+  if (!html || !normalizedTerm) return html;
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<main>${html}</main>`, "text/html");
+  for (const ruby of [...doc.querySelectorAll("ruby[data-base]")]) {
+    const base = normalizeTermForUi(ruby.dataset.base || "");
+    const surface = normalizeTermForUi(rubySurfaceText(ruby));
+    if (base !== normalizedTerm && surface !== normalizedTerm) continue;
+    const span = doc.createElement("span");
+    span.className = "lookup-token";
+    for (const attribute of ruby.attributes) span.setAttribute(attribute.name, attribute.value);
+    span.textContent = rubySurfaceText(ruby);
+    ruby.replaceWith(span);
   }
+  return doc.body.firstElementChild?.innerHTML ?? html;
+}
+
+function normalizeTermForUi(value = "") {
+  return String(value ?? "").normalize("NFKC").replace(/\s+/g, "").trim();
 }
 
 function renderReader(progress = {}) {
@@ -903,6 +971,23 @@ function renderReader(progress = {}) {
   state.currentPage = Math.max(0, Math.min(requestedPage, state.activePages.length - 1));
   const page = state.activePages[state.currentPage];
   state.activeChapterId = page?.chapterId || state.activeChapterId;
+  if (page?.unloaded) {
+    elements.reader.innerHTML = `
+      <div class="reader-load-status" aria-live="polite">
+        <strong>Loading page...</strong>
+        <div class="reader-load-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="35">
+          <span class="reader-load-fill" style="width: 35%; transform: scaleX(0.35)"></span>
+        </div>
+      </div>
+    `;
+    updatePagedFooter();
+    loadDocumentPagesAround(state.currentPage)
+      .then(() => renderReader({ mode: state.readerMode, page: state.currentPage, scrollTop: 0, zoom: state.readerZoom }))
+      .catch((error) => {
+        elements.reader.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+      });
+    return;
+  }
   elements.reader.innerHTML = savedPageHtml(state.currentPage) || page?.html || `<p class="empty">No page text.</p>`;
   elements.reader.classList.toggle("image-page", Boolean(elements.reader.querySelector(".reader-page-frame.image-only")));
   applyReaderSearchHighlights();
@@ -918,7 +1003,6 @@ function renderReader(progress = {}) {
     }
     updatePagedFooter();
     renderPdfPages(elements.reader);
-    loadDocumentCandidates(state.activeDocumentId, state.currentPage);
   });
 }
 
@@ -1473,51 +1557,6 @@ function nudgeReaderSidebarWidth(event) {
   setReaderSidebarWidth(current + (event.key === "ArrowLeft" ? 24 : -24));
 }
 
-function renderCandidates() {
-  elements.candidateList.innerHTML = "";
-  if (state.activeCandidates.length === 0) {
-    elements.candidateList.innerHTML = `<p class="empty">No candidates yet.</p>`;
-    return;
-  }
-
-  for (const candidate of state.activeCandidates.slice(0, 40)) {
-    const node = elements.candidateTemplate.content.firstElementChild.cloneNode(true);
-    node.querySelector(".expression").textContent = candidate.expression;
-    node.querySelector(".reading").textContent = candidate.reading;
-    node.querySelector(".sentence").textContent = candidate.sentence || "No sentence context.";
-    const definition = node.querySelector(".definition");
-    definition.textContent = candidate.meaning || "No dictionary match. Import a dictionary to auto-fill meanings.";
-    if (candidate.rankScore !== undefined) {
-      const rank = document.createElement("div");
-      rank.className = "candidate-rank";
-      const badges = (candidate.rankBadges ?? []).slice(0, 4).map((badge) => `<span>${escapeHtml(badge)}</span>`).join("");
-      const readabilityBadge = candidate.readabilityStatus === "inferred-readable" ? `<span>readable ${Number(candidate.readabilityScore ?? 0)}</span>` : "";
-      const reasons = candidate.rankReasons
-        ? `Coverage ${candidate.rankReasons.knownCoverage}% - Unknown ${candidate.rankReasons.uniqueUnknown} - Recurs ${candidate.rankReasons.recurrence}`
-        : "";
-      rank.innerHTML = `<strong>${Number(candidate.rankScore).toLocaleString()}</strong>${badges}${readabilityBadge}<em>${escapeHtml(reasons)}</em>`;
-      definition.after(rank);
-    }
-    const submitButton = node.querySelector(".candidate-actions button[type='submit']");
-    if (submitButton) submitButton.textContent = state.anki?.instantExport ? "Export Anki" : "Preview Anki";
-    node.querySelector(".speak").addEventListener("click", () => playJapanese(candidate.sentence || candidate.expression));
-    node.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const formData = new FormData(node);
-      if (submitButton) submitButton.disabled = true;
-      try {
-        node.querySelector(".definition").textContent = state.anki?.instantExport ? "Exporting to Anki..." : node.querySelector(".definition").textContent;
-        await openAnkiPreview({ ...candidate, meaning: formData.get("meaning") || candidate.meaning }, node);
-      } catch (error) {
-        node.querySelector(".definition").textContent = state.anki?.instantExport ? exportFailureMessage(error) : error.message;
-      } finally {
-        if (submitButton && node.isConnected) submitButton.disabled = false;
-      }
-    });
-    elements.candidateList.append(node);
-  }
-}
-
 function renderReadableSuggestions() {
   if (!elements.readableSuggestions) return;
   const visible = (state.readabilitySuggestions ?? [])
@@ -1570,10 +1609,10 @@ async function addReadableSuggestionToWordBank(term = "") {
   });
   state.knownTermsCount = result.total ?? state.knownTermsCount;
   elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
-  state.wordbankCache.clear();
+  clearLookupRelatedCaches();
   state.dismissedReadableSuggestions.add(term);
   renderReadableSuggestions();
-  await refreshActiveDocumentForKnownTerms();
+  await refreshActiveDocumentForKnownTerms(term);
 }
 
 async function exportReadableSuggestion(term = "") {
@@ -1649,7 +1688,7 @@ async function exportPreviewDirectly(preview, candidate, node) {
     }
     if (node) {
       await loadState();
-      await refreshActiveDocumentForKnownTerms();
+      await refreshActiveDocumentForKnownTerms(exportedKnownTerm(exported, candidate));
     } else {
       await refreshStateMetadataOnly();
       await refreshLookupAfterAnkiExport(exported, candidate);
@@ -1667,7 +1706,7 @@ async function refreshStateMetadataOnly() {
   state.anki = snapshot.anki ?? state.anki;
   state.knownTermsCount = snapshot.knownTermsCount ?? state.knownTermsCount;
   elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
-  state.wordbankCache.clear();
+  clearLookupRelatedCaches();
   if (elements.wordbankList.closest(".page.active")) await loadWordBank();
 }
 
@@ -1777,7 +1816,7 @@ async function exportReviewedCard(event) {
       await refreshLookupAfterAnkiExport({ expression: exportedCandidate?.expression }, exportedCandidate);
     } else {
       await loadState();
-      await refreshActiveDocumentForKnownTerms();
+      await refreshActiveDocumentForKnownTerms(exportedKnownTerm(exported, exportedCandidate));
     }
   } catch (error) {
     elements.cardStatus.textContent = exportFailureMessage(error);
@@ -1793,6 +1832,10 @@ function exportResultMessage(exported = {}) {
   if (pending.length > 0) return `Created Anki note. Audio will be added shortly: ${pending.join(", ")}.`;
   if (skipped.length > 0) return `Created Anki note. Uncached audio skipped: ${skipped.join(", ")}.`;
   return "Created Anki note.";
+}
+
+function exportedKnownTerm(exported = {}, candidate = {}) {
+  return candidate.dictionaryForm || candidate.expression || candidate.surface || exported.expression || "";
 }
 
 function exportFailureMessage(error) {
@@ -1881,7 +1924,7 @@ async function rebuildWordBankMeaningCache() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dictionaryId })
     });
-    state.wordbankCache.clear();
+    clearLookupRelatedCaches();
     await refreshWordBankMeaningCacheStatus();
     if (elements.wordbankList.closest(".page.active")) await loadWordBank();
     showCacheNotice(`${Number(status.cachedTerms ?? 0).toLocaleString()} Word Bank meanings rebuilt for ${status.dictionaryName}.`, "success");
@@ -1977,22 +2020,45 @@ async function syncWordBankWithAnki() {
 
 async function loadInsights() {
   if (!elements.mlMetrics) return;
-  elements.mlMetrics.innerHTML = `<p class="empty">Loading analytics...</p>`;
-  elements.mlDocumentList.innerHTML = "";
-  try {
-    const [analytics, indexStatus, providers] = await Promise.all([
-      api("/api/ml/analytics"),
-      api("/api/ml/index/status"),
-      api("/api/ml/providers")
-    ]);
-    state.ml.analytics = analytics;
-    state.ml.indexStatus = indexStatus;
+  renderInsightsLoading();
+  const [analyticsResult, indexStatusResult, providersResult] = await Promise.allSettled([
+    api("/api/ml/analytics"),
+    api("/api/ml/index/status"),
+    api("/api/ml/providers")
+  ]);
+
+  if (providersResult.status === "fulfilled") {
+    const providers = providersResult.value;
     state.ml.providers = providers.models ?? [];
     state.ml.settings = providers.settings ?? state.ml.settings;
     renderMlProviderSelect();
-    renderInsights(analytics, indexStatus);
-  } catch (error) {
-    elements.mlMetrics.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  } else {
+    renderMlProviderError(providersResult.reason);
+  }
+
+  if (indexStatusResult.status === "fulfilled") {
+    state.ml.indexStatus = indexStatusResult.value;
+    renderMlIndexStatus(indexStatusResult.value);
+  } else {
+    renderMlIndexStatusError(indexStatusResult.reason);
+  }
+
+  if (analyticsResult.status === "fulfilled") {
+    const analytics = analyticsResult.value;
+    state.ml.analytics = analytics;
+    renderAnalyticsInsights(analytics);
+  } else {
+    renderAnalyticsError(analyticsResult.reason);
+  }
+}
+
+function renderInsightsLoading() {
+  elements.mlMetrics.innerHTML = `<p class="empty">Loading analytics...</p>`;
+  elements.mlDocumentList.innerHTML = `<p class="empty">Loading book analytics...</p>`;
+  if (elements.mlIndexStatus) elements.mlIndexStatus.innerHTML = `<span>Loading semantic index status...</span>`;
+  if (elements.mlEmbeddingProvider) {
+    elements.mlEmbeddingProvider.disabled = true;
+    elements.mlEmbeddingProvider.innerHTML = `<option>Loading models...</option>`;
   }
 }
 
@@ -2004,9 +2070,24 @@ function renderMlProviderSelect() {
     return `<option value="${escapeHtml(model.id)}">${escapeHtml(model.label)}${suffix ? ` (${escapeHtml(suffix)})` : ""}</option>`;
   }).join("");
   elements.mlEmbeddingProvider.value = state.ml.settings?.embeddingProviderId || "multilingual-e5-small";
+  elements.mlEmbeddingProvider.disabled = models.length === 0;
+}
+
+function renderMlProviderError(error) {
+  if (!elements.mlEmbeddingProvider) return;
+  elements.mlEmbeddingProvider.disabled = true;
+  elements.mlEmbeddingProvider.innerHTML = `<option>Embedding models unavailable</option>`;
+  if (elements.mlIndexStatus) {
+    elements.mlIndexStatus.insertAdjacentHTML("beforeend", unavailableNotice(error, "Embedding model list unavailable."));
+  }
 }
 
 function renderInsights(analytics, indexStatus) {
+  renderAnalyticsInsights(analytics);
+  renderMlIndexStatus(indexStatus);
+}
+
+function renderAnalyticsInsights(analytics) {
   const totals = analytics?.totals ?? {};
   const metrics = analytics?.metrics ?? {};
   elements.mlMetrics.innerHTML = `
@@ -2016,36 +2097,62 @@ function renderInsights(analytics, indexStatus) {
     <div class="ml-metric"><strong>${Number(metrics.candidateAcceptanceRate ?? 0)}%</strong><span>Preview to export <span class="help-dot" tabindex="0" data-tooltip="How often sentence-mining card previews become actual Anki exports. This measures candidate usefulness over time.">?</span></span></div>
     <div class="ml-metric"><strong>${Number(metrics.lookupToWordBankRate ?? 0)}%</strong><span>Lookup to Word Bank <span class="help-dot" tabindex="0" data-tooltip="How often dictionary lookups become Word Bank additions. This is based on local lookup and add events.">?</span></span></div>
   `;
-  renderMlIndexStatus(indexStatus);
   renderDocumentDifficulty(analytics?.documents ?? []);
+}
+
+function renderAnalyticsError(error) {
+  elements.mlMetrics.innerHTML = unavailableNotice(error, "Learning analytics unavailable.");
+  elements.mlDocumentList.innerHTML = unavailableNotice(error, "Book analytics unavailable. Rebuild index or refresh analytics to update.");
 }
 
 function renderMlIndexStatus(status = {}) {
   if (!elements.mlIndexStatus) return;
-  const ready = status.stale ? "Stale" : status.ready ? "Ready" : "Not built";
-  const rebuilt = status.rebuiltAt ? new Date(status.rebuiltAt).toLocaleString() : "Never";
-  const provider = status.embeddingProviderLabel || status.embeddingProvider || status.provider || "lancedb";
-  const dimensions = status.embeddingDimensions ? ` - ${Number(status.embeddingDimensions).toLocaleString()}d` : "";
-  const device = status.embeddingDevice ? ` - ${escapeHtml(status.embeddingDevice)}` : "";
-  const vectorCounts = Number.isFinite(Number(status.embeddedVectors)) || Number.isFinite(Number(status.reusedVectors))
-    ? ` - ${Number(status.embeddedVectors ?? 0).toLocaleString()} new / ${Number(status.reusedVectors ?? 0).toLocaleString()} reused`
+  const text = status.textSearch ?? status.fts ?? {};
+  const semantic = status.semanticVectors ?? status;
+  const textState = text.stale ? "Stale" : text.ready ? "Ready" : "Not built";
+  const semanticState = semantic.stale ? "Stale" : semantic.ready ? "Ready" : "Not built";
+  const textUpdated = formatIndexTime(text.updatedAt || text.rebuiltAt);
+  const semanticUpdated = formatIndexTime(semantic.updatedAt || semantic.rebuiltAt);
+  const provider = semantic.embeddingProviderLabel || semantic.embeddingProvider || semantic.provider || "lancedb";
+  const dimensions = semantic.embeddingDimensions ? `${Number(semantic.embeddingDimensions).toLocaleString()}d` : "";
+  const device = semantic.embeddingDevice ? ` - ${escapeHtml(semantic.embeddingDevice)}` : "";
+  const vectorCounts = Number.isFinite(Number(semantic.embeddedVectors)) || Number.isFinite(Number(semantic.reusedVectors))
+    ? `${Number(semantic.embeddedVectors ?? 0).toLocaleString()} new / ${Number(semantic.reusedVectors ?? 0).toLocaleString()} reused`
     : "";
-  const staleReason = status.stale && status.staleReason ? `<em>${escapeHtml(status.staleReason)}</em>` : "";
-  const embeddingError = String(status.embeddingError || "");
+  const staleReason = semantic.stale && semantic.staleReason ? `<em>${escapeHtml(semantic.staleReason)}</em>` : "";
+  const embeddingError = String(semantic.embeddingError || "");
   const visibleEmbeddingError = embeddingError.includes("cache_dir") && embeddingError.includes("deprecated") ? "" : embeddingError;
-  const fallback = status.embeddingFallback && visibleEmbeddingError ? `<em>Embedding fallback active: ${escapeHtml(visibleEmbeddingError)}</em>` : "";
-  const fts = status.fts ?? {};
-  const ftsReady = fts.stale ? "stale" : fts.ready ? "ready" : "not built";
-  const ftsLine = fts.provider
-    ? `<span>Lexical BM25: ${escapeHtml(ftsReady)} - ${Number(fts.chunks ?? 0).toLocaleString()} chunks${fts.rebuiltAt ? ` - rebuilt ${escapeHtml(new Date(fts.rebuiltAt).toLocaleString())}` : ""}</span>`
-    : "";
+  const fallback = semantic.embeddingFallback && visibleEmbeddingError ? `<em>Embedding fallback active: ${escapeHtml(visibleEmbeddingError)}</em>` : "";
   elements.mlIndexStatus.innerHTML = `
-    <strong>${escapeHtml(ready)}</strong>
-    <span>${Number(status.chunks ?? 0).toLocaleString()} chunks - ${escapeHtml(provider)}${escapeHtml(dimensions)}${device}${vectorCounts} - rebuilt ${escapeHtml(rebuilt)}</span>
-    ${ftsLine}
-    ${staleReason}
-    ${fallback}
+    <div class="index-status-row">
+      <strong>Text search index</strong>
+      <span>${escapeHtml(textState)} - ${Number(text.chunks ?? 0).toLocaleString()} chunks - Last updated ${escapeHtml(textUpdated)}</span>
+      <span>${Number(text.inserted ?? 0).toLocaleString()} inserted / ${Number(text.updated ?? 0).toLocaleString()} updated / ${Number(text.deleted ?? 0).toLocaleString()} deleted / ${Number(text.skipped ?? 0).toLocaleString()} skipped</span>
+      ${text.error ? `<em>${escapeHtml(text.error)}</em>` : ""}
+    </div>
+    <div class="index-status-row">
+      <strong>Semantic vectors</strong>
+      <span>${escapeHtml(semanticState)} - ${Number(semantic.chunks ?? 0).toLocaleString()} chunks - ${escapeHtml(provider)}${dimensions ? ` - ${escapeHtml(dimensions)}` : ""}${device} - Last updated ${escapeHtml(semanticUpdated)}</span>
+      ${vectorCounts ? `<span>${escapeHtml(vectorCounts)}</span>` : ""}
+      ${staleReason}
+      ${fallback}
+      ${semantic.error ? `<em>${escapeHtml(semantic.error)}</em>` : ""}
+    </div>
   `;
+}
+
+function formatIndexTime(value = "") {
+  return value ? new Date(value).toLocaleString() : "Never";
+}
+
+function renderMlIndexStatusError(error) {
+  if (!elements.mlIndexStatus) return;
+  elements.mlIndexStatus.innerHTML = unavailableNotice(error, "Semantic index status unavailable.");
+}
+
+function unavailableNotice(error, fallback = "Unavailable.") {
+  const message = error?.message || String(error || fallback);
+  return `<p class="empty"><span class="help-dot" tabindex="0" data-tooltip="${escapeHtml(message)}">i</span> ${escapeHtml(fallback)}</p>`;
 }
 
 function renderDocumentDifficulty(documents = []) {
@@ -2058,7 +2165,7 @@ function renderDocumentDifficulty(documents = []) {
       <strong>${escapeHtml(doc.title)}</strong>
       <span>${Number(doc.coverage ?? 0)}% coverage <span class="help-dot" tabindex="0" data-tooltip="Estimated share of this book's kanji vocabulary already covered by your Word Bank.">?</span></span>
       <span>${Number(doc.uniqueUnknown ?? 0).toLocaleString()} unknown <span class="help-dot" tabindex="0" data-tooltip="Unique unknown kanji vocabulary detected in the analyzed portion of this book. Proper names are excluded where the tokenizer identifies them.">?</span></span>
-      <span>${escapeHtml(doc.difficulty ?? "")} <span class="help-dot" tabindex="0" data-tooltip="Comfortable is high coverage, Stretch is moderate coverage, and Hard means many unknown terms remain.">?</span></span>
+      <span>${escapeHtml(doc.difficulty ?? "")} <span class="help-dot" tabindex="0" data-tooltip="${escapeHtml(doc.error ? `Analytics unavailable for this book: ${doc.error}` : "Comfortable is high coverage, Stretch is moderate coverage, and Hard means many unknown terms remain.")}">${doc.error ? "i" : "?"}</span></span>
     </button>
   `).join("");
   elements.mlDocumentList.querySelectorAll("[data-document-id]").forEach((button) => {
@@ -2066,22 +2173,83 @@ function renderDocumentDifficulty(documents = []) {
   });
 }
 
-async function rebuildMlIndex() {
-  if (!elements.mlRebuildIndex) return;
-  elements.mlRebuildIndex.disabled = true;
-  const original = elements.mlRebuildIndex.textContent;
-  elements.mlRebuildIndex.textContent = "Rebuilding...";
+async function refreshTextSearchIndex() {
+  if (!elements.mlRefreshTextIndex) return;
+  elements.mlRefreshTextIndex.disabled = true;
+  const original = elements.mlRefreshTextIndex.textContent;
+  elements.mlRefreshTextIndex.textContent = "Refreshing...";
   try {
-    const status = await api("/api/ml/index/rebuild", { method: "POST" });
+    const status = await api("/api/search/index/refresh", { method: "POST" });
     state.ml.indexStatus = status;
     renderMlIndexStatus(status);
-    await loadInsights();
   } catch (error) {
     elements.mlIndexStatus.textContent = error.message;
   } finally {
-    elements.mlRebuildIndex.disabled = false;
-    elements.mlRebuildIndex.textContent = original;
+    elements.mlRefreshTextIndex.disabled = false;
+    elements.mlRefreshTextIndex.textContent = original;
   }
+}
+
+async function updateSemanticVectors() {
+  if (!elements.mlUpdateVectors) return;
+  elements.mlUpdateVectors.disabled = true;
+  const original = elements.mlUpdateVectors.textContent;
+  elements.mlUpdateVectors.textContent = "Updating...";
+  try {
+    await streamSemanticVectorUpdate({
+      onProgress: (progress) => {
+        const base = state.ml.indexStatus ?? {};
+        renderMlIndexStatus(base);
+        elements.mlIndexStatus.insertAdjacentHTML("beforeend", `<p class="empty">${escapeHtml(progress.message || "Updating semantic vectors...")}</p>`);
+      },
+      onDone: (status) => {
+        state.ml.indexStatus = status;
+        renderMlIndexStatus(status);
+      }
+    });
+  } catch (error) {
+    elements.mlIndexStatus.textContent = error.message;
+  } finally {
+    elements.mlUpdateVectors.disabled = false;
+    elements.mlUpdateVectors.textContent = original;
+  }
+}
+
+async function streamSemanticVectorUpdate(handlers = {}) {
+  const response = await fetch("/api/ml/vectors/update/stream", { method: "POST" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Request failed: ${response.status}`);
+  }
+  if (!response.body) throw new Error("Semantic vector update stream was not available.");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split(/\n\n/);
+    buffer = blocks.pop() ?? "";
+    for (const block of blocks) handleSemanticVectorStreamBlock(block, handlers);
+  }
+  if (buffer.trim()) handleSemanticVectorStreamBlock(buffer, handlers);
+}
+
+function handleSemanticVectorStreamBlock(block = "", handlers = {}) {
+  let eventName = "message";
+  const data = [];
+  for (const rawLine of String(block).split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (line.startsWith("event:")) eventName = line.slice(6).trim();
+    if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+  }
+  if (data.length === 0) return;
+  const payload = JSON.parse(data.join("\n"));
+  if (eventName === "progress") handlers.onProgress?.(payload);
+  else if (eventName === "done") handlers.onDone?.(payload);
+  else if (eventName === "error") throw new Error(payload.error || "Semantic vector update failed.");
 }
 
 async function updateMlEmbeddingProvider() {
@@ -2660,7 +2828,7 @@ function orderedDictionariesForUi(dictionaries = []) {
 }
 
 async function updateDictionarySettings(id, patch, options = {}) {
-  if (options.clearCache !== false && (patch.selectedForWordBank || patch.enabledForLookup)) state.wordbankCache.clear();
+  if (options.clearCache !== false && (patch.selectedForWordBank || patch.enabledForLookup)) clearLookupRelatedCaches();
   const result = await api(`/api/dictionaries/${encodeURIComponent(id)}/settings`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -2773,7 +2941,7 @@ async function deleteDictionary(dictionary) {
     const result = await api(`/api/dictionaries/${encodeURIComponent(dictionary.id)}`, { method: "DELETE" });
     state.dictionaries = result.dictionaries ?? state.dictionaries.filter((item) => item.id !== dictionary.id);
     state.dictionarySettings = result.settings ?? state.dictionarySettings;
-    state.wordbankCache.clear();
+    clearLookupRelatedCaches();
     renderDictionaries();
     await refreshWordBankMeaningCacheStatus();
     if (elements.wordbankList.closest(".page.active")) loadWordBank();
@@ -3726,7 +3894,10 @@ async function showDictionaryLookup(term, rect, preview = null, fallback = null)
   positionLookupPopover(rect);
   try {
     const prefix = state.dictionarySettings?.prefixWildcardSearch ? "&prefix=true" : "";
-    const result = await api(`/api/dictionary/lookup?term=${encodeURIComponent(term)}${prefix}`);
+    const cacheKey = `${term}\u0000${prefix}\u0000${state.knownTermsCount}`;
+    const result = state.dictionaryLookupCache.get(cacheKey) ?? await api(`/api/dictionary/lookup?term=${encodeURIComponent(term)}${prefix}`);
+    state.dictionaryLookupCache.set(cacheKey, result);
+    if (state.dictionaryLookupCache.size > 200) state.dictionaryLookupCache.delete(state.dictionaryLookupCache.keys().next().value);
     if (requestId !== hoverLookupRequest) return false;
     if (fallback && !dictionaryLookupHasDirectMatch(result, term)) {
       shiftHoverAnchorRange = fallback.anchor ?? shiftHoverAnchorRange;
@@ -4171,7 +4342,7 @@ function renderDictionaryLookup(term, result, preview = null) {
       });
       state.knownTermsCount = result.total ?? state.knownTermsCount;
       elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
-      state.wordbankCache.clear();
+      clearLookupRelatedCaches();
       if (elements.wordbankList.closest(".page.active")) await loadWordBank();
       button.classList.add("is-added");
       button.title = "Added to Word Bank";
@@ -4431,7 +4602,9 @@ elements.readerSidebarToggle?.addEventListener("click", () => {
 });
 elements.readerLibrary?.addEventListener("click", () => setPage("books-page"));
 elements.refreshInsights?.addEventListener("click", loadInsights);
-elements.mlRebuildIndex?.addEventListener("click", rebuildMlIndex);
+elements.mlRebuildIndex?.addEventListener("click", refreshTextSearchIndex);
+elements.mlRefreshTextIndex?.addEventListener("click", refreshTextSearchIndex);
+elements.mlUpdateVectors?.addEventListener("click", updateSemanticVectors);
 elements.mlEmbeddingProvider?.addEventListener("change", updateMlEmbeddingProvider);
 elements.semanticSearchForm?.addEventListener("submit", runSemanticSearch);
 elements.readerAssistantForm?.addEventListener("submit", askReaderAssistant);
@@ -4855,7 +5028,7 @@ async function changeWordBankDictionary(id) {
   if (!id) return;
   const previousDictionaries = state.dictionaries.map((dictionary) => ({ ...dictionary }));
   setSelectedWordBankDictionaryLocal(id);
-  state.wordbankCache.clear();
+  clearLookupRelatedCaches();
   refreshWordBankMeaningCacheStatus();
   if (elements.wordbankList.closest(".page.active")) loadWordBank();
   try {
@@ -4894,7 +5067,6 @@ elements.instantAnkiToggle?.addEventListener("change", async () => {
     })
   });
   elements.instantAnkiToggle.checked = Boolean(state.anki?.instantExport);
-  if (state.activeCandidates.length > 0) renderCandidates();
 });
 
 function populateSelect(select, values, selectedValue, fallback) {

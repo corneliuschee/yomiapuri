@@ -820,7 +820,6 @@ h2 {
 }
 
 .book-list,
-.candidate-list,
 .wordbank-list,
 .dictionary-list,
 .chapter-list,
@@ -2298,12 +2297,6 @@ progress {
   font-weight: 600;
 }
 
-.candidate-list {
-  margin-top: 10px;
-  max-height: 240px;
-  overflow-y: auto;
-}
-
 .readable-suggestions-wrap {
   border-bottom: 1px solid var(--line);
   margin-bottom: 10px;
@@ -2538,6 +2531,25 @@ progress {
 .page-card-head p {
   color: var(--muted);
   margin-bottom: 0;
+}
+
+.index-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.index-status-row {
+  display: grid;
+  gap: 4px;
+}
+
+.index-status-row + .index-status-row {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 10px;
 }
 
 .wordbank-controls {

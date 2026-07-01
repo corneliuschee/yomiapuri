@@ -197,15 +197,6 @@
               <progress id="progress-bar" max="100" value="0"></progress>
             </div>
           </footer>
-
-          <details class="drawer" id="mining-drawer">
-            <summary>Sentence mining candidates</summary>
-            <section class="readable-suggestions-wrap">
-              <div class="drawer-subhead">Readable suggestions</div>
-              <div id="readable-suggestions" class="readable-suggestions"></div>
-            </section>
-            <div id="candidate-list" class="candidate-list"></div>
-          </details>
         </section>
 
         <section id="wordbank-page" class="page">
@@ -256,10 +247,13 @@
             <section class="page-card">
               <div class="page-card-head">
                 <div>
-                  <h2>Semantic Index <span class="help-dot" tabindex="0" data-tooltip="A rebuildable local LanceDB search index made from your imported book text. Rebuild after importing new books or changing the embedding model.">?</span></h2>
-                  <p>Rebuildable local LanceDB index for book-text search and reader retrieval.</p>
+                  <h2>Local Search Indexes <span class="help-dot" tabindex="0" data-tooltip="Local rebuildable indexes for exact book search and semantic retrieval. Text search is fast; semantic vectors may take longer.">?</span></h2>
+                  <p>SQLite text search and LanceDB semantic vectors for local retrieval.</p>
                 </div>
-                <button id="ml-rebuild-index" type="button">Rebuild index</button><span class="help-dot" tabindex="0" data-tooltip="Recreates the local vector/search index from current books. Unchanged chunks reuse cached vectors where possible.">?</span>
+                <div class="index-actions">
+                  <button id="ml-refresh-text-index" type="button">Refresh text search index</button><span class="help-dot" tabindex="0" data-tooltip="Refreshes the fast SQLite text-search index. This does not start the embedding model.">?</span>
+                  <button id="ml-update-vectors" type="button">Update semantic vectors</button><span class="help-dot" tabindex="0" data-tooltip="Embeds only missing or changed chunks for semantic retrieval. Existing vectors are reused.">?</span>
+                </div>
               </div>
               <div id="ml-index-status" class="meta-box">Index status not loaded.</div>
               <label class="ml-provider-row">
@@ -544,23 +538,6 @@
         </section>
       </main>
     </div>
-
-    <template id="candidate-template">
-      <form class="candidate-card">
-        <div>
-          <strong class="expression"></strong>
-          <span class="reading"></span>
-        </div>
-        <p class="sentence"></p>
-        <p class="definition"></p>
-        <div class="candidate-actions">
-          <button class="speak" type="button">Audio</button>
-          <input name="meaning" type="text" placeholder="Override meaning" />
-          <button type="submit">Preview Anki</button>
-        </div>
-      </form>
-    </template>
-
     <div id="confirm-dialog" class="dialog-backdrop hidden" role="presentation">
       <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
         <h2 id="confirm-title">Delete book?</h2>

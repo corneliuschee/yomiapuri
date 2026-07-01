@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { createLocalMediaProvider, mediaFilenamesFromFields, normalizeMediaSettings } from "../server/media-providers.js";
 
-const rootDir = path.resolve(import.meta.dirname, "..");
-const mediaDir = path.join(rootDir, ".tmp", "media-provider-test");
-await fs.rm(mediaDir, { recursive: true, force: true });
-await fs.mkdir(mediaDir, { recursive: true });
+const mediaDir = await fs.mkdtemp(path.join(os.tmpdir(), "media-provider-test-"));
 
 let settings = normalizeMediaSettings({
   image: { enabled: true },

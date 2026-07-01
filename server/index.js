@@ -56,7 +56,11 @@ app.use(express.json({ limit: "4mb" }));
 app.use("/media", express.static(mediaDir));
 app.get("/vendor/pdfjs/", (req, res) => res.redirect("/"));
 app.use("/vendor/pdfjs", express.static(path.join(rootDir, "node_modules", "pdf-parse", "lib", "pdf.js", "v1.10.100", "build")));
-app.use(express.static(publicDir));
+const publicStaticMiddleware = express.static(publicDir);
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api/")) return next();
+  return publicStaticMiddleware(req, res, next);
+});
 
 const detectedAnkiExecutablePath = detectAnkiExecutablePath();
 
@@ -136,6 +140,7 @@ const normalizationDictionaryCache = new Map();
 const readerTokenCache = new Map();
 let normalizationDictionarySignatureCache = "";
 const wordBankMeaningCache = new Map();
+const documentIngestionPromises = new Map();
 const sqliteStateStore = createSqliteStateStore({ dbPath: sqliteDbPath });
 
 await ensureStorage();
@@ -168,7 +173,8 @@ const dictionaryService = createDictionaryService({
   normalizeJapaneseTerm,
   repairMojibake,
   crypto,
-  deferStoreSave: true
+  deferStoreSave: true,
+  dictionaryStore: sqliteStateStore
 });
 const eventLog = createLearningEventLog({ eventsPath });
 const embeddingProvider = createRuntimeEmbeddingProvider({
@@ -198,6 +204,7 @@ const syncService = createSyncService({
 });
 const mlService = createMlService({
   getState: () => state,
+  getRevisions: () => sqliteStateStore.revisions({ readOnly: true }),
   vectorDir,
   eventLog,
   analyzeText,
@@ -237,6 +244,7 @@ async function loadState() {
   if (sqliteState) {
     state = { ...structuredClone(initialState), ...sqliteState };
     const repaired = await repairLoadedState();
+    await ensureSqliteDictionaryIndexes();
     if (repaired) await saveState();
     return;
   }
@@ -378,6 +386,32 @@ async function saveKnownTermsState() {
   return saveStateQueue;
 }
 
+async function saveKnownTermsAddedState(terms = []) {
+  saveStateQueue = saveStateQueue
+    .catch(() => {})
+    .then(async () => {
+      if (typeof sqliteStateStore.saveKnownTermsAdded === "function") {
+        sqliteStateStore.saveKnownTermsAdded(terms, state.knownTermMeta ?? {}, state);
+      } else {
+        sqliteStateStore.saveKnownTermsState(state);
+      }
+    });
+  return saveStateQueue;
+}
+
+async function saveKnownTermsDeletedState(terms = []) {
+  saveStateQueue = saveStateQueue
+    .catch(() => {})
+    .then(async () => {
+      if (typeof sqliteStateStore.saveKnownTermsDeleted === "function") {
+        sqliteStateStore.saveKnownTermsDeleted(terms, state.trash?.knownTerms ?? [], state);
+      } else {
+        sqliteStateStore.saveKnownTermsState(state);
+      }
+    });
+  return saveStateQueue;
+}
+
 async function saveCardsAndKnownTermsState() {
   saveStateQueue = saveStateQueue
     .catch(() => {})
@@ -431,6 +465,24 @@ async function loadExternalDictionaries() {
   const raw = await fs.readFile(dictionaryDbPath, "utf8");
   const parsed = parseStateJson(raw);
   return Array.isArray(parsed) ? parsed : parsed.dictionaries ?? [];
+}
+
+async function ensureSqliteDictionaryIndexes() {
+  if (typeof sqliteStateStore.dictionaryIndexStats !== "function") return;
+  const stats = sqliteStateStore.dictionaryIndexStats();
+  if (stats.dictionaries === 0 || stats.entries > 0 || stats.frequencies > 0) return;
+  const externalDictionaries = await loadExternalDictionaries();
+  const dictionaries = Array.isArray(externalDictionaries) ? externalDictionaries : [];
+  const expectedEntries = dictionaries.reduce((sum, dictionary) => sum + Number(dictionary?.entries?.length ?? 0), 0);
+  const expectedFrequencies = dictionaries.reduce((sum, dictionary) => sum + Number(dictionary?.frequencyEntries?.length ?? 0), 0);
+  if (expectedEntries + expectedFrequencies === 0) return;
+
+  console.log(`Rebuilding SQLite dictionary lookup index from dictionaries.json (${expectedEntries.toLocaleString()} entries, ${expectedFrequencies.toLocaleString()} frequencies).`);
+  sqliteStateStore.saveDictionariesState({ ...state, dictionaries });
+  state.dictionaries = dictionaries.map(dictionaryPublicStorageRecord);
+  invalidateWordBankMeaningCache();
+  invalidateReadabilityContext();
+  normalizationDictionaryCache.clear();
 }
 
 async function migrateDictionariesFromRawState(raw = "") {
@@ -705,14 +757,44 @@ function documentCacheKey(document) {
     document.updatedAt ?? document.createdAt ?? "",
     dictionaryNormalizationSignature(),
     state.reader?.hideInferredReadableFurigana ? "hide-inferred" : "show-inferred",
-    state.knownTerms.length,
-    state.knownTerms.join("\u0001"),
     state.dictionaries.length
   ].join("\u0002");
 }
 
 function clearDocumentCache() {
   documentResponseCache.clear();
+}
+
+function hideKnownTermsInDocumentResponseCache(terms = []) {
+  const normalizedTerms = [...new Set((Array.isArray(terms) ? terms : [terms])
+    .map(normalizeJapaneseTerm)
+    .filter(Boolean))];
+  if (normalizedTerms.length === 0 || documentResponseCache.size === 0) return;
+  for (const cached of documentResponseCache.values()) {
+    if (typeof cached.html === "string") cached.html = hideKnownTermsInHtml(cached.html, normalizedTerms);
+    if (Array.isArray(cached.pages)) {
+      cached.pages = cached.pages.map((page) => ({
+        ...page,
+        html: typeof page?.html === "string" ? hideKnownTermsInHtml(page.html, normalizedTerms) : page?.html
+      }));
+    }
+  }
+}
+
+function hideKnownTermsInHtml(html = "", terms = []) {
+  let next = String(html ?? "");
+  for (const term of terms) {
+    const escapedTerm = escapeRegExp(escapeHtml(term));
+    const rubyPattern = new RegExp(`<ruby([^>]*)\\bdata-base="${escapedTerm}"([^>]*)>([\\s\\S]*?)<rt>[\\s\\S]*?<\\/rt><\\/ruby>`, "gu");
+    next = next.replace(rubyPattern, (_match, beforeAttrs, afterAttrs, surfaceHtml) => {
+      return `<span class="lookup-token"${beforeAttrs} data-base="${escapeHtml(term)}"${afterAttrs}>${surfaceHtml}</span>`;
+    });
+  }
+  return next;
+}
+
+function escapeRegExp(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function invalidateReadabilityContext() {
@@ -899,7 +981,10 @@ async function ensureDocumentIngestionCache(document = {}, options = {}) {
   if (!shouldBuild) return { ...cacheState, rebuilt: false, cacheDir };
   if (cacheState.state === "dictionary-stale" && options.force !== true && options.rebuildDictionaryStale !== true) {
     markMlIndexStale("Dictionary normalization changed. Rebuild the local semantic index when convenient.");
-    await saveSettingsState(["ml"]);
+    return { ...cacheState, rebuilt: false, deferred: true, cacheDir };
+  }
+  if (cacheState.state === "full-stale" && options.force !== true && options.deferFullStale === true) {
+    markMlIndexStale("Document ingestion cache is stale. Rebuild the local semantic index when convenient.");
     return { ...cacheState, rebuilt: false, deferred: true, cacheDir };
   }
 
@@ -923,6 +1008,7 @@ async function ensureDocumentIngestionCache(document = {}, options = {}) {
       current: index + 1,
       total
     });
+    if (index > 0 && index % 10 === 0) await yieldToEventLoop();
     await analyzeReaderTokenStream(text, {
       cacheDir,
       authorRubyProtectedTerms: authorRubyProtectedTermsFromText(text)
@@ -932,12 +1018,43 @@ async function ensureDocumentIngestionCache(document = {}, options = {}) {
   await writeDocumentCacheManifest(document, cacheState.current);
   if (cacheState.state === "dictionary-stale") {
     markMlIndexStale("Dictionary normalization changed. Rebuild the local semantic index when convenient.");
-    await saveSettingsState(["ml"]);
+    await saveSettingsState(["ml"]).catch((error) => {
+      console.warn("Unable to persist ML stale flag after reader cache refresh:", error.message);
+    });
   } else if (cacheState.state === "full-stale" || options.force === true) {
     markMlIndexStale("Document ingestion cache changed. Rebuild the local semantic index.");
-    await saveSettingsState(["ml"]);
+    await saveSettingsState(["ml"]).catch((error) => {
+      console.warn("Unable to persist ML stale flag after reader cache refresh:", error.message);
+    });
   }
   return { ...cacheState, rebuilt: true, cacheDir };
+}
+
+async function ensureDocumentIngestionCacheSingleFlight(document = {}, options = {}) {
+  const documentId = String(document?.id ?? "");
+  if (!documentId) return ensureDocumentIngestionCache(document, options);
+  const existing = documentIngestionPromises.get(documentId);
+  if (existing && options.force !== true) {
+    if (typeof options.onProgress === "function") {
+      options.onProgress({
+        phase: "waiting",
+        label: "Waiting for existing local cache check...",
+        current: 0,
+        total: 1
+      });
+    }
+    return existing;
+  }
+  const promise = ensureDocumentIngestionCache(document, options)
+    .finally(() => {
+      if (documentIngestionPromises.get(documentId) === promise) documentIngestionPromises.delete(documentId);
+    });
+  documentIngestionPromises.set(documentId, promise);
+  return promise;
+}
+
+function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 function renderImageFigure(src = "", alt = "") {
@@ -1702,6 +1819,31 @@ function lookupCachedWordBankMeaning(term = "", dictionaryId = "") {
   return entries;
 }
 
+function lookupCachedWordBankMeanings(terms = [], dictionaryId = "") {
+  const resolvedDictionaryId = dictionaryId || selectedWordBankDictionaryId();
+  const normalizedTerms = [...new Set((Array.isArray(terms) ? terms : [])
+    .map(normalizeJapaneseTerm)
+    .filter(Boolean))];
+  const cache = wordBankMeaningCacheEntry(resolvedDictionaryId);
+  const result = new Map();
+  const missing = [];
+  for (const term of normalizedTerms) {
+    if (cache && cache.entries.has(term)) result.set(term, cache.entries.get(term));
+    else missing.push(term);
+  }
+  if (missing.length > 0) {
+    const batch = typeof dictionaryService.lookupWordBankMany === "function"
+      ? dictionaryService.lookupWordBankMany(missing, resolvedDictionaryId)
+      : new Map(missing.map((term) => [term, dictionaryService.lookupWordBank(term, resolvedDictionaryId)]));
+    for (const term of missing) {
+      const entries = batch.get(term) ?? [];
+      result.set(term, entries);
+      if (cache) cache.entries.set(term, entries);
+    }
+  }
+  return result;
+}
+
 function wordBankMeaningCacheStatus(dictionaryId = "") {
   const resolvedDictionaryId = dictionaryId || selectedWordBankDictionaryId();
   const dictionary = state.dictionaries.find((item) => item.id === resolvedDictionaryId && item.type === "term");
@@ -1744,10 +1886,11 @@ async function rebuildWordBankMeaningCache(dictionaryId = "") {
   }
   const signature = wordBankMeaningCacheSignature(resolvedDictionaryId);
   const entries = new Map();
-  for (const [index, term] of state.knownTerms.map(normalizeJapaneseTerm).filter(Boolean).entries()) {
-    entries.set(term, dictionaryService.lookupWordBank(term, resolvedDictionaryId));
-    if (index > 0 && index % 250 === 0) await new Promise((resolve) => setImmediate(resolve));
-  }
+  const terms = state.knownTerms.map(normalizeJapaneseTerm).filter(Boolean);
+  const batch = typeof dictionaryService.lookupWordBankMany === "function"
+    ? dictionaryService.lookupWordBankMany(terms, resolvedDictionaryId)
+    : new Map(terms.map((term) => [term, dictionaryService.lookupWordBank(term, resolvedDictionaryId)]));
+  for (const term of terms) entries.set(term, batch.get(term) ?? []);
   const cache = {
     dictionaryId: resolvedDictionaryId,
     dictionaryName: dictionary.name,
@@ -2439,25 +2582,31 @@ async function dictionaryLookupTerms(term = "") {
   addTerm(normalized);
   if (!normalized || !hasJapaneseText(normalized) || normalized.length > 80) return terms;
 
-  for (const token of await analyzeReaderTokenStream(normalized)) {
-    for (const term of tokenLookupVariants(token)) addTerm(term, true);
+  try {
+    const tokenizer = await getTokenizer();
+    for (const token of tokenizer.tokenize(normalized)) {
+      addTerm(token.surface_form, true);
+      addTerm(tokenBase(token), true);
+      addTerm(tokenReading(token), true);
+      if (terms.length >= 12) break;
+    }
+  } catch {
+    // Direct lookup still works if tokenizer setup is unavailable.
   }
   return terms;
 }
 
 async function lookupDictionaryForms(term = "", options = {}) {
-  const terms = await dictionaryLookupTerms(term);
+  const normalized = normalizeJapaneseTerm(term);
+  const terms = normalized ? [normalized] : [];
   const entries = [];
   const frequencies = [];
   const seenEntries = new Set();
   const seenFrequencies = new Set();
-
-  for (let index = 0; index < terms.length; index += 1) {
-    const lookupTerm = terms[index];
-    const result = dictionaryService.lookup(lookupTerm, options);
+  const appendResult = (lookupTerm, result = {}) => {
     for (const entry of result.entries ?? []) {
       for (const redirectTarget of entry.redirectTargets ?? []) {
-        if (!terms.includes(redirectTarget)) terms.push(redirectTarget);
+        if (terms.length < 16 && !terms.includes(redirectTarget)) terms.push(redirectTarget);
       }
       const key = [
         entry.dictionaryId,
@@ -2482,6 +2631,19 @@ async function lookupDictionaryForms(term = "", options = {}) {
       seenFrequencies.add(key);
       frequencies.push({ ...frequency, matchedTerm: lookupTerm });
     }
+  };
+
+  if (normalized) appendResult(normalized, dictionaryService.lookup(normalized, options));
+  if (entries.length === 0 && frequencies.length === 0) {
+    for (const expandedTerm of await dictionaryLookupTerms(term)) {
+      if (!terms.includes(expandedTerm)) terms.push(expandedTerm);
+    }
+  }
+
+  for (let index = 0; index < terms.length && index < 16; index += 1) {
+    const lookupTerm = terms[index];
+    if (index === 0 && lookupTerm === normalized) continue;
+    appendResult(lookupTerm, dictionaryService.lookup(lookupTerm, options));
   }
 
   const publicEntries = entries
@@ -2647,6 +2809,34 @@ async function analyzeText(text = "") {
   }
 
   return { tokens: analyzed, candidates: [...candidatesByKey.values()] };
+}
+
+function fastPageCandidates(text = "", limit = 40) {
+  if (!hasJapaneseText(text)) return [];
+  const known = learnedSet();
+  const cleanText = stripReaderMarkers(String(text ?? ""));
+  const sentences = buildSentenceLookup(cleanText);
+  const candidatesByKey = new Map();
+  const pattern = /[\u3400-\u9fff々〆ヵヶ][\u3400-\u9fff々〆ヵヶぁ-んァ-ヴー]{0,8}/gu;
+  for (const match of cleanText.matchAll(pattern)) {
+    const surface = normalizeJapaneseTerm(match[0]);
+    if (!surface || !hasKanji(surface) || surface.length < 2) continue;
+    if (known.has(surface)) continue;
+    if (candidatesByKey.has(surface)) continue;
+    candidatesByKey.set(surface, {
+      expression: surface,
+      surface,
+      dictionaryForm: surface,
+      reading: "",
+      partOfSpeech: "",
+      readabilityStatus: "unknown",
+      readabilityScore: 0,
+      readabilityReasons: [],
+      sentence: sentenceForOffset(sentences, match.index ?? 0)
+    });
+    if (candidatesByKey.size >= limit) break;
+  }
+  return [...candidatesByKey.values()];
 }
 
 async function analyzeDocument(document) {
@@ -3025,7 +3215,7 @@ function bestFrequencyReadabilityScore(frequencies = []) {
   return best;
 }
 
-function normalizeReaderToken(token = {}, known = learnedSet(), authorRubyProtectedTerms = new Set()) {
+function normalizeReaderToken(token = {}, known = learnedSet(), authorRubyProtectedTerms = new Set(), options = {}) {
   const surface = normalizeJapaneseTerm(token.surface ?? "");
   if (!surface) return token;
   if (token.authorRuby) {
@@ -3045,7 +3235,7 @@ function normalizeReaderToken(token = {}, known = learnedSet(), authorRubyProtec
 
   const base = normalizeJapaneseTerm(token.base || surface);
   const protectedByAuthorRuby = isAuthorRubyProtectedToken({ ...token, surface, base }, authorRubyProtectedTerms);
-  const canonical = canonicalDictionaryMatch([surface, base]);
+  const canonical = options.dictionaryAware === false ? null : canonicalDictionaryMatch([surface, base]);
   const dictionaryForm = canonical?.term || base || surface;
   const dictionaryReading = primaryReading(canonical?.reading || token.dictionaryReading || "");
   const displayReading = protectedByAuthorRuby ? "" : primaryReading(token.displayReading || token.reading || (canonical?.matchedInput === surface ? dictionaryReading : ""));
@@ -3126,12 +3316,15 @@ function bestDictionaryMatch(term = "") {
   return matches.find((entry) => normalizeJapaneseTerm(entry.term) === normalizeJapaneseTerm(term) && entry.reading) ?? matches.find((entry) => entry.reading);
 }
 
-function dictionaryAwareTokenStream(tokens = [], known = learnedSet(), authorRubyProtectedTerms = authorRubyProtectedTermsFromTokens(tokens)) {
+function dictionaryAwareTokenStream(tokens = [], known = learnedSet(), authorRubyProtectedTerms = authorRubyProtectedTermsFromTokens(tokens), options = {}) {
+  if (options.dictionaryAware === false) {
+    return tokens.map((token) => normalizeReaderToken(token, known, authorRubyProtectedTerms, options));
+  }
   const merged = [];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token.authorRuby || !hasKanji(token.surface) || isAuthorRubyProtectedToken(token, authorRubyProtectedTerms)) {
-      merged.push(normalizeReaderToken(token, known, authorRubyProtectedTerms));
+      merged.push(normalizeReaderToken(token, known, authorRubyProtectedTerms, options));
       continue;
     }
 
@@ -3162,13 +3355,13 @@ function dictionaryAwareTokenStream(tokens = [], known = learnedSet(), authorRub
         posDetail3: token.posDetail3 ?? "",
         start: token.start,
         end: tokens[best.end]?.end ?? token.end
-      }, known, authorRubyProtectedTerms);
+      }, known, authorRubyProtectedTerms, options);
       merged.push(compound);
       index = best.end;
       continue;
     }
 
-    merged.push(normalizeReaderToken(token, known, authorRubyProtectedTerms));
+    merged.push(normalizeReaderToken(token, known, authorRubyProtectedTerms, options));
   }
   return merged;
 }
@@ -3291,7 +3484,9 @@ async function analyzeReaderTokenStream(text, options = {}) {
     if (normalizedTokens) rememberReaderTokens(key, normalizedTokens);
   }
   if (!normalizedTokens) {
-    normalizedTokens = dictionaryAwareTokenStream(readerRenderTokens(text, tokenizer, new Set()), new Set(), authorRubyProtectedTerms);
+    normalizedTokens = dictionaryAwareTokenStream(readerRenderTokens(text, tokenizer, new Set()), new Set(), authorRubyProtectedTerms, {
+      dictionaryAware: options.dictionaryAware !== false
+    });
     rememberReaderTokens(key, normalizedTokens);
     if (options.cacheDir) await writePersistentReaderTokens(options.cacheDir, key, normalizedTokens);
   }
@@ -3359,7 +3554,6 @@ async function readableSuggestionsFromText(text = "", limit = 20) {
 async function readabilityForLookupTerm(term = "", lookupResult = {}) {
   const normalized = normalizeJapaneseTerm(term);
   const primaryEntry = lookupResult.entries?.[0];
-  const context = await readabilityScoringContext();
   const token = {
     surface: normalized || primaryEntry?.term || "",
     base: primaryEntry?.term || normalized,
@@ -3370,8 +3564,29 @@ async function readabilityForLookupTerm(term = "", lookupResult = {}) {
     pos: "",
     posDetail1: ""
   };
-  const known = learnedByTokenVariants(token, await learnedVariantSet());
-  const readability = scoreTokenReadability(token, known, context);
+  const known = Boolean(lookupResult.knownTerm?.exists) || learnedByTokenVariants(token, learnedSet());
+  if (known) return { status: "known", score: 100, reasons: ["word bank"] };
+  let score = 0;
+  const reasons = [];
+  if ((lookupResult.entries?.length ?? 0) > 0) {
+    score += 35;
+    reasons.push("dictionary match");
+  }
+  if ((lookupResult.frequencies?.length ?? 0) > 0) {
+    score += 35;
+    reasons.push("frequency match");
+  }
+  const knownKanji = knownKanjiSet();
+  const kanji = [...(token.dictionaryForm || token.surface || "")].filter((char) => hasKanji(char));
+  if (kanji.length > 0 && kanji.every((char) => knownKanji.has(char))) {
+    score += 25;
+    reasons.push("known kanji");
+  }
+  const readability = {
+    status: score >= 85 ? "inferred-readable" : "unknown",
+    score,
+    reasons
+  };
   return {
     status: readability.status,
     score: readability.score,
@@ -3557,6 +3772,205 @@ async function renderStructuredBlocks(blocks = [], options = {}) {
   return rendered.join("");
 }
 
+function renderInitialStructuredBlocks(blocks = []) {
+  const rendered = [];
+  let textBuffer = [];
+  const flushText = () => {
+    if (textBuffer.length === 0) return;
+    rendered.push(`<div class="book-lines">${renderFastTextLines(joinTextBlocks(textBuffer))}</div>`);
+    textBuffer = [];
+  };
+  for (const block of blocks) {
+    if (block.type === "page") {
+      flushText();
+      rendered.push(block.pdfSrc ? renderPdfPageFigure(block) : renderInitialStructuredBlocks(block.blocks ?? []));
+      continue;
+    }
+    if (block.type === "image") {
+      flushText();
+      rendered.push(renderImageFigure(block.src, block.alt ?? ""));
+      continue;
+    }
+    if (block.type === "link" && block.text?.trim()) {
+      flushText();
+      rendered.push(`<p class="book-line">${escapeHtml(stripReaderMarkers(block.text))}</p>`);
+      continue;
+    }
+    if (block.type === "text" && block.text?.trim()) textBuffer.push(block.text);
+  }
+  flushText();
+  return rendered.join("");
+}
+
+function decodeReaderMarker(value = "") {
+  try {
+    return decodeURIComponent(value ?? "");
+  } catch {
+    return value ?? "";
+  }
+}
+
+function renderFastInlineText(value = "") {
+  const markerPattern = /\[\[(RUBY):([^|]*)\|([^\]]*)\]\]|\[\[LINK:[^|]*\|([^\]]*)\]\]|\[\[IMG:[^\]]*\]\]/g;
+  let html = "";
+  let lastIndex = 0;
+  for (const match of String(value ?? "").matchAll(markerPattern)) {
+    html += escapeHtml(value.slice(lastIndex, match.index));
+    if (match[1] === "RUBY") html += authorRubyHtml(decodeReaderMarker(match[2]), decodeReaderMarker(match[3]));
+    else if (match[4]) html += escapeHtml(match[4]);
+    lastIndex = match.index + match[0].length;
+  }
+  html += escapeHtml(value.slice(lastIndex));
+  return html;
+}
+
+function renderFastTextLines(text = "") {
+  return String(text ?? "")
+    .split(/\n+|(?<=[.!?])\s+/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => `<p class="book-line">${renderFastInlineText(line)}</p>`)
+    .join("");
+}
+
+function renderInitialStructuredPages(blocks = [], charLimit = 850, maxPages = 8) {
+  const pages = [];
+  let pageBlocks = [];
+  let count = 0;
+  for (const originalBlock of blocks) {
+    if (pages.length >= maxPages) break;
+    const expandedBlocks = splitLongTextBlock(originalBlock, charLimit);
+    for (const block of expandedBlocks) {
+      if (pages.length >= maxPages) break;
+      if (block.type === "page" || block.type === "image") {
+        if (pageBlocks.length > 0) {
+          pages.push(renderInitialStructuredBlocks(pageBlocks));
+          pageBlocks = [];
+          count = 0;
+          if (pages.length >= maxPages) break;
+        }
+        pages.push(renderInitialStructuredBlocks([block]));
+        continue;
+      }
+      const blockLength = block.type === "text" || block.type === "link" ? block.text.length : 220;
+      if (pageBlocks.length > 0 && count + blockLength > charLimit) {
+        pages.push(renderInitialStructuredBlocks(pageBlocks));
+        pageBlocks = [];
+        count = 0;
+        if (pages.length >= maxPages) break;
+      }
+      pageBlocks.push(block);
+      count += blockLength;
+    }
+  }
+  if (pageBlocks.length > 0 && pages.length < maxPages) pages.push(renderInitialStructuredBlocks(pageBlocks));
+  return pages.length > 0 ? pages : [""];
+}
+
+function paginateStructuredBlockGroups(blocks = [], charLimit = 850) {
+  const pages = [];
+  let pageBlocks = [];
+  let count = 0;
+  const pushPage = () => {
+    if (pageBlocks.length === 0) return;
+    pages.push(pageBlocks);
+    pageBlocks = [];
+    count = 0;
+  };
+  for (const originalBlock of blocks) {
+    const expandedBlocks = splitLongTextBlock(originalBlock, charLimit);
+    for (const block of expandedBlocks) {
+      if (block.type === "page" || block.type === "image") {
+        pushPage();
+        pages.push([block]);
+        continue;
+      }
+      const blockLength = block.type === "text" || block.type === "link" ? String(block.text ?? "").length : 220;
+      if (pageBlocks.length > 0 && count + blockLength > charLimit) pushPage();
+      pageBlocks.push(block);
+      count += blockLength;
+    }
+  }
+  pushPage();
+  return pages.length > 0 ? pages : [[]];
+}
+
+function documentPageDescriptors(document = {}, charLimit = 850) {
+  const chapters = fallbackChapters(document);
+  const descriptors = [];
+  const chapterMetas = chapters.map((chapter, index) => ({
+    id: chapter.id || `chapter-${index + 1}`,
+    title: chapter.title || `Chapter ${index + 1}`,
+    href: chapter.href ?? ""
+  }));
+  for (const [index, chapter] of chapters.entries()) {
+    const meta = chapterMetas[index];
+    const renderBlocks = stripChapterTitleFromBlocks(chapter.blocks ?? [], meta.title);
+    const pageGroups = paginateStructuredBlockGroups(renderBlocks, charLimit);
+    for (const blocks of pageGroups) {
+      descriptors.push({
+        chapterId: meta.id,
+        chapterTitle: meta.title,
+        blocks
+      });
+    }
+  }
+  return { chapters: chapterMetas, descriptors };
+}
+
+function readerPageWindowStart(total = 0, requestedPage = 0, limit = 8) {
+  const safeTotal = Math.max(0, Number(total) || 0);
+  const safeLimit = Math.max(1, Number(limit) || 8);
+  const page = Math.max(0, Math.min(Number(requestedPage) || 0, Math.max(0, safeTotal - 1)));
+  return Math.max(0, Math.min(page - Math.floor(safeLimit / 2), Math.max(0, safeTotal - safeLimit)));
+}
+
+async function renderPageDescriptor(descriptor = {}, options = {}) {
+  const pageHtml = options.fast
+    ? renderInitialStructuredBlocks(descriptor.blocks ?? [])
+    : await renderStructuredBlocks(descriptor.blocks ?? [], options);
+  return {
+    chapterId: descriptor.chapterId,
+    html: wrapReaderPage(pageHtml, descriptor.chapterTitle, !isImageOnlyPageHtml(pageHtml))
+  };
+}
+
+async function renderDocumentPageWindow(document = {}, start = 0, limit = 8) {
+  const { descriptors } = documentPageDescriptors(document);
+  const manifest = await readDocumentCacheManifest(document.id);
+  const cacheState = documentCacheState(document, manifest);
+  const dictionaryAware = cacheState.state !== "dictionary-stale";
+  const useFastRenderer = cacheState.state !== "valid";
+  const cacheDir = documentTokenCacheDir(document.id);
+  const safeStart = Math.max(0, Math.min(Number(start) || 0, Math.max(0, descriptors.length - 1)));
+  const safeLimit = Math.max(1, Math.min(24, Number(limit) || 8));
+  const renderedPages = [];
+  for (const [offset, descriptor] of descriptors.slice(safeStart, safeStart + safeLimit).entries()) {
+    const pageText = blocksToText(descriptor.blocks ?? []);
+    const page = await renderPageDescriptor(descriptor, {
+      cacheDir,
+      authorRubyProtectedTerms: authorRubyProtectedTermsFromText(pageText),
+      dictionaryAware,
+      fast: useFastRenderer
+    });
+    renderedPages.push({ ...page, index: safeStart + offset, unloaded: false });
+    await yieldToEventLoop();
+  }
+  return {
+    start: safeStart,
+    limit: safeLimit,
+    total: descriptors.length,
+    pages: renderedPages
+  };
+}
+
+function stripReaderMarkers(value = "") {
+  return String(value ?? "")
+    .replace(/\[\[RUBY:([^|]*)\|[^\]]*\]\]/g, (_match, surface) => decodeURIComponent(surface ?? ""))
+    .replace(/\[\[LINK:[^|]*\|([^\]]*)\]\]/g, (_match, label) => label ?? "")
+    .replace(/\[\[IMG:[^\]]*\]\]/g, "");
+}
+
 async function renderStructuredPages(blocks = [], charLimit = 850, options = {}) {
   const pages = [];
   let pageBlocks = [];
@@ -3570,8 +3984,10 @@ async function renderStructuredPages(blocks = [], charLimit = 850, options = {})
         pages.push(await renderStructuredBlocks(pageBlocks, options));
         pageBlocks = [];
         count = 0;
+        await yieldToEventLoop();
       }
       pages.push(block.pdfSrc ? renderPdfPageFigure(block) : await renderStructuredBlocks(block.blocks ?? [], options));
+      await yieldToEventLoop();
       continue;
     }
     if (block.type === "image") {
@@ -3579,8 +3995,10 @@ async function renderStructuredPages(blocks = [], charLimit = 850, options = {})
         pages.push(await renderStructuredBlocks(pageBlocks, options));
         pageBlocks = [];
         count = 0;
+        await yieldToEventLoop();
       }
       pages.push(await renderStructuredBlocks([block], options));
+      await yieldToEventLoop();
       continue;
     }
     const blockLength = block.type === "text" || block.type === "link" ? block.text.length : 220;
@@ -3588,6 +4006,7 @@ async function renderStructuredPages(blocks = [], charLimit = 850, options = {})
       pages.push(await renderStructuredBlocks(pageBlocks, options));
       pageBlocks = [];
       count = 0;
+      await yieldToEventLoop();
     }
     pageBlocks.push(block);
     count += blockLength;
@@ -3767,9 +4186,7 @@ function summarizeRetention(cards) {
 }
 
 function logLearningEvent(type, payload = {}) {
-  eventLog.append(type, payload).catch((error) => {
-    console.warn(`Learning event not written: ${error.message}`);
-  });
+  eventLog.append(type, payload).catch(() => {});
 }
 
 function syncDiagnostics() {
@@ -3827,10 +4244,12 @@ const getKnownTerms = (req, res) => {
   const sort = String(req.query.sort ?? "gojuon");
   const dictionaryId = String(req.query.dictionaryId ?? "");
   const filtered = state.knownTerms.filter((term) => !query || term.toLowerCase().includes(query));
-  const terms = sortKnownTerms(filtered, sort)
+  const pageTerms = sortKnownTerms(filtered, sort)
     .slice(offset, offset + limit)
-    .slice(0, limit)
-    .map((term) => ({ term, dictionaryEntries: lookupCachedWordBankMeaning(term, dictionaryId) }));
+    .slice(0, limit);
+  const entriesByTerm = lookupCachedWordBankMeanings(pageTerms, dictionaryId);
+  const terms = pageTerms
+    .map((term) => ({ term, dictionaryEntries: entriesByTerm.get(normalizeJapaneseTerm(term)) ?? [] }));
 
   res.json({ total: filtered.length, allTotal: state.knownTerms.length, offset, limit, sort, terms });
 };
@@ -4047,8 +4466,9 @@ const getDocumentsByIdIngestStream = async (req, res) => {
       res.end();
       return;
     }
-    const result = await ensureDocumentIngestionCache(document, {
+    const result = await ensureDocumentIngestionCacheSingleFlight(document, {
       force: req.query.force === "1",
+      deferFullStale: req.query.force !== "1",
       onProgress: (progress) => writeSse(res, "progress", progress)
     });
     if (result.state === "dictionary-stale" && result.rebuilt) {
@@ -4073,14 +4493,62 @@ const getDocumentsByIdIngestStream = async (req, res) => {
 
 const getDocumentsById = async (req, res, next) => {
   try {
+    const initialOnly = req.query.initial === "1";
+    const debugTiming = req.query.debug === "1";
+    const routeStartedAt = Date.now();
+    const logTiming = (label) => {
+      if (debugTiming) {
+        console.log(`[document-load] ${label}: ${Date.now() - routeStartedAt}ms`);
+      }
+    };
     const document = state.documents.find((item) => item.id === req.params.id);
     if (!document) return res.status(404).json({ error: "Document not found." });
-    const includeCandidates = req.query.candidates === "1" || document.text.length < 20000;
-    const ingestion = await ensureDocumentIngestionCache(document);
+    const initialPageLimit = 8;
+    logTiming("document found");
+    if (initialOnly) {
+      const { chapters, descriptors } = documentPageDescriptors(document);
+      const progress = state.progress[document.id] ?? { percentage: 0 };
+      const requestedPage = Number.isFinite(Number(req.query.page)) ? Number(req.query.page) : Number(progress.page);
+      const windowStart = readerPageWindowStart(descriptors.length, requestedPage, initialPageLimit);
+      const pageWindow = await renderDocumentPageWindow(document, windowStart, initialPageLimit);
+      const renderedByIndex = new Map(pageWindow.pages.map((page) => [page.index, page]));
+      const pages = descriptors.map((descriptor, index) => {
+        const rendered = renderedByIndex.get(index);
+        if (rendered) return rendered;
+        return {
+          chapterId: descriptor.chapterId,
+          html: "",
+          unloaded: true
+        };
+      });
+      res.json({
+        id: document.id,
+        filename: document.filename,
+        createdAt: document.createdAt,
+        coverPath: document.coverPath ?? "",
+        author: document.author ?? "",
+        sourcePath: document.sourcePath ?? "",
+        html: "",
+        pages,
+        chapters,
+        textLength: document.text.length,
+        candidates: [],
+        readabilitySuggestions: [],
+        title: document.title,
+        progress
+      });
+      logTiming(`initial response sent pages=${pageWindow.pages.length}/${pages.length}`);
+      return;
+    }
+    const ingestion = initialOnly
+      ? { state: "initial-skip", rebuilt: false, deferred: true, cacheDir: documentTokenCacheDir(document.id) }
+      : await ensureDocumentIngestionCacheSingleFlight(document);
+    logTiming("ingestion ready");
     const tokenCacheDir = ingestion.cacheDir;
+    const useDictionaryAwareRender = !(ingestion.state === "dictionary-stale" && ingestion.deferred);
 
     const cacheKey = documentCacheKey(document);
-    let cached = documentResponseCache.get(cacheKey);
+    let cached = initialOnly ? null : documentResponseCache.get(cacheKey);
 
     if (!cached) {
       let analysis;
@@ -4089,8 +4557,10 @@ const getDocumentsById = async (req, res, next) => {
         return analysis;
       };
       const chapters = fallbackChapters(document);
+      logTiming(`chapters ready ${chapters.length}`);
       const hasImageBlocks = chapters.some((chapter) => chapter.blocks?.some((block) => block.type === "image"));
       const hasPageBlocks = chapters.some((chapter) => chapter.blocks?.some((block) => block.type === "page"));
+      logTiming(`chapter flags images=${hasImageBlocks} pages=${hasPageBlocks}`);
       let responseChapters;
 
       if (!hasImageBlocks && !hasPageBlocks && chapters.length <= 1 && document.text.length <= 20000) {
@@ -4098,16 +4568,23 @@ const getDocumentsById = async (req, res, next) => {
         responseChapters = [{ id: chapters[0]?.id ?? "chapter-1", title: chapters[0]?.title ?? "Document", html: renderRubyLines(analysis.tokens), pages: renderRubyLinePages(analysis.tokens) }];
       } else {
         const renderedChapters = [];
+        let renderedPageCount = 0;
         for (const [index, chapter] of chapters.entries()) {
           const chapterTitle = chapter.title || `Chapter ${index + 1}`;
+          logTiming(`chapter ${index + 1} start`);
           const renderBlocks = stripChapterTitleFromBlocks(chapter.blocks ?? [], chapterTitle);
+          logTiming(`chapter ${index + 1} stripped blocks=${renderBlocks.length}`);
           const chapterText = blocksToText(renderBlocks);
           const chapterHasPageBlocks = renderBlocks.some((block) => block.type === "page");
           const chapterHasImageBlocks = renderBlocks.some((block) => block.type === "image");
-          const rawPages = await renderStructuredPages(renderBlocks, 850, {
-            cacheDir: tokenCacheDir,
-            authorRubyProtectedTerms: authorRubyProtectedTermsFromText(chapterText)
-          });
+          const rawPages = initialOnly
+            ? renderInitialStructuredPages(renderBlocks, 850, Math.max(1, initialPageLimit - renderedPageCount))
+            : await renderStructuredPages(renderBlocks, 850, {
+                cacheDir: tokenCacheDir,
+                authorRubyProtectedTerms: authorRubyProtectedTermsFromText(chapterText),
+                dictionaryAware: useDictionaryAwareRender
+              });
+          logTiming(`chapter ${index + 1} raw pages=${rawPages.length}`);
           let headingPlaced = false;
           const pages = rawPages.map((pageHtml) => {
             const includeHeading = !headingPlaced && !isImageOnlyPageHtml(pageHtml);
@@ -4123,12 +4600,17 @@ const getDocumentsById = async (req, res, next) => {
             html,
             pages
           });
+          renderedPageCount += pages.length;
+          await yieldToEventLoop();
+          if (initialOnly && renderedPageCount >= initialPageLimit) break;
         }
+        logTiming(`rendered chapters ${renderedChapters.length}`);
         const visibleChapters = renderedChapters.filter((chapter) => chapter.html.trim());
         const fallbackHtml = visibleChapters.length > 0 ? "" : renderRuby((await getAnalysis()).tokens);
         responseChapters = visibleChapters.length > 0 ? visibleChapters : [{ id: "chapter-1", title: "Document", html: fallbackHtml, pages: renderRubyPages(analysis.tokens) }];
       }
-      const missingFrontImages = (await frontImagePaths(document)).filter((imagePath) =>
+      logTiming("response chapters ready");
+      const missingFrontImages = initialOnly ? [] : (await frontImagePaths(document)).filter((imagePath) =>
         !responseChapters.some((chapter) =>
           String(chapter.html ?? "").includes(imagePath) ||
           (chapter.pages ?? []).some((pageHtml) => String(pageHtml ?? "").includes(imagePath))
@@ -4154,35 +4636,27 @@ const getDocumentsById = async (req, res, next) => {
         sourcePath: document.sourcePath ?? "",
         html: frontImageHtml,
         pages,
-        chapters: responseChapters.map(({ id, title, href }) => ({ id, title, href: href ?? "" })),
+        chapters: initialOnly
+          ? chapters.map((chapter, index) => ({
+              id: chapter.id || `chapter-${index + 1}`,
+              title: chapter.title || `Chapter ${index + 1}`,
+              href: chapter.href ?? ""
+            }))
+          : responseChapters.map(({ id, title, href }) => ({ id, title, href: href ?? "" })),
         textLength: document.text.length
       };
-      documentResponseCache.set(cacheKey, cached);
+      if (!initialOnly) documentResponseCache.set(cacheKey, cached);
     }
-
-    let candidates = [];
-    let readabilitySuggestions = [];
-    const pageIndex = Number(req.query.page);
-    if (includeCandidates) {
-      if (Number.isInteger(pageIndex) && cached.pages[pageIndex]) {
-        candidates = (await analyzeText(pageHtmlToCandidateText(cached.pages[pageIndex].html))).candidates.map(enrichCandidate);
-      } else {
-        candidates = (await analyzeDocument(document)).candidates.map(enrichCandidate);
-      }
-      candidates = await mlService.rankCandidates(document.id, candidates);
-    }
-    const suggestionPageIndex = Number.isInteger(pageIndex) && cached.pages[pageIndex] ? pageIndex : 0;
-    if (cached.pages[suggestionPageIndex]) {
-      readabilitySuggestions = await readableSuggestionsFromText(pageHtmlToCandidateText(cached.pages[suggestionPageIndex].html), 20);
-    }
+    logTiming("cached payload ready");
 
     res.json({
       ...cached,
-      candidates,
-      readabilitySuggestions,
+      candidates: [],
+      readabilitySuggestions: [],
       title: document.title,
       progress: state.progress[document.id] ?? { percentage: 0 }
     });
+    logTiming("response sent");
   } catch (error) {
     next(error);
   }
@@ -4306,10 +4780,10 @@ const postKnownTerms = async (req, res) => {
       ].map(normalizeJapaneseTerm).filter(Boolean);
   if (incoming.length === 0) return res.status(400).json({ error: "No vocabulary provided." });
   const added = mergeKnownTerms(incoming);
-  clearDocumentCache();
+  hideKnownTermsInDocumentResponseCache(added);
   invalidateReadabilityContext();
   if (added.length > 0) markMlIndexStale("Word Bank changed known-term coverage.");
-  await saveKnownTermsState();
+  await saveKnownTermsAddedState(added);
   const source = req.file ? "import" : String(req.body?.source ?? "manual");
   for (const term of added) {
     logLearningEvent("wordbank.added", { term, source });
@@ -4337,7 +4811,7 @@ const deleteKnownTerms = async (req, res) => {
   clearDocumentCache();
   invalidateReadabilityContext();
   if (deleted > 0) markMlIndexStale("Word Bank changed known-term coverage.");
-  await saveKnownTermsState();
+  await saveKnownTermsDeletedState(deletedTerms);
   for (const term of deletedTerms) logLearningEvent("wordbank.deleted", { term });
   res.json({ deleted, total: state.knownTerms.length });
 };
@@ -4557,7 +5031,7 @@ const getDictionaryLookup = async (req, res, next) => {
     const term = String(req.query.term ?? "");
     const result = await lookupDictionaryForms(term, { prefix: req.query.prefix === "true" });
     result.readability = await readabilityForLookupTerm(term, result);
-    if (result.knownTerm?.ankiNoteIds?.length) {
+    if (req.query.checkAnki === "true" && result.knownTerm?.ankiNoteIds?.length) {
       try {
         const liveNoteId = await firstExistingAnkiNoteId(result.knownTerm.ankiNoteIds);
         result.knownTerm.hasAnkiNote = Boolean(liveNoteId);
@@ -4646,7 +5120,18 @@ const postMediaSettings = async (req, res, next) => {
   }
 };
 
-
+const getDocumentsByIdPages = async (req, res, next) => {
+  try {
+    const document = state.documents.find((item) => item.id === req.params.id);
+    if (!document) return res.status(404).json({ error: "Document not found." });
+    const start = Number(req.query.start);
+    const limit = Number(req.query.limit);
+    const pageWindow = await renderDocumentPageWindow(document, start, limit);
+    res.json(pageWindow);
+  } catch (error) {
+    next(error);
+  }
+};
 
 const postMediaVoiceModels = async (req, res, next) => {
   try {
@@ -4904,8 +5389,7 @@ const getMlProviders = async (req, res, next) => {
   try {
     res.json({
       models: EMBEDDING_MODELS,
-      settings: publicMlSettings(state.ml),
-      status: await mlService.status()
+      settings: publicMlSettings(state.ml)
     });
   } catch (error) {
     next(error);
@@ -4945,15 +5429,58 @@ async function updateMlSettings(req, res, next) {
 
 const postMlIndexRebuild = async (req, res, next) => {
   try {
+    const skipVectors = req.body?.skipVectors === true;
     const shouldSaveFreshState = Boolean(state.ml?.indexStale || state.ml?.indexStaleReason);
-    await mlService.rebuildIndex();
-    markMlIndexFresh();
-    if (shouldSaveFreshState) await saveSettingsState(["ml"]);
+    await mlService.rebuildIndex({ skipVectors });
+    if (!skipVectors) {
+      markMlIndexFresh();
+      if (shouldSaveFreshState) await saveSettingsState(["ml"]);
+    }
     const result = await mlService.status();
     logLearningEvent("ml.index-rebuilt", { chunks: result.chunks, provider: result.provider, embeddingProvider: result.embeddingProvider });
     res.json(result);
   } catch (error) {
+    if (error.code === "INDEX_BUSY") return res.status(409).json({ error: error.message });
     next(error);
+  }
+};
+
+
+const postSearchIndexRefresh = async (req, res, next) => {
+  try {
+    const result = await mlService.refreshTextIndex();
+    logLearningEvent("search.index-refreshed", { chunks: result.textSearch?.chunks ?? result.fts?.chunks ?? result.chunks });
+    res.json(await mlService.status());
+  } catch (error) {
+    if (error.code === "INDEX_BUSY") return res.status(409).json({ error: error.message });
+    next(error);
+  }
+};
+
+
+
+const postMlVectorsUpdateStream = async (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  try {
+    writeSse(res, "progress", { phase: "start", message: "Starting semantic vector update...", current: 0, total: 1 });
+    const shouldSaveFreshState = Boolean(state.ml?.indexStale || state.ml?.indexStaleReason);
+    await mlService.updateSemanticVectors({
+      onProgress: (progress) => writeSse(res, "progress", progress)
+    });
+    markMlIndexFresh();
+    if (shouldSaveFreshState) await saveSettingsState(["ml"]);
+    const status = await mlService.status();
+    logLearningEvent("ml.vectors-updated", { chunks: status.chunks, provider: status.provider, embeddingProvider: status.embeddingProvider });
+    writeSse(res, "done", status);
+  } catch (error) {
+    writeSse(res, "error", { error: error.message, code: error.code || "" });
+  } finally {
+    res.end();
   }
 };
 
@@ -5329,6 +5856,7 @@ const routeContext = {
     postDocuments,
     postDocumentsReorder,
     getDocumentsByIdIngestStream,
+    getDocumentsByIdPages,
     getDocumentsById,
     patchDocumentsById,
     deleteDocumentsById,
@@ -5371,6 +5899,8 @@ const routeContext = {
     getMlIndexStatus,
     getMlProviders,
     updateMlSettings,
+    postSearchIndexRefresh,
+    postMlVectorsUpdateStream,
     postMlIndexRebuild,
     postSearchSemantic,
     postSearchFts,

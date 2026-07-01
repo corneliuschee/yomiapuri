@@ -25,6 +25,7 @@ export function createHashEmbeddingProvider() {
 
 export function createMlService({
   getState,
+  getRevisions = () => ({}),
   vectorDir,
   eventLog,
   analyzeText,
@@ -36,6 +37,9 @@ export function createMlService({
   embeddingProvider = createHashEmbeddingProvider()
 }) {
   const queryVectorCache = new Map();
+  let analyticsCache = null;
+  let textRefreshInProgress = false;
+  let vectorUpdateInProgress = false;
   let indexStatus = {
     provider: "lancedb",
     embeddingProvider: embeddingProvider.id,
@@ -47,12 +51,101 @@ export function createMlService({
     error: ""
   };
 
-  async function rebuildIndex() {
+  async function rebuildIndex(options = {}) {
+    if (!options.internal) {
+      if (options.skipVectors === true) return refreshTextIndex(options);
+      await refreshTextIndex(options);
+      return updateSemanticVectors(options);
+    }
     await fs.mkdir(vectorDir, { recursive: true });
     const state = getState();
     const existingChunkSidecar = await readChunkSidecar(vectorDir);
     const activeSidecarCount = countActiveSidecarChunks(existingChunkSidecar, state);
     const targetInfo = typeof embeddingProvider.configuredInfo === "function" ? embeddingProvider.configuredInfo() : embeddingInfo();
+    if (options.skipVectors === true) {
+      const currentFtsStatus = ftsSearch && typeof ftsSearch.status === "function" ? ftsSearch.status() : null;
+      if (canReturnFastLexicalRebuild(state, existingChunkSidecar, currentFtsStatus)) {
+        const previousStatus = await readStoredIndexStatus(vectorDir);
+        const runtimeInfo = embeddingInfo();
+        indexStatus = {
+          ...previousStatus,
+          provider: "lancedb",
+          embeddingProvider: runtimeInfo.id,
+          embeddingProviderLabel: runtimeInfo.label,
+          embeddingDimensions: runtimeInfo.dimensions,
+          embeddingDevice: runtimeInfo.device || "",
+          embeddingFallback: Boolean(runtimeInfo.fallback),
+          embeddingError: runtimeInfo.error || "",
+          vectorDir,
+          ready: Boolean(previousStatus.ready),
+          chunks: activeSidecarCount,
+          reusedVectors: activeSidecarCount,
+          embeddedVectors: 0,
+          vectorRowsInsertedOrUpdated: 0,
+          vectorRowsSkipped: activeSidecarCount,
+          lexicalOnly: true,
+          lexicalFastPath: true,
+          updatedAt: new Date().toISOString(),
+          error: previousStatus.error || "",
+          fts: currentFtsStatus
+        };
+        return withRuntimeStatus(indexStatus);
+      }
+      const updatePlan = buildLexicalChunkUpdatePlan(state, existingChunkSidecar, {
+        normalizeJapaneseTerm,
+        hasJapaneseText,
+        hasKanji
+      });
+      let ftsStatus = ftsSearch && typeof ftsSearch.status === "function" ? ftsSearch.status() : null;
+      const cleanupErrors = [];
+      for (const documentId of updatePlan.removedDocumentIds) {
+        try {
+          if (ftsSearch && typeof ftsSearch.deleteDocument === "function") ftsSearch.deleteDocument(documentId);
+          await deleteLanceDocumentRows(vectorDir, documentId);
+        } catch (error) {
+          cleanupErrors.push(`${documentId}: ${error.message}`);
+        }
+      }
+      if (updatePlan.removedDocumentIds.length > 0 && ftsSearch && typeof ftsSearch.status === "function") {
+        ftsStatus = ftsSearch.status();
+      }
+      const shouldRefreshFtsStatus = Boolean(ftsStatus?.stale) || !ftsStatus?.ready;
+      if (ftsSearch && typeof ftsSearch.rebuild === "function" && (updatePlan.changedChunks.length > 0 || shouldRefreshFtsStatus)) {
+        const chunksForRefresh = updatePlan.changedChunks.length > 0 ? updatePlan.changedChunks : updatePlan.allChunks;
+        ftsStatus = await ftsSearch.rebuild(chunksForRefresh, {
+          analyze: false,
+          pruneDocuments: updatePlan.changedDocumentIds
+        });
+      }
+      const previousStatus = await readStoredIndexStatus(vectorDir);
+      const runtimeInfo = embeddingInfo();
+      indexStatus = {
+        ...previousStatus,
+        provider: "lancedb",
+        embeddingProvider: runtimeInfo.id,
+        embeddingProviderLabel: runtimeInfo.label,
+        embeddingDimensions: runtimeInfo.dimensions,
+        embeddingDevice: runtimeInfo.device || "",
+        embeddingFallback: Boolean(runtimeInfo.fallback),
+        embeddingError: runtimeInfo.error || "",
+        vectorDir,
+        ready: Boolean(previousStatus.ready),
+        chunks: updatePlan.allChunks.length,
+        reusedVectors: activeSidecarCount,
+        embeddedVectors: 0,
+        vectorRowsInsertedOrUpdated: 0,
+        vectorRowsSkipped: updatePlan.allChunks.length,
+        lexicalOnly: true,
+        lexicalFastPath: false,
+        updatedAt: new Date().toISOString(),
+        error: cleanupErrors.length > 0 ? `Index cleanup incomplete: ${cleanupErrors.join("; ")}` : previousStatus.error || "",
+        fts: ftsStatus
+      };
+      await fs.writeFile(path.join(vectorDir, "chunks.json"), JSON.stringify(updatePlan.allChunks), "utf8");
+      await pruneVectorCacheToChunkIds(vectorDir, new Set(updatePlan.allChunks.map((chunk) => chunk.id)));
+      await fs.writeFile(path.join(vectorDir, "status.json"), JSON.stringify(indexStatus, null, 2), "utf8");
+      return withRuntimeStatus(indexStatus);
+    }
     const canReturnNoop = await canReturnFastRebuild(state, existingChunkSidecar, targetInfo, vectorDir);
     if (canReturnNoop) {
       const runtimeInfo = embeddingInfo();
@@ -87,18 +180,30 @@ export function createMlService({
       hasJapaneseText,
       hasKanji
     }));
+    const removedDocumentIds = removedDocumentIdsFromSidecar(existingChunkSidecar, state);
+    const cleanupErrors = [];
+    for (const documentId of removedDocumentIds) {
+      try {
+        await deleteLanceDocumentRows(vectorDir, documentId);
+        if (ftsSearch && typeof ftsSearch.deleteDocument === "function") ftsSearch.deleteDocument(documentId);
+      } catch (error) {
+        cleanupErrors.push(`${documentId}: ${error.message}`);
+      }
+    }
     const chunks = [];
     const texts = sourceChunks.map((chunk) => `${chunk.title}\n${chunk.chapterTitle}\n${chunk.text}`);
     const vectorCache = await readVectorCache(vectorDir);
     const vectorWritePlan = vectorRowsNeedingWrite(sourceChunks, texts, vectorCache, existingChunkSidecar, targetInfo);
-    const { vectors, reused, embedded } = await vectorsForChunks(sourceChunks, texts, vectorCache, targetInfo);
+    const { vectors, reused, embedded } = await vectorsForChunks(sourceChunks, texts, vectorCache, targetInfo, options);
     for (const [index, chunk] of sourceChunks.entries()) {
       chunks.push({ ...chunk, vector: vectors[index] });
     }
     let runtimeInfo = embeddingInfo();
     let ftsStatus = null;
-    if (ftsSearch && typeof ftsSearch.rebuild === "function") {
+    if (!options.skipTextIndex && ftsSearch && typeof ftsSearch.rebuild === "function") {
       ftsStatus = await ftsSearch.rebuild(sourceChunks);
+    } else if (ftsSearch && typeof ftsSearch.status === "function") {
+      ftsStatus = ftsSearch.status();
     }
 
     const db = await lancedb.connect(vectorDir);
@@ -141,12 +246,13 @@ export function createMlService({
       vectorRowsInsertedOrUpdated: vectorTableResult.changedRows,
       vectorRowsSkipped: Math.max(0, chunks.length - vectorTableResult.changedRows),
       rebuiltAt: new Date().toISOString(),
-      error: "",
+      error: cleanupErrors.length > 0 ? `Index cleanup incomplete: ${cleanupErrors.join("; ")}` : "",
       fts: ftsStatus
     };
     const shouldRewriteSidecars = embedded > 0
       || vectorTableResult.changedRows > 0
-      || activeSidecarCount !== chunks.length;
+      || existingChunkSidecar.size !== chunks.length
+      || removedDocumentIds.length > 0;
     if (shouldRewriteSidecars) {
       await fs.writeFile(path.join(vectorDir, "chunks.json"), JSON.stringify(chunks.map(({ vector, ...chunk }) => chunk)), "utf8");
       await writeVectorCache(vectorDir, chunks, texts, runtimeInfo);
@@ -155,7 +261,33 @@ export function createMlService({
     return withRuntimeStatus(indexStatus);
   }
 
-  async function vectorsForChunks(sourceChunks, texts, vectorCache, targetInfo) {
+  async function refreshTextIndex(options = {}) {
+    if (textRefreshInProgress) throw indexBusyError("Text search index refresh is already running.");
+    textRefreshInProgress = true;
+    try {
+      options.onProgress?.({ phase: "text", message: "Refreshing text search index...", current: 0, total: 1 });
+      const result = await rebuildIndex({ ...options, skipVectors: true, internal: true });
+      options.onProgress?.({ phase: "text", message: "Text search index refreshed.", current: 1, total: 1 });
+      return result;
+    } finally {
+      textRefreshInProgress = false;
+    }
+  }
+
+  async function updateSemanticVectors(options = {}) {
+    if (vectorUpdateInProgress) throw indexBusyError("Semantic vector update is already running.");
+    vectorUpdateInProgress = true;
+    try {
+      options.onProgress?.({ phase: "scan", message: "Checking semantic vector cache...", current: 0, total: 1 });
+      const result = await rebuildIndex({ ...options, skipVectors: false, skipTextIndex: true, internal: true });
+      options.onProgress?.({ phase: "done", message: "Semantic vectors updated.", current: Number(result.chunks) || 0, total: Number(result.chunks) || 0 });
+      return result;
+    } finally {
+      vectorUpdateInProgress = false;
+    }
+  }
+
+  async function vectorsForChunks(sourceChunks, texts, vectorCache, targetInfo, options = {}) {
     const vectors = new Array(sourceChunks.length);
     const missing = [];
     let reused = 0;
@@ -180,18 +312,24 @@ export function createMlService({
       }
     });
 
-    if (missing.length === 0) return { vectors, reused, embedded: 0 };
+    if (missing.length === 0) {
+      options.onProgress?.({ phase: "vectors", message: "No new semantic vectors needed.", current: 0, total: 0 });
+      return { vectors, reused, embedded: 0 };
+    }
 
     const missingTexts = missing.map((item) => item.text);
+    options.onProgress?.({ phase: "vectors", message: `Embedding chunks 0 / ${missing.length}...`, current: 0, total: missing.length });
     const missingVectors = typeof embeddingProvider.embedMany === "function"
       ? await embeddingProvider.embedMany(missingTexts)
       : await Promise.all(missingTexts.map((text) => embeddingProvider.embed(text)));
+    options.onProgress?.({ phase: "vectors", message: `Embedding chunks ${missing.length} / ${missing.length}...`, current: missing.length, total: missing.length });
     let runtimeInfo = embeddingInfo();
 
     if (runtimeInfo.id !== targetProvider || Number(runtimeInfo.dimensions) !== targetDimensions) {
       const allVectors = typeof embeddingProvider.embedMany === "function"
         ? await embeddingProvider.embedMany(texts, { providerId: runtimeInfo.id })
         : await Promise.all(texts.map((text) => embeddingProvider.embed(text, { providerId: runtimeInfo.id })));
+      options.onProgress?.({ phase: "vectors", message: `Embedding chunks ${texts.length} / ${texts.length}...`, current: texts.length, total: texts.length });
       return { vectors: allVectors, reused: 0, embedded: allVectors.length };
     }
 
@@ -206,6 +344,7 @@ export function createMlService({
     try {
       const raw = await fs.readFile(path.join(vectorDir, "status.json"), "utf8");
       indexStatus = { ...indexStatus, ...JSON.parse(raw) };
+      indexStatus.vectorDir = vectorDir;
     } catch {
       indexStatus = { ...indexStatus, ready: false };
     }
@@ -219,25 +358,33 @@ export function createMlService({
       documentId = "",
       currentPage = null,
       includeCards = true,
-      scope = "library"
+      scope = "library",
+      allowVector = false
     } = options;
     const normalizedQuery = String(query ?? "").trim();
     if (!normalizedQuery) return { query: "", results: [], status: await status() };
     const currentStatus = await status();
-    if (!currentStatus.ready) return { query: normalizedQuery, results: [], status: currentStatus };
+    const ftsRuntimeStatus = ftsSearch && typeof ftsSearch.status === "function" ? ftsSearch.status() : null;
+    const responseStatus = ftsRuntimeStatus && !currentStatus.fts
+      ? { ...currentStatus, fts: ftsRuntimeStatus }
+      : currentStatus;
+    if (!currentStatus.ready) return { query: normalizedQuery, results: [], status: responseStatus };
 
     const resultLimit = Math.max(1, Math.min(20, Number(limit) || 8));
     const queryVariants = await queryVariantsForSearch(normalizedQuery, { analyzeText, normalizeJapaneseTerm });
     const state = getState();
     const activeDocumentIds = new Set((state.documents ?? []).map((document) => String(document.id ?? "")).filter(Boolean));
-    const lexicalRows = await hybridLexicalSearch(normalizedQuery, queryVariants, {
+    const lexicalResult = await hybridLexicalSearch(normalizedQuery, queryVariants, {
       ftsSearch,
       vectorDir,
       limit: resultLimit * 8,
       documentId: scope === "document" ? documentId : ""
     });
+    const lexicalRows = lexicalResult.rows;
     let vectorRows = [];
-    if (shouldRunVectorSearch(normalizedQuery, lexicalRows, { resultLimit, hasJapaneseText })) {
+    const runVectorSearch = shouldRunVectorSearch(normalizedQuery, lexicalRows, { resultLimit, hasJapaneseText, currentStatus: responseStatus, ftsReady: Boolean(ftsRuntimeStatus?.ready || currentStatus.fts?.ready) });
+    const ranVectorSearch = allowVector === true && runVectorSearch;
+    if (ranVectorSearch) {
       try {
         const db = await lancedb.connect(vectorDir);
         const table = await db.openTable("chunks");
@@ -285,7 +432,7 @@ export function createMlService({
     return {
       query: normalizedQuery,
       results: rows.map((row) => publicSearchResult(row, normalizedQuery, { documentId, currentPage, queryVariants }, state)),
-      status: currentStatus
+      status: responseStatus
     };
   }
 
@@ -345,25 +492,52 @@ export function createMlService({
 
   async function analytics() {
     const state = getState();
+    const revisions = safeRevisions(getRevisions);
+    const signature = analyticsSignature(state, revisions);
+    if (analyticsCache?.signature === signature) {
+      return { ...analyticsCache.value, cached: true };
+    }
+
     const events = await eventLog.recent(1500);
     const known = knownSet(state, normalizeJapaneseTerm);
+    const indexedAnalytics = typeof ftsSearch?.documentAnalytics === "function"
+      ? ftsSearch.documentAnalytics(known, { normalizeJapaneseTerm, hasJapaneseText, hasKanji })
+      : new Map();
     const documents = [];
 
     for (const document of state.documents ?? []) {
-      const analysis = await analyzeText(String(document.text ?? "").slice(0, MAX_ANALYTICS_CHARS));
-      const tokenMetrics = metricsFromTokens(analysis.tokens, known, hasJapaneseText, hasKanji, normalizeJapaneseTerm);
-      documents.push({
-        id: document.id,
-        title: document.title,
-        type: document.type,
-        coverage: tokenMetrics.coverage,
-        knownTokens: tokenMetrics.knownTokens,
-        unknownTokens: tokenMetrics.unknownTokens,
-        uniqueUnknown: tokenMetrics.uniqueUnknown,
-        averageSentenceLength: averageSentenceLength(document.text),
-        kanjiDensity: kanjiDensity(document.text, hasKanji),
-        difficulty: difficultyLabel(tokenMetrics.coverage)
-      });
+      try {
+        const tokenMetrics = indexedAnalytics.get(document.id)
+          ?? cheapDocumentMetrics(document, known, { hasJapaneseText, hasKanji, normalizeJapaneseTerm });
+        documents.push({
+          id: document.id,
+          title: document.title,
+          type: document.type,
+          analyticsSource: tokenMetrics.source ?? "fallback",
+          indexedChunks: tokenMetrics.chunks ?? 0,
+          coverage: tokenMetrics.coverage,
+          knownTokens: tokenMetrics.knownTokens,
+          unknownTokens: tokenMetrics.unknownTokens,
+          uniqueUnknown: tokenMetrics.uniqueUnknown,
+          averageSentenceLength: averageSentenceLength(document.text),
+          kanjiDensity: kanjiDensity(document.text, hasKanji),
+          difficulty: difficultyLabel(tokenMetrics.coverage)
+        });
+      } catch (error) {
+        documents.push({
+          id: document.id,
+          title: document.title,
+          type: document.type,
+          coverage: 0,
+          knownTokens: 0,
+          unknownTokens: 0,
+          uniqueUnknown: 0,
+          averageSentenceLength: 0,
+          kanjiDensity: 0,
+          difficulty: "Unavailable",
+          error: error.message
+        });
+      }
     }
 
     const exportedEvents = events.filter((event) => event.type === "anki.exported");
@@ -371,7 +545,7 @@ export function createMlService({
     const lookupEvents = events.filter((event) => event.type === "lookup.performed");
     const wordAddedEvents = events.filter((event) => event.type === "wordbank.added");
 
-    return {
+    const value = {
       totals: {
         documents: state.documents?.length ?? 0,
         knownTerms: state.knownTerms?.length ?? 0,
@@ -387,6 +561,8 @@ export function createMlService({
       documents: documents.sort((a, b) => b.coverage - a.coverage),
       recentEvents: events.slice(-12).reverse()
     };
+    analyticsCache = { signature, value };
+    return { ...value, cached: false };
   }
 
   async function rankCandidates(documentId, candidates = []) {
@@ -466,7 +642,7 @@ export function createMlService({
     const staleReason = mlState.indexStaleReason
       || (providerMismatch ? `Embedding model changed from ${storedProvider} to ${runtimeInfo.id}.` : "")
       || (dimensionMismatch ? "Embedding vector dimensions changed." : "");
-    return {
+    const combined = {
       ...statusValue,
       fts: ftsStatus,
       embeddingProvider: storedProvider,
@@ -478,6 +654,11 @@ export function createMlService({
       stale,
       staleReason
     };
+    return {
+      ...combined,
+      textSearch: textSearchStatus(ftsStatus),
+      semanticVectors: semanticVectorStatus(combined, { stale, staleReason })
+    };
   }
 
   function embeddingInfo() {
@@ -488,6 +669,48 @@ export function createMlService({
           label: embeddingProvider.label,
           dimensions: embeddingProvider.dimensions
         };
+  }
+
+  function textSearchStatus(ftsStatus = {}) {
+    ftsStatus = ftsStatus ?? {};
+    return {
+      provider: ftsStatus.provider || "sqlite-fts5",
+      ready: Boolean(ftsStatus.ready),
+      stale: Boolean(ftsStatus.stale),
+      chunks: Number(ftsStatus.chunks) || 0,
+      updatedAt: ftsStatus.updatedAt || ftsStatus.rebuiltAt || "",
+      rebuiltAt: ftsStatus.rebuiltAt || "",
+      inserted: Number(ftsStatus.inserted) || 0,
+      updated: Number(ftsStatus.updated) || 0,
+      deleted: Number(ftsStatus.deleted) || 0,
+      skipped: Number(ftsStatus.skipped) || 0,
+      error: ftsStatus.error || ""
+    };
+  }
+
+  function semanticVectorStatus(statusValue = {}, staleInfo = {}) {
+    statusValue = statusValue ?? {};
+    staleInfo = staleInfo ?? {};
+    return {
+      provider: statusValue.provider || "lancedb",
+      ready: Boolean(statusValue.ready),
+      stale: Boolean(staleInfo.stale),
+      chunks: Number(statusValue.chunks) || 0,
+      updatedAt: statusValue.updatedAt || statusValue.rebuiltAt || "",
+      rebuiltAt: statusValue.rebuiltAt || "",
+      embeddingProvider: statusValue.embeddingProvider || "",
+      embeddingProviderLabel: statusValue.embeddingProviderLabel || statusValue.embeddingProvider || "",
+      embeddingDimensions: Number(statusValue.embeddingDimensions) || 0,
+      embeddingDevice: statusValue.embeddingDevice || "",
+      embeddingFallback: Boolean(statusValue.embeddingFallback),
+      embeddingError: statusValue.embeddingError || "",
+      embeddedVectors: Number(statusValue.embeddedVectors) || 0,
+      reusedVectors: Number(statusValue.reusedVectors) || 0,
+      vectorRowsInsertedOrUpdated: Number(statusValue.vectorRowsInsertedOrUpdated) || 0,
+      vectorRowsSkipped: Number(statusValue.vectorRowsSkipped) || 0,
+      staleReason: staleInfo.staleReason || "",
+      error: statusValue.error || ""
+    };
   }
 
   async function vectorSearch(table, query, currentStatus, limit, filterContext = {}) {
@@ -517,7 +740,13 @@ export function createMlService({
     return vector;
   }
 
-  return { rebuildIndex, status, search, ragAnswer, analytics, rankCandidates, deleteDocumentVectors };
+  return { rebuildIndex, refreshTextIndex, updateSemanticVectors, status, search, ragAnswer, analytics, rankCandidates, deleteDocumentVectors };
+}
+
+function indexBusyError(message) {
+  const error = new Error(message);
+  error.code = "INDEX_BUSY";
+  return error;
 }
 
 async function buildChunks(state, context) {
@@ -534,7 +763,7 @@ async function buildChunksIncremental(state, existingChunkSidecar = new Map(), c
   const existingByDocument = chunksByDocument(existingChunkSidecar);
   for (const document of state.documents ?? []) {
     const cachedChunks = existingByDocument.get(document.id) ?? [];
-    if (cachedChunks.length > 0 && !documentIndexNeedsRebuild(document, cachedChunks)) {
+    if (cachedChunks.length > 0 && !documentIndexNeedsRebuild(document, cachedChunks, { allowLexicalOnly: false })) {
       chunks.push(...cachedChunks.map((chunk) => refreshCachedChunkMetadata(chunk, document)));
       continue;
     }
@@ -542,6 +771,50 @@ async function buildChunksIncremental(state, existingChunkSidecar = new Map(), c
     chunks.push(...documentChunks.slice(0, MAX_INDEX_SENTENCES_PER_DOCUMENT));
   }
   return chunks;
+}
+
+async function buildLexicalChunksIncremental(state, existingChunkSidecar = new Map(), context) {
+  const chunks = [];
+  const existingByDocument = chunksByDocument(existingChunkSidecar);
+  for (const document of state.documents ?? []) {
+    const cachedChunks = existingByDocument.get(document.id) ?? [];
+    if (cachedChunks.length > 0 && !documentIndexNeedsRebuild(document, cachedChunks, { allowLexicalOnly: true })) {
+      chunks.push(...cachedChunks.map((chunk) => refreshCachedChunkMetadata(chunk, document)));
+      continue;
+    }
+    const documentChunks = buildDocumentLexicalChunks(document, state, context);
+    chunks.push(...documentChunks.slice(0, MAX_INDEX_SENTENCES_PER_DOCUMENT));
+  }
+  return chunks;
+}
+
+function buildLexicalChunkUpdatePlan(state, existingChunkSidecar = new Map(), context) {
+  const allChunks = [];
+  const changedChunks = [];
+  const changedDocumentIds = [];
+  const activeDocumentIds = new Set((state.documents ?? []).map((document) => String(document.id ?? "")).filter(Boolean));
+  const removedDocumentIds = [];
+  const existingByDocument = chunksByDocument(existingChunkSidecar);
+  for (const documentId of existingByDocument.keys()) {
+    if (!activeDocumentIds.has(String(documentId))) removedDocumentIds.push(String(documentId));
+  }
+  for (const document of state.documents ?? []) {
+    const cachedChunks = existingByDocument.get(document.id) ?? [];
+    if (cachedChunks.length > 0 && !documentIndexNeedsRebuild(document, cachedChunks, { allowLexicalOnly: true })) {
+      allChunks.push(...cachedChunks.map((chunk) => refreshCachedChunkMetadata(chunk, document)));
+      continue;
+    }
+    const documentChunks = buildDocumentLexicalChunks(document, state, context).slice(0, MAX_INDEX_SENTENCES_PER_DOCUMENT);
+    changedChunks.push(...documentChunks);
+    allChunks.push(...documentChunks);
+    changedDocumentIds.push(document.id);
+  }
+  return {
+    allChunks: uniqueChunksById(allChunks),
+    changedChunks: uniqueChunksById(changedChunks),
+    changedDocumentIds: [...new Set(changedDocumentIds.map(String).filter(Boolean))],
+    removedDocumentIds: [...new Set(removedDocumentIds)]
+  };
 }
 
 function chunksByDocument(existingChunkSidecar = new Map()) {
@@ -565,6 +838,16 @@ function countActiveSidecarChunks(existingChunkSidecar = new Map(), state = {}) 
   return count;
 }
 
+function removedDocumentIdsFromSidecar(existingChunkSidecar = new Map(), state = {}) {
+  const activeIds = new Set((state.documents ?? []).map((document) => String(document.id ?? "")).filter(Boolean));
+  const removed = new Set();
+  for (const chunk of existingChunkSidecar.values()) {
+    const documentId = String(chunk.documentId ?? "");
+    if (documentId && !activeIds.has(documentId)) removed.add(documentId);
+  }
+  return [...removed];
+}
+
 async function canReturnFastRebuild(state = {}, existingChunkSidecar = new Map(), targetInfo = {}, vectorDir = "") {
   if (existingChunkSidecar.size === 0) return false;
   const byDocument = chunksByDocument(existingChunkSidecar);
@@ -585,8 +868,23 @@ async function canReturnFastRebuild(state = {}, existingChunkSidecar = new Map()
   }
 }
 
-function documentIndexNeedsRebuild(document = {}, cachedChunks = []) {
+function canReturnFastLexicalRebuild(state = {}, existingChunkSidecar = new Map(), ftsStatus = null) {
+  if (!ftsStatus?.ready || ftsStatus.stale) return false;
+  if (existingChunkSidecar.size === 0) return false;
+  const activeDocuments = (state.documents ?? []).filter((document) => document?.id);
+  if (activeDocuments.length === 0) return false;
+  const byDocument = chunksByDocument(existingChunkSidecar);
+  for (const document of activeDocuments) {
+    const cachedChunks = byDocument.get(document.id) ?? [];
+    if (cachedChunks.length === 0 || documentIndexNeedsRebuild(document, cachedChunks, { allowLexicalOnly: true })) return false;
+  }
+  const activeSidecarCount = countActiveSidecarChunks(existingChunkSidecar, state);
+  return activeSidecarCount > 0 && Number(ftsStatus.chunks) === activeSidecarCount;
+}
+
+function documentIndexNeedsRebuild(document = {}, cachedChunks = [], options = {}) {
   if (!cachedChunks.length) return true;
+  if (!options.allowLexicalOnly && cachedChunks.some((chunk) => chunk.lexicalOnly === true)) return true;
   const expectedSignature = documentSourceFingerprint(document);
   const cachedSignature = cachedChunks.find((chunk) => chunk.documentSourceFingerprint)?.documentSourceFingerprint;
   return Boolean(cachedSignature && expectedSignature && cachedSignature !== expectedSignature);
@@ -649,6 +947,15 @@ async function readChunkSidecar(vectorDir) {
     return new Map(Array.isArray(chunks) ? chunks.filter((chunk) => chunk?.id).map((chunk) => [chunk.id, chunk]) : []);
   } catch {
     return new Map();
+  }
+}
+
+async function readStoredIndexStatus(vectorDir) {
+  try {
+    const raw = await fs.readFile(path.join(vectorDir, "status.json"), "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
   }
 }
 
@@ -833,6 +1140,64 @@ async function buildDocumentChunks(document, state, context) {
   return chunks;
 }
 
+function buildDocumentLexicalChunks(document, state, context) {
+  const chunks = [];
+  const chapters = Array.isArray(document.chapters) && document.chapters.length > 0
+    ? document.chapters
+    : [{ id: "chapter-1", title: document.title, blocks: [{ type: "text", text: document.text ?? "" }] }];
+  let pageCursor = 0;
+  const known = knownSet(state, context.normalizeJapaneseTerm);
+
+  for (const [chapterIndex, chapter] of chapters.entries()) {
+    const chapterId = chapter.id || `chapter-${chapterIndex + 1}`;
+    const chapterTitle = chapter.title || document.title || `Chapter ${chapterIndex + 1}`;
+    const virtualPages = chapterVirtualPages(chapter.blocks ?? []);
+    for (const page of virtualPages) {
+      const pageIndex = pageCursor;
+      pageCursor += Math.max(1, page.pageSpan || 1);
+      const cleanPageText = cleanChunkText(page.text);
+      const authorRubyReadings = rubyReadingsFromText(page.text);
+      if (!cleanPageText || cleanPageText.length < 6) continue;
+
+      for (const paragraph of compactParagraphs(cleanPageText)) {
+        if (paragraph.length < 80) continue;
+        chunks.push(createLexicalTextChunk({
+          document,
+          chapterId,
+          chapterTitle,
+          page: pageIndex,
+          type: "paragraph",
+          text: paragraph,
+          known,
+          authorRubyReadings,
+          state,
+          context
+        }));
+        if (chunks.length >= MAX_INDEX_SENTENCES_PER_DOCUMENT) return chunks;
+      }
+
+      for (const sentence of splitSentences(cleanPageText)) {
+        const clean = cleanChunkText(sentence);
+        if (clean.length < 6) continue;
+        chunks.push(createLexicalTextChunk({
+          document,
+          chapterId,
+          chapterTitle,
+          page: pageIndex,
+          type: "sentence",
+          text: clean,
+          known,
+          authorRubyReadings,
+          state,
+          context
+        }));
+        if (chunks.length >= MAX_INDEX_SENTENCES_PER_DOCUMENT) return chunks;
+      }
+    }
+  }
+  return chunks;
+}
+
 async function createTextChunk({ document, chapterId, chapterTitle, page, type, text, known, minedSentences, authorRubyReadings = [], state, context }) {
   const analysis = await safeAnalyzeText(context.analyzeText, text);
   const terms = chunkTermsFromAnalysis(analysis, context);
@@ -866,6 +1231,51 @@ async function createTextChunk({ document, chapterId, chapterTitle, page, type, 
     mined: minedSentences.has(context.normalizeJapaneseTerm(text)),
     readAtIndex: isChunkReadSafe({ documentId: document.id, page, type }, state, {})
   };
+}
+
+function createLexicalTextChunk({ document, chapterId, chapterTitle, page, type, text, known, authorRubyReadings = [], state, context }) {
+  const terms = lexicalTermsFromText(text, context);
+  const knownCoverage = knownCoverageFromTerms(terms, known, context.normalizeJapaneseTerm);
+  return {
+    id: createChunkId(document.id, chapterId, page, type, text),
+    documentId: document.id,
+    title: document.title,
+    documentSourceFingerprint: documentSourceFingerprint(document),
+    chapterId,
+    chapterTitle,
+    page,
+    text,
+    type,
+    lexicalOnly: true,
+    knownCoverage,
+    terms: [...new Set(terms.map((term) => term.surface).filter(Boolean))].slice(0, 80),
+    dictionaryForms: [...new Set(terms.map((term) => term.base).filter(Boolean))].slice(0, 80),
+    dictionaryMatches: [],
+    authorRubyReadings: authorRubyReadings
+      .filter((item) => text.includes(item.surface))
+      .slice(0, 40),
+    mined: false,
+    readAtIndex: isChunkReadSafe({ documentId: document.id, page, type }, state, {})
+  };
+}
+
+function lexicalTermsFromText(text = "", context = {}) {
+  const terms = [];
+  const seen = new Set();
+  const normalize = context.normalizeJapaneseTerm ?? ((value) => String(value ?? "").normalize("NFKC").trim());
+  const add = (value) => {
+    const normalized = normalize(value);
+    if (!normalized || seen.has(normalized) || !context.hasJapaneseText?.(normalized)) return;
+    seen.add(normalized);
+    terms.push({ surface: normalized, base: normalized });
+  };
+  for (const match of String(text ?? "").normalize("NFKC").matchAll(/[\u3400-\u9fff][\u3040-\u30ff\u3400-\u9fff]{0,8}/gu)) {
+    add(match[0]);
+  }
+  for (const match of String(text ?? "").normalize("NFKC").matchAll(/[\u3400-\u9fff]{2,}/gu)) {
+    add(match[0]);
+  }
+  return terms.slice(0, 80);
 }
 
 function chapterVirtualPages(blocks = []) {
@@ -1039,16 +1449,9 @@ function hashEmbedText(text = "") {
 async function queryVariantsForSearch(query = "", context = {}) {
   const variants = new Set([String(query ?? "").normalize("NFKC").trim()].filter(Boolean));
   for (const term of queryTermsForLexical(query)) variants.add(context.normalizeJapaneseTerm?.(term) ?? term);
-  try {
-    const analysis = await safeAnalyzeText(context.analyzeText, query);
-    for (const token of analysis.tokens ?? []) {
-      for (const value of [token.surface, token.base, token.dictionaryForm]) {
-        const normalized = context.normalizeJapaneseTerm?.(value ?? "") ?? String(value ?? "").normalize("NFKC").trim();
-        if (usefulQueryTerm(normalized)) variants.add(normalized);
-      }
-    }
-  } catch {
-    // Query analysis is best-effort; exact lexical search still runs without it.
+  for (const match of String(query ?? "").normalize("NFKC").matchAll(/[\u3040-\u30ff\u3400-\u9fff]{2,}/gu)) {
+    const normalized = context.normalizeJapaneseTerm?.(match[0] ?? "") ?? String(match[0] ?? "").normalize("NFKC").trim();
+    if (usefulQueryTerm(normalized)) variants.add(normalized);
   }
   return [...variants].filter(Boolean);
 }
@@ -1069,23 +1472,26 @@ async function lexicalSearch(query = "", queryVariants = [], vectorDir, limit = 
 
 async function hybridLexicalSearch(query = "", queryVariants = [], context = {}) {
   const { ftsSearch, vectorDir, limit = 20, documentId = "" } = context;
+  const japaneseQuery = /[\u3040-\u30ff\u3400-\u9fff]/u.test(String(query ?? ""));
   if (ftsSearch && typeof ftsSearch.search === "function") {
     try {
       const result = await ftsSearch.search(query, { limit, documentId });
-      if (Array.isArray(result.results) && result.results.length > 0) return result.results;
+      if (japaneseQuery && Array.isArray(result?.results)) return { rows: result.results, source: "fts-japanese" };
+      if (result?.status?.ready && Array.isArray(result.results)) return { rows: result.results, source: "fts-ready" };
+      if (Array.isArray(result.results) && result.results.length > 0) return { rows: result.results, source: "fts-results" };
     } catch {
       // Fall through to the sidecar lexical scan below.
     }
   }
-  return lexicalSearch(query, queryVariants, vectorDir, limit);
+  return { rows: await lexicalSearch(query, queryVariants, vectorDir, limit), source: "sidecar" };
 }
 
 function shouldRunVectorSearch(query = "", lexicalRows = [], context = {}) {
   const resultLimit = Math.max(1, Number(context.resultLimit) || 8);
-  const isJapanese = typeof context.hasJapaneseText === "function"
-    ? context.hasJapaneseText(query)
-    : /[\u3040-\u30ff\u3400-\u9fff]/u.test(String(query ?? ""));
-  if (!isJapanese) return true;
+  const regexJapanese = /[\u3040-\u30ff\u3400-\u9fff]/u.test(String(query ?? ""));
+  const helperJapanese = typeof context.hasJapaneseText === "function" ? context.hasJapaneseText(query) : false;
+  const isJapanese = regexJapanese || helperJapanese;
+  if (isJapanese) return false;
   if (lexicalRows.some((row) => Number(row.exactScore) > 0)) return false;
   if (lexicalRows.length >= resultLimit) return false;
   return true;
@@ -1301,6 +1707,72 @@ function metricsFromTokens(tokens = [], known, hasJapaneseText, hasKanji, normal
     unknownTermCounts,
     properNameCounts
   };
+}
+
+function cheapDocumentMetrics(document = {}, known = new Set(), context = {}) {
+  const { hasKanji, normalizeJapaneseTerm } = context;
+  const sample = String(document.text ?? "").slice(0, MAX_ANALYTICS_CHARS);
+  let knownTokens = 0;
+  let unknownTokens = 0;
+  const unknownTerms = new Set();
+
+  const candidates = uniqueFallbackTerms(sample, normalizeJapaneseTerm, hasKanji);
+  for (const term of candidates) {
+    if (known.has(term)) {
+      knownTokens += 1;
+    } else {
+      unknownTokens += 1;
+      unknownTerms.add(term);
+    }
+  }
+
+  const total = knownTokens + unknownTokens;
+  return {
+    source: "fallback",
+    coverage: total ? Math.round((knownTokens / total) * 100) : 100,
+    knownTokens,
+    unknownTokens,
+    uniqueUnknown: unknownTerms.size
+  };
+}
+
+function uniqueFallbackTerms(text = "", normalizeJapaneseTerm, hasKanji) {
+  const terms = new Set();
+  for (const match of String(text ?? "").normalize("NFKC").matchAll(/[\u3400-\u9fff][\u3040-\u30ff\u3400-\u9fff]{0,5}/gu)) {
+    const normalized = normalizeJapaneseTerm(match[0]);
+    if (normalized && hasKanji(normalized)) terms.add(normalized);
+  }
+  return [...terms].slice(0, 5000);
+}
+
+function safeRevisions(getRevisions) {
+  try {
+    return typeof getRevisions === "function" ? getRevisions() : {};
+  } catch {
+    return {};
+  }
+}
+
+function analyticsSignature(state = {}, revisions = {}) {
+  const documents = (state.documents ?? []).map((document) => [
+    document.id,
+    document.updatedAt ?? "",
+    String(document.text ?? "").length,
+    Number(state.progress?.[document.id]?.page ?? 0)
+  ]);
+  return JSON.stringify({
+    revisions: {
+      documents: revisions.documents ?? 0,
+      knownTerms: revisions.known_terms ?? 0,
+      progress: revisions.reading_progress ?? 0,
+      cards: revisions.cards ?? 0,
+      dictionaries: revisions.dictionaries ?? 0,
+      ml: revisions["settings:ml"] ?? 0
+    },
+    documents,
+    knownTerms: state.knownTerms?.length ?? 0,
+    cards: state.cards?.length ?? 0
+  });
 }
 
 function isProperNameToken(token = {}) {

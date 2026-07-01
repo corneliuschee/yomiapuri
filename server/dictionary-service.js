@@ -1,7 +1,7 @@
 import AdmZip from "adm-zip";
 import path from "node:path";
 
-export function createDictionaryService({ store, normalizeJapaneseTerm, repairMojibake, crypto, deferStoreSave = false }) {
+export function createDictionaryService({ store, normalizeJapaneseTerm, repairMojibake, crypto, deferStoreSave = false, dictionaryStore = null }) {
   const getState = () => store.getState();
   const indexCache = new Map();
   const storeUpdateOptions = deferStoreSave ? { save: false } : {};
@@ -83,10 +83,12 @@ export function createDictionaryService({ store, normalizeJapaneseTerm, repairMo
       if (!normalized) return { entries: [], frequencies: [] };
       const prefix = Boolean(options.prefix && state.dictionarySettings?.prefixWildcardSearch);
       const termDictionaries = orderedDictionaries(state.dictionaries).filter((dictionary) => dictionary.type === "term" && dictionary.enabledForLookup);
-      const entries = lookupTermDictionaries(termDictionaries, normalized, { prefix, indexCache }).slice(0, 24);
+      const entries = lookupSqlTermDictionaries(dictionaryStore, termDictionaries, normalized, { prefix, limit: 24 })
+        ?? lookupTermDictionaries(termDictionaries, normalized, { prefix, indexCache }).slice(0, 24);
       const frequencies = options.includeFrequencies === false
         ? []
-        : lookupFrequencyDictionaries(state.dictionaries, normalized, { indexCache }).slice(0, 24);
+        : (lookupSqlFrequencyDictionaries(dictionaryStore, state.dictionaries, normalized, { limit: 24 })
+          ?? lookupFrequencyDictionaries(state.dictionaries, normalized, { indexCache }).slice(0, 24));
       return { entries, frequencies };
     },
 
@@ -95,7 +97,19 @@ export function createDictionaryService({ store, normalizeJapaneseTerm, repairMo
       repairDictionaryState(state, { normalizeJapaneseTerm });
       const normalized = normalizeJapaneseTerm(term);
       if (!normalized) return null;
-      for (const dictionary of orderedDictionaries(state.dictionaries).filter((item) => item.type === "term" && item.enabledForLookup)) {
+      const dictionaries = orderedDictionaries(state.dictionaries).filter((item) => item.type === "term" && item.enabledForLookup);
+      const sqlEntry = lookupSqlTermDictionaries(dictionaryStore, dictionaries, normalized, { prefix: false, limit: 1 })?.[0];
+      if (sqlEntry) {
+        return {
+          term: sqlEntry.term,
+          reading: sqlEntry.reading,
+          redirectTargets: sqlEntry.redirectTargets ?? [],
+          dictionary: sqlEntry.dictionary,
+          dictionaryId: sqlEntry.dictionaryId,
+          sortOrder: sqlEntry.sortOrder
+        };
+      }
+      for (const dictionary of dictionaries) {
         const entry = exactTermDictionaryEntry(dictionary, normalized, { indexCache });
         if (entry) return entry;
       }
@@ -110,7 +124,27 @@ export function createDictionaryService({ store, normalizeJapaneseTerm, repairMo
         ? state.dictionaries.find((item) => item.id === dictionaryId && item.type === "term")
         : selectedWordBankDictionary(state.dictionaries);
       if (!normalized || !dictionary) return [];
-      return lookupTermDictionaries([dictionary], normalized, { prefix: false, indexCache }).slice(0, 3);
+      return lookupSqlTermDictionaries(dictionaryStore, [dictionary], normalized, { prefix: false, limit: 3 })
+        ?? lookupTermDictionaries([dictionary], normalized, { prefix: false, indexCache }).slice(0, 3);
+    },
+
+    lookupWordBankMany(terms = [], dictionaryId = "") {
+      const state = getState();
+      repairDictionaryState(state, { normalizeJapaneseTerm });
+      const normalizedTerms = [...new Set((Array.isArray(terms) ? terms : [])
+        .map(normalizeJapaneseTerm)
+        .filter(Boolean))];
+      const dictionary = dictionaryId
+        ? state.dictionaries.find((item) => item.id === dictionaryId && item.type === "term")
+        : selectedWordBankDictionary(state.dictionaries);
+      const result = new Map(normalizedTerms.map((term) => [term, []]));
+      if (normalizedTerms.length === 0 || !dictionary) return result;
+      const sqlRows = lookupSqlTermDictionariesBatch(dictionaryStore, dictionary, normalizedTerms, { limitPerTerm: 3 });
+      if (sqlRows) return sqlRows;
+      for (const term of normalizedTerms) {
+        result.set(term, lookupTermDictionaries([dictionary], term, { prefix: false, indexCache }).slice(0, 3));
+      }
+      return result;
     },
 
     async updateLookupSettings(patch = {}) {
@@ -446,6 +480,65 @@ function lookupTermDictionaries(dictionaries, normalized, { prefix, indexCache }
   );
 }
 
+function lookupSqlTermDictionaries(dictionaryStore, dictionaries, normalized, { prefix, limit }) {
+  if (typeof dictionaryStore?.lookupDictionaryEntries !== "function") return null;
+  const dictionaryIds = orderedDictionaries(dictionaries).map((dictionary) => dictionary.id).filter(Boolean);
+  if (dictionaryIds.length === 0) return [];
+  try {
+    const rows = dictionaryStore.lookupDictionaryEntries(dictionaryIds, normalized, { prefix, limit });
+    if (rows.length === 0 && dictionaries.some((dictionary) => (dictionary.entries?.length ?? 0) > 0)) return null;
+    return rows
+      .map(normalizeSqlDictionaryEntry)
+      .filter((entry) => entry.definitions.length > 0 || entry.details.length > 0)
+      .filter((entry, index, list) => index === list.findIndex((candidate) =>
+        candidate.term === entry.term &&
+        candidate.reading === entry.reading &&
+        candidate.dictionaryId === entry.dictionaryId &&
+        candidate.definitions.join("\u0000").toLowerCase() === entry.definitions.join("\u0000").toLowerCase()
+      ));
+  } catch {
+    return null;
+  }
+}
+
+function lookupSqlTermDictionariesBatch(dictionaryStore, dictionary, normalizedTerms, { limitPerTerm }) {
+  if (typeof dictionaryStore?.lookupDictionaryEntriesBatch !== "function") return null;
+  try {
+    const rowsByTerm = dictionaryStore.lookupDictionaryEntriesBatch(dictionary.id, normalizedTerms, { limitPerTerm });
+    const result = new Map(normalizedTerms.map((term) => [term, []]));
+    for (const [term, rows] of rowsByTerm.entries()) {
+      result.set(term, rows
+        .map(normalizeSqlDictionaryEntry)
+        .filter((entry) => entry.definitions.length > 0 || entry.details.length > 0)
+        .filter((entry, index, list) => index === list.findIndex((candidate) =>
+          candidate.term === entry.term &&
+          candidate.reading === entry.reading &&
+          candidate.dictionaryId === entry.dictionaryId &&
+          candidate.definitions.join("\u0000").toLowerCase() === entry.definitions.join("\u0000").toLowerCase()
+        )));
+    }
+    if ([...result.values()].every((entries) => entries.length === 0) && (dictionary.entries?.length ?? 0) > 0) return null;
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSqlDictionaryEntry(entry = {}) {
+  return {
+    term: entry.term,
+    reading: entry.reading,
+    definitions: cleanDictionaryDefinitions(entry.definitions),
+    details: dictionaryLookupDetails(entry),
+    redirectTargets: redirectTargetsFromEntry(entry),
+    tags: entry.tags ?? [],
+    dictionary: entry.dictionary,
+    dictionaryId: entry.dictionaryId,
+    language: entry.language,
+    sortOrder: entry.sortOrder
+  };
+}
+
 function dictionaryLookupDetails(entry = {}) {
   if (Array.isArray(entry.details) && entry.details.length > 0) {
     const details = glossaryDetails(entry.details);
@@ -475,6 +568,28 @@ function lookupFrequencyDictionaries(dictionaries, normalized, { indexCache }) {
           displayValue: entry.displayValue
         }))
     );
+}
+
+function lookupSqlFrequencyDictionaries(dictionaryStore, dictionaries, normalized, { limit }) {
+  if (typeof dictionaryStore?.lookupDictionaryFrequencies !== "function") return null;
+  const dictionaryIds = orderedDictionaries(dictionaries)
+    .filter((dictionary) => dictionary.type === "frequency" && dictionary.enabledForLookup)
+    .map((dictionary) => dictionary.id)
+    .filter(Boolean);
+  if (dictionaryIds.length === 0) return [];
+  try {
+    const rows = dictionaryStore.lookupDictionaryFrequencies(dictionaryIds, normalized, { limit });
+    if (rows.length === 0 && dictionaries.some((dictionary) => (dictionary.frequencyEntries?.length ?? 0) > 0)) return null;
+    return rows
+      .map((entry) => ({
+        dictionary: entry.dictionary,
+        dictionaryId: entry.dictionaryId,
+        value: entry.value,
+        displayValue: entry.displayValue
+      }));
+  } catch {
+    return null;
+  }
 }
 
 function redirectTargetsFromDefinitions(definitions = [], sourceTerm = "") {

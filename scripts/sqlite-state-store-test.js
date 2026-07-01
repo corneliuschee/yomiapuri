@@ -63,7 +63,9 @@ assert.deepEqual(loaded.knownTerms, ["図書館"]);
 assert.equal(loaded.knownTermMeta["図書館"].ankiNoteIds[0], 123);
 assert.equal(loaded.trash.documents[0].id, "trash-doc");
 assert.equal(loaded.trash.knownTerms[0].term, "古い");
-assert.equal(loaded.dictionaries[0].entries[0].definitions[0], "library");
+assert.equal(loaded.dictionaries[0].name, "Jitendex");
+assert.equal(loaded.dictionaries[0].entries, undefined);
+assert.equal(store.lookupDictionaryEntries(["dict-1"], loaded.knownTerms[0])[0].definitions[0], "library");
 assert.equal(loaded.dictionarySettings.prefixWildcardSearch, true);
 assert.equal(loaded.reader.hideInferredReadableFurigana, true);
 assert.equal(loaded.progress["doc-1"].page, 2);
@@ -117,6 +119,7 @@ const dictionaryOnlyUpdate = {
 store.saveDictionariesState(dictionaryOnlyUpdate);
 const dictionaryOnlyLoaded = store.loadState();
 assert.equal(dictionaryOnlyLoaded.dictionaries[0].name, "Updated Dictionary");
+assert.equal(store.lookupDictionaryEntries(["dict-1"], loaded.knownTerms[0])[0].definitions[0], "library");
 assert.equal(dictionaryOnlyLoaded.documents[0].id, "doc-1");
 assert.deepEqual(dictionaryOnlyLoaded.knownTerms, ["山"]);
 
