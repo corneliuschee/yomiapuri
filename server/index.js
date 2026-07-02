@@ -12,7 +12,7 @@ import { createAnkiService } from "./anki-service.js";
 import { createAnkiLauncher, detectAnkiExecutablePath } from "./anki-launcher.js";
 import { createAiService, defaultAiSettings, normalizeAiSettings } from "./ai-service.js";
 import { createDictionaryService, repairDictionaryState } from "./dictionary-service.js";
-import { createRuntimeEmbeddingProvider, defaultMlSettings, EMBEDDING_MODELS, normalizeMlSettings, publicMlSettings } from "./embedding-providers.js";
+import { createRuntimeEmbeddingProvider, defaultMlSettings, normalizeMlSettings, publicMlSettings } from "./embedding-providers.js";
 import { createJsonStateStore } from "./json-state-store.js";
 import { createLearningEventLog } from "./learning-events.js";
 import { createFtsSearchService } from "./fts-search-service.js";
@@ -4302,92 +4302,6 @@ const postReaderReadableSuggestionDismiss = async (req, res) => {
 
 
 
-const getSyncStatus = (req, res) => {
-  res.json({ ...syncService.status(), diagnostics: syncDiagnostics() });
-};
-
-
-
-const postSyncSettings = async (req, res, next) => {
-  try {
-    res.json(await syncService.updateSettings(req.body ?? {}));
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-
-const postSyncSignIn = async (req, res, next) => {
-  try {
-    res.json(await syncService.signIn(req.body ?? {}));
-  } catch (error) {
-    state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
-    await saveSettingsState(["sync"]);
-    next(error);
-  }
-};
-
-
-
-const postSyncSignOut = async (req, res, next) => {
-  try {
-    res.json(await syncService.signOut());
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-
-const postSyncPush = async (req, res, next) => {
-  try {
-    res.json(await syncService.push());
-  } catch (error) {
-    state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
-    await saveSettingsState(["sync"]);
-    next(error);
-  }
-};
-
-
-
-const postSyncPull = async (req, res, next) => {
-  try {
-    res.json(await syncService.pull());
-  } catch (error) {
-    state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
-    await saveSettingsState(["sync"]);
-    next(error);
-  }
-};
-
-
-
-const postSyncRun = async (req, res, next) => {
-  try {
-    res.json(await syncService.syncNow());
-  } catch (error) {
-    state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
-    await saveSettingsState(["sync"]);
-    next(error);
-  }
-};
-
-
-
-const postSyncCleanupDeleted = async (req, res, next) => {
-  try {
-    res.json(await syncService.cleanupDeletedRemoteItems());
-  } catch (error) {
-    state.sync = normalizeSyncSettings({ ...(state.sync ?? {}), lastError: error.message, status: "error" });
-    await saveSettingsState(["sync"]);
-    next(error);
-  }
-};
-
-
-
 const postDocuments = async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded." });
@@ -5365,176 +5279,6 @@ const postCards = async (req, res) => {
 
 
 
-const getMlAnalytics = async (req, res, next) => {
-  try {
-    res.json(await mlService.analytics());
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-
-const getMlIndexStatus = async (req, res, next) => {
-  try {
-    res.json(await mlService.status());
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-
-const getMlProviders = async (req, res, next) => {
-  try {
-    res.json({
-      models: EMBEDDING_MODELS,
-      settings: publicMlSettings(state.ml)
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-
-async function updateMlSettings(req, res, next) {
-  try {
-    const previousMl = normalizeMlSettings(state.ml);
-    state.ml = normalizeMlSettings({
-      ...state.ml,
-      embeddingProviderId: req.body?.embeddingProviderId ?? state.ml?.embeddingProviderId,
-      embeddingPythonPath: req.body?.embeddingPythonPath ?? state.ml?.embeddingPythonPath,
-      embeddingBatchSize: req.body?.embeddingBatchSize ?? state.ml?.embeddingBatchSize
-    });
-    if (previousMl.embeddingProviderId !== state.ml.embeddingProviderId) {
-      markMlIndexStale("Embedding model changed. Rebuild the local semantic index.");
-    } else if (previousMl.embeddingPythonPath !== state.ml.embeddingPythonPath) {
-      markMlIndexStale("Embedding Python runtime changed. Rebuild the local semantic index.");
-    } else if (previousMl.embeddingBatchSize !== state.ml.embeddingBatchSize) {
-      markMlIndexStale("Embedding batch size changed. Rebuild the local semantic index.");
-    }
-    await saveSettingsState(["ml"]);
-    res.json({
-      settings: publicMlSettings(state.ml),
-      status: await mlService.status()
-    });
-  } catch (error) {
-    next(error);
-  }
-}
-
-
-
-
-const postMlIndexRebuild = async (req, res, next) => {
-  try {
-    const skipVectors = req.body?.skipVectors === true;
-    const shouldSaveFreshState = Boolean(state.ml?.indexStale || state.ml?.indexStaleReason);
-    await mlService.rebuildIndex({ skipVectors });
-    if (!skipVectors) {
-      markMlIndexFresh();
-      if (shouldSaveFreshState) await saveSettingsState(["ml"]);
-    }
-    const result = await mlService.status();
-    logLearningEvent("ml.index-rebuilt", { chunks: result.chunks, provider: result.provider, embeddingProvider: result.embeddingProvider });
-    res.json(result);
-  } catch (error) {
-    if (error.code === "INDEX_BUSY") return res.status(409).json({ error: error.message });
-    next(error);
-  }
-};
-
-
-const postSearchIndexRefresh = async (req, res, next) => {
-  try {
-    const result = await mlService.refreshTextIndex();
-    logLearningEvent("search.index-refreshed", { chunks: result.textSearch?.chunks ?? result.fts?.chunks ?? result.chunks });
-    res.json(await mlService.status());
-  } catch (error) {
-    if (error.code === "INDEX_BUSY") return res.status(409).json({ error: error.message });
-    next(error);
-  }
-};
-
-
-
-const postMlVectorsUpdateStream = async (req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no"
-  });
-  try {
-    writeSse(res, "progress", { phase: "start", message: "Starting semantic vector update...", current: 0, total: 1 });
-    const shouldSaveFreshState = Boolean(state.ml?.indexStale || state.ml?.indexStaleReason);
-    await mlService.updateSemanticVectors({
-      onProgress: (progress) => writeSse(res, "progress", progress)
-    });
-    markMlIndexFresh();
-    if (shouldSaveFreshState) await saveSettingsState(["ml"]);
-    const status = await mlService.status();
-    logLearningEvent("ml.vectors-updated", { chunks: status.chunks, provider: status.provider, embeddingProvider: status.embeddingProvider });
-    writeSse(res, "done", status);
-  } catch (error) {
-    writeSse(res, "error", { error: error.message, code: error.code || "" });
-  } finally {
-    res.end();
-  }
-};
-
-
-
-const postSearchSemantic = async (req, res, next) => {
-  try {
-    const result = await mlService.search(req.body.query, {
-      limit: req.body.limit,
-      readSafe: req.body.readSafe === true,
-      documentId: req.body.documentId ? String(req.body.documentId) : "",
-      currentPage: Number.isFinite(Number(req.body.currentPage)) ? Number(req.body.currentPage) : null,
-      scope: req.body.scope === "document" ? "document" : "library"
-    });
-    logLearningEvent("search.semantic", { query: req.body.query, results: result.results.length });
-    res.json(result);
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-
-const postSearchFts = async (req, res, next) => {
-  try {
-    const result = await ftsSearchService.search(req.body.query, {
-      limit: req.body.limit,
-      documentId: req.body.documentId ? String(req.body.documentId) : ""
-    });
-    logLearningEvent("search.fts", { query: req.body.query, results: result.results.length });
-    res.json(result);
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-
-const postRagAsk = async (req, res, next) => {
-  try {
-    const result = await mlService.ragAnswer(req.body.question, {
-      readSafe: req.body.readSafe !== false,
-      documentId: req.body.documentId ? String(req.body.documentId) : "",
-      currentPage: Number.isFinite(Number(req.body.currentPage)) ? Number(req.body.currentPage) : null
-    });
-    logLearningEvent("rag.asked", { question: req.body.question, citations: result.citations.length });
-    res.json(result);
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-
 const postReaderAssistant = async (req, res, next) => {
   try {
     const document = state.documents.find((item) => item.id === req.body.documentId);
@@ -5818,7 +5562,8 @@ const routeContext = {
   upload,
   persistence: {
     saveState,
-    saveAnkiExportState
+    saveAnkiExportState,
+    saveSettingsState
   },
   services: {
     stateStore,
@@ -5838,6 +5583,11 @@ const routeContext = {
     markMlIndexFresh,
     deleteDocumentVectorsFromMlIndex
   },
+  helpers: {
+    logLearningEvent,
+    syncDiagnostics,
+    normalizeSyncSettings
+  },
   handlers: {
     getState,
     getKnownTerms,
@@ -5845,14 +5595,6 @@ const routeContext = {
     postCacheWordbankMeaningsRebuild,
     updateReaderSettings,
     postReaderReadableSuggestionDismiss,
-    getSyncStatus,
-    postSyncSettings,
-    postSyncSignIn,
-    postSyncSignOut,
-    postSyncPush,
-    postSyncPull,
-    postSyncRun,
-    postSyncCleanupDeleted,
     postDocuments,
     postDocumentsReorder,
     getDocumentsByIdIngestStream,
@@ -5895,16 +5637,6 @@ const routeContext = {
     postAnkiCardPreview,
     postAnkiOpenKnownTerm,
     postCards,
-    getMlAnalytics,
-    getMlIndexStatus,
-    getMlProviders,
-    updateMlSettings,
-    postSearchIndexRefresh,
-    postMlVectorsUpdateStream,
-    postMlIndexRebuild,
-    postSearchSemantic,
-    postSearchFts,
-    postRagAsk,
     postReaderAssistant,
     postReaderAssistantStream,
     postAnkiExportCard,
