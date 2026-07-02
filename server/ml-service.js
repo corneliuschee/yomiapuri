@@ -173,9 +173,7 @@ export function createMlService({
       await fs.writeFile(path.join(vectorDir, "status.json"), JSON.stringify(indexStatus, null, 2), "utf8");
       return withRuntimeStatus(indexStatus);
     }
-    const sourceChunks = uniqueChunksById(await buildChunksIncremental(state, existingChunkSidecar, {
-      analyzeText,
-      lookupDictionary,
+    const sourceChunks = uniqueChunksById(await buildVectorChunksIncremental(state, existingChunkSidecar, {
       normalizeJapaneseTerm,
       hasJapaneseText,
       hasKanji
@@ -191,7 +189,7 @@ export function createMlService({
       }
     }
     const chunks = [];
-    const texts = sourceChunks.map((chunk) => `${chunk.title}\n${chunk.chapterTitle}\n${chunk.text}`);
+    const texts = sourceChunks.map(vectorTextForChunk);
     const vectorCache = await readVectorCache(vectorDir);
     const vectorWritePlan = vectorRowsNeedingWrite(sourceChunks, texts, vectorCache, existingChunkSidecar, targetInfo);
     const { vectors, reused, embedded } = await vectorsForChunks(sourceChunks, texts, vectorCache, targetInfo, options);
@@ -280,7 +278,6 @@ export function createMlService({
     try {
       options.onProgress?.({ phase: "scan", message: "Checking semantic vector cache...", current: 0, total: 1 });
       const result = await rebuildIndex({ ...options, skipVectors: false, skipTextIndex: true, internal: true });
-      options.onProgress?.({ phase: "done", message: "Semantic vectors updated.", current: Number(result.chunks) || 0, total: Number(result.chunks) || 0 });
       return result;
     } finally {
       vectorUpdateInProgress = false;
@@ -788,6 +785,21 @@ async function buildLexicalChunksIncremental(state, existingChunkSidecar = new M
   return chunks;
 }
 
+async function buildVectorChunksIncremental(state, existingChunkSidecar = new Map(), context) {
+  const chunks = [];
+  const existingByDocument = chunksByDocument(existingChunkSidecar);
+  for (const document of state.documents ?? []) {
+    const cachedChunks = existingByDocument.get(document.id) ?? [];
+    if (cachedChunks.length > 0 && !documentIndexNeedsRebuild(document, cachedChunks, { allowLexicalOnly: true })) {
+      chunks.push(...cachedChunks.map((chunk) => refreshCachedChunkMetadata(chunk, document)));
+      continue;
+    }
+    const documentChunks = buildDocumentLexicalChunks(document, state, context);
+    chunks.push(...documentChunks.slice(0, MAX_INDEX_SENTENCES_PER_DOCUMENT));
+  }
+  return chunks;
+}
+
 function buildLexicalChunkUpdatePlan(state, existingChunkSidecar = new Map(), context) {
   const allChunks = [];
   const changedChunks = [];
@@ -853,7 +865,21 @@ async function canReturnFastRebuild(state = {}, existingChunkSidecar = new Map()
   const byDocument = chunksByDocument(existingChunkSidecar);
   for (const document of state.documents ?? []) {
     const cachedChunks = byDocument.get(document.id) ?? [];
-    if (cachedChunks.length === 0 || documentIndexNeedsRebuild(document, cachedChunks)) return false;
+    if (cachedChunks.length === 0 || documentIndexNeedsRebuild(document, cachedChunks, { allowLexicalOnly: true })) return false;
+  }
+  const activeChunks = [...existingChunkSidecar.values()]
+    .filter((chunk) => chunk?.id && (state.documents ?? []).some((document) => document.id === chunk.documentId));
+  const vectorCache = await readVectorCache(vectorDir);
+  for (const chunk of activeChunks) {
+    const cacheEntry = vectorCache.get(chunk.id);
+    const text = vectorTextForChunk(chunk);
+    const cached = cacheEntry
+      && cacheEntry.hash === chunkContentHash(text)
+      && cacheEntry.embeddingProvider === targetInfo.id
+      && Number(cacheEntry.embeddingDimensions) === Number(targetInfo.dimensions)
+      && Array.isArray(cacheEntry.vector)
+      && cacheEntry.vector.length === Number(targetInfo.dimensions);
+    if (!cached) return false;
   }
   try {
     const raw = await fs.readFile(path.join(vectorDir, "status.json"), "utf8");
@@ -861,7 +887,6 @@ async function canReturnFastRebuild(state = {}, existingChunkSidecar = new Map()
     if (!stored.ready) return false;
     if (stored.embeddingProvider !== targetInfo.id) return false;
     if (Number(stored.embeddingDimensions) !== Number(targetInfo.dimensions)) return false;
-    if (stored.fts && stored.fts.ready === false) return false;
     return true;
   } catch {
     return false;
@@ -974,6 +999,10 @@ function vectorRowsNeedingWrite(sourceChunks = [], texts = [], vectorCache = new
     if (!cached || !existingChunkSidecar.has(chunk.id)) changedIds.add(chunk.id);
   }
   return { changedIds };
+}
+
+function vectorTextForChunk(chunk = {}) {
+  return `${chunk.title ?? ""}\n${chunk.chapterTitle ?? ""}\n${chunk.text ?? ""}`;
 }
 
 async function updateVectorTableIncremental(db, vectorRows = [], changedVectorRows = []) {
@@ -1622,11 +1651,21 @@ function arrayFromPossiblyLanceList(value) {
 
 function encodeChunkForVectorTable(chunk = {}) {
   return {
-    ...chunk,
+    id: String(chunk.id ?? ""),
+    documentId: String(chunk.documentId ?? ""),
+    title: String(chunk.title ?? ""),
+    chapterId: String(chunk.chapterId ?? ""),
+    chapterTitle: String(chunk.chapterTitle ?? ""),
+    page: Number.isFinite(Number(chunk.page)) ? Number(chunk.page) : 0,
+    text: String(chunk.text ?? ""),
+    type: String(chunk.type ?? "sentence"),
+    knownCoverage: Number(chunk.knownCoverage) || 0,
     terms: JSON.stringify(chunk.terms ?? []),
     dictionaryForms: JSON.stringify(chunk.dictionaryForms ?? []),
     dictionaryMatches: JSON.stringify(chunk.dictionaryMatches ?? []),
-    authorRubyReadings: JSON.stringify(chunk.authorRubyReadings ?? [])
+    mined: Boolean(chunk.mined),
+    readAtIndex: Boolean(chunk.readAtIndex),
+    vector: Array.isArray(chunk.vector) ? chunk.vector : []
   };
 }
 
