@@ -582,11 +582,13 @@ h2 {
 }
 
 .reader-side-item {
+  align-items: center;
   border-left: 0;
   border-right: 0;
   border-top: 0;
   border-radius: 0;
   color: var(--text);
+  display: flex;
   font-size: 14px;
   font-weight: 700;
   justify-content: flex-start;
@@ -594,11 +596,18 @@ h2 {
   min-height: 48px;
   padding: 8px 0;
   text-align: left;
+  text-decoration: none;
   white-space: normal;
   width: 100%;
 }
 
-.reader-side-item:hover,
+.reader-side-item:hover {
+  background: transparent;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .reader-side-item.active {
   background: transparent;
   color: var(--accent);
@@ -1784,6 +1793,20 @@ body.resizing-reader-sidebar {
   width: 100%;
 }
 
+.chapter-item {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  display: flex;
+  text-decoration: none;
+}
+
+.chapter-item:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .bookmark-item {
   align-items: center;
   box-sizing: border-box;
@@ -1843,7 +1866,7 @@ body.resizing-reader-sidebar {
 .chapter-item.active,
 .bookmark-item.active {
   background: var(--panel-2);
-  color: var(--text);
+  color: var(--accent);
 }
 
 .book-chapter {

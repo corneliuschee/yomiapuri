@@ -3759,9 +3759,7 @@ async function renderStructuredBlocks(blocks = [], options = {}) {
     }
     if (block.type === "link" && block.href && block.text?.trim()) {
       await flushText();
-      const isExternal = /^https?:\/\//i.test(block.href);
-      const attrs = isExternal ? `href="${escapeHtml(block.href)}" target="_blank" rel="noreferrer"` : `href="#" data-epub-href="${escapeHtml(block.href)}"`;
-      rendered.push(`<p class="book-line"><a class="book-link" ${attrs}>${escapeHtml(block.text)}</a></p>`);
+      rendered.push(`<p class="book-line">${renderReaderLinkHtml(block.href, stripReaderMarkers(block.text))}</p>`);
       continue;
     }
     if (block.type === "text" && block.text?.trim()) {
@@ -3793,7 +3791,7 @@ function renderInitialStructuredBlocks(blocks = []) {
     }
     if (block.type === "link" && block.text?.trim()) {
       flushText();
-      rendered.push(`<p class="book-line">${escapeHtml(stripReaderMarkers(block.text))}</p>`);
+      rendered.push(`<p class="book-line">${renderReaderLinkHtml(block.href, stripReaderMarkers(block.text))}</p>`);
       continue;
     }
     if (block.type === "text" && block.text?.trim()) textBuffer.push(block.text);
@@ -3810,14 +3808,26 @@ function decodeReaderMarker(value = "") {
   }
 }
 
+function renderReaderLinkHtml(href = "", label = "") {
+  const text = escapeHtml(String(label ?? "").trim());
+  const targetHref = String(href ?? "").trim();
+  if (!text) return "";
+  if (!targetHref) return text;
+  const isExternal = /^https?:\/\//i.test(targetHref);
+  const attrs = isExternal
+    ? `href="${escapeHtml(targetHref)}" target="_blank" rel="noreferrer"`
+    : `href="#" data-epub-href="${escapeHtml(targetHref)}"`;
+  return `<a class="book-link" ${attrs}>${text}</a>`;
+}
+
 function renderFastInlineText(value = "") {
-  const markerPattern = /\[\[(RUBY):([^|]*)\|([^\]]*)\]\]|\[\[LINK:[^|]*\|([^\]]*)\]\]|\[\[IMG:[^\]]*\]\]/g;
+  const markerPattern = /\[\[(RUBY):([^|]*)\|([^\]]*)\]\]|\[\[LINK:([^|]*)\|([^\]]*)\]\]|\[\[IMG:[^\]]*\]\]/g;
   let html = "";
   let lastIndex = 0;
   for (const match of String(value ?? "").matchAll(markerPattern)) {
     html += escapeHtml(value.slice(lastIndex, match.index));
     if (match[1] === "RUBY") html += authorRubyHtml(decodeReaderMarker(match[2]), decodeReaderMarker(match[3]));
-    else if (match[4]) html += escapeHtml(match[4]);
+    else if (match[4] || match[5]) html += renderReaderLinkHtml(decodeReaderMarker(match[4]), decodeReaderMarker(match[5]));
     lastIndex = match.index + match[0].length;
   }
   html += escapeHtml(value.slice(lastIndex));
@@ -3907,10 +3917,11 @@ function documentPageDescriptors(document = {}, charLimit = 850) {
     const meta = chapterMetas[index];
     const renderBlocks = stripChapterTitleFromBlocks(chapter.blocks ?? [], meta.title);
     const pageGroups = paginateStructuredBlockGroups(renderBlocks, charLimit);
-    for (const blocks of pageGroups) {
+    for (const [pageIndex, blocks] of pageGroups.entries()) {
       descriptors.push({
         chapterId: meta.id,
         chapterTitle: meta.title,
+        isChapterFirstPage: pageIndex === 0,
         blocks
       });
     }
@@ -3931,7 +3942,7 @@ async function renderPageDescriptor(descriptor = {}, options = {}) {
     : await renderStructuredBlocks(descriptor.blocks ?? [], options);
   return {
     chapterId: descriptor.chapterId,
-    html: wrapReaderPage(pageHtml, descriptor.chapterTitle, !isImageOnlyPageHtml(pageHtml))
+    html: wrapReaderPage(pageHtml, descriptor.chapterTitle, Boolean(descriptor.isChapterFirstPage) && !isImageOnlyPageHtml(pageHtml))
   };
 }
 

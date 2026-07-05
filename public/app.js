@@ -1152,12 +1152,15 @@ function renderChapters() {
   }
 
   for (const chapter of state.activeChapters) {
-    const button = document.createElement("button");
-    button.className = `chapter-item${chapter.id === state.activeChapterId ? " active" : ""}`;
-    button.type = "button";
-    button.textContent = chapter.title;
-    button.addEventListener("click", () => jumpToChapter(chapter.id));
-    elements.chapterList.append(button);
+    const link = document.createElement("a");
+    link.className = `chapter-item${chapter.id === state.activeChapterId ? " active" : ""}`;
+    link.href = `#${encodeURIComponent(chapter.id)}`;
+    link.textContent = chapter.title;
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      jumpToChapter(chapter.id);
+    });
+    elements.chapterList.append(link);
   }
   renderReaderSidePanel();
 }
@@ -1231,12 +1234,15 @@ function renderReaderSidePanel() {
     count.textContent = `Total chapters: ${state.activeChapters.length}`;
     elements.readerSideChapters.append(count);
     for (const chapter of state.activeChapters) {
-      const button = document.createElement("button");
-      button.className = `reader-side-item${chapter.id === state.activeChapterId ? " active" : ""}`;
-      button.type = "button";
-      button.textContent = chapter.title;
-      button.addEventListener("click", () => jumpToChapter(chapter.id));
-      elements.readerSideChapters.append(button);
+      const link = document.createElement("a");
+      link.className = `reader-side-item${chapter.id === state.activeChapterId ? " active" : ""}`;
+      link.href = `#${encodeURIComponent(chapter.id)}`;
+      link.textContent = chapter.title;
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        jumpToChapter(chapter.id);
+      });
+      elements.readerSideChapters.append(link);
     }
   }
 
