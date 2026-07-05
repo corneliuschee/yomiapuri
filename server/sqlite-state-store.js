@@ -1237,28 +1237,36 @@ function lookupDictionaryEntriesSql(database, dictionaryIds = [], term = "", opt
 }
 
 // Cache compiled statements outside the functions so they only compile ONCE on startup
-let stmtExactMatch = null;
-let stmtPrefixMatch = null;
+let stmtExactTerm = null;
+let stmtExactReading = null;
+let stmtPrefixTerm = null;
+let stmtPrefixReading = null;
 
 function lookupDictionaryEntryRowsByExactMatch(database, dictionaryId = "", term = "") {
   const id = String(dictionaryId ?? "");
   const normalized = String(term ?? "");
   if (!id || !normalized) return [];
 
-  // Compile once, reuse indefinitely
-  if (!stmtExactMatch) {
-    stmtExactMatch = database.prepare(`
-      SELECT e.dictionary_id, e.sequence, e.term, e.reading, e.content_id, d.name AS dictionary,
-             d.type, d.sort_order, d.language
-      FROM dictionary_entries e
-      JOIN dictionaries d ON d.id = e.dictionary_id
-      WHERE e.dictionary_id = ? AND (e.term = ? OR e.reading = ?)
+  // Compile once, reuse indefinitely. Added LIMIT 10 to prevent JS memory flooding.
+  if (!stmtExactTerm) {
+    stmtExactTerm = database.prepare(`
+      SELECT e.dictionary_id, e.sequence, e.term, e.reading, e.content_id, d.name AS dictionary, d.type, d.sort_order, d.language
+      FROM dictionary_entries e JOIN dictionaries d ON d.id = e.dictionary_id
+      WHERE e.dictionary_id = ? AND e.term = ?
       ORDER BY d.sort_order ASC, e.sequence ASC
+      LIMIT 10
+    `);
+    stmtExactReading = database.prepare(`
+      SELECT e.dictionary_id, e.sequence, e.term, e.reading, e.content_id, d.name AS dictionary, d.type, d.sort_order, d.language
+      FROM dictionary_entries e JOIN dictionaries d ON d.id = e.dictionary_id
+      WHERE e.dictionary_id = ? AND e.reading = ?
+      ORDER BY d.sort_order ASC, e.sequence ASC
+      LIMIT 10
     `);
   }
 
-  // Executes in a single ultra-fast index pass
-  return stmtExactMatch.all(id, normalized, normalized);
+  // Executes two lightning-fast index lookups and merges them
+  return stmtExactTerm.all(id, normalized).concat(stmtExactReading.all(id, normalized));
 }
 
 function lookupDictionaryEntryRowsByPrefix(database, dictionaryId = "", term = "") {
@@ -1267,21 +1275,25 @@ function lookupDictionaryEntryRowsByPrefix(database, dictionaryId = "", term = "
   if (!id || !normalized) return [];
   const upper = prefixUpperBound(normalized);
 
-  if (!stmtPrefixMatch) {
-    stmtPrefixMatch = database.prepare(`
-      SELECT e.dictionary_id, e.sequence, e.term, e.reading, e.content_id, d.name AS dictionary,
-             d.type, d.sort_order, d.language
-      FROM dictionary_entries e
-      JOIN dictionaries d ON d.id = e.dictionary_id
-      WHERE e.dictionary_id = ? AND (
-        (e.term >= ? AND e.term < ?) OR 
-        (e.reading >= ? AND e.reading < ?)
-      )
+  // Added LIMIT 10 to prevent massive prefix wildcard flooding
+  if (!stmtPrefixTerm) {
+    stmtPrefixTerm = database.prepare(`
+      SELECT e.dictionary_id, e.sequence, e.term, e.reading, e.content_id, d.name AS dictionary, d.type, d.sort_order, d.language
+      FROM dictionary_entries e JOIN dictionaries d ON d.id = e.dictionary_id
+      WHERE e.dictionary_id = ? AND e.term >= ? AND e.term < ?
       ORDER BY d.sort_order ASC, e.sequence ASC
+      LIMIT 10
+    `);
+    stmtPrefixReading = database.prepare(`
+      SELECT e.dictionary_id, e.sequence, e.term, e.reading, e.content_id, d.name AS dictionary, d.type, d.sort_order, d.language
+      FROM dictionary_entries e JOIN dictionaries d ON d.id = e.dictionary_id
+      WHERE e.dictionary_id = ? AND e.reading >= ? AND e.reading < ?
+      ORDER BY d.sort_order ASC, e.sequence ASC
+      LIMIT 10
     `);
   }
 
-  return stmtPrefixMatch.all(id, normalized, upper, normalized, upper);
+  return stmtPrefixTerm.all(id, normalized, upper).concat(stmtPrefixReading.all(id, normalized, upper));
 }
 
 function lookupDictionaryEntriesBatchSql(database, dictionaryId = "", terms = [], options = {}) {
