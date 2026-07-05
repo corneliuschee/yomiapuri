@@ -1218,29 +1218,70 @@ function lookupDictionaryEntriesSql(database, dictionaryIds = [], term = "", opt
   if (ids.length === 0 || !normalized) return [];
   const limit = Math.max(1, Math.min(Number(options.limit ?? 24) || 24, 100));
   const prefix = Boolean(options.prefix);
-  const idPlaceholders = ids.map(() => "?").join(", ");
-  const orderClause = sqlDictionaryOrder(ids);
-  const params = [...ids, normalized, normalized];
-  let where = `e.dictionary_id IN (${idPlaceholders}) AND (e.term = ? OR e.reading = ?)`;
-  if (prefix) {
-    where = `e.dictionary_id IN (${idPlaceholders}) AND (
-      e.term = ? OR e.reading = ? OR
-      (e.term >= ? AND e.term < ?) OR
-      (e.reading >= ? AND e.reading < ?)
-    )`;
-    const upper = prefixUpperBound(normalized);
-    params.push(normalized, upper, normalized, upper);
+  const rows = [];
+  const seen = new Set();
+  for (const dictionaryId of ids) {
+    if (rows.length >= limit) break;
+    const exactRows = prefix
+      ? lookupDictionaryEntryRowsByPrefix(database, dictionaryId, normalized)
+      : lookupDictionaryEntryRowsByExactMatch(database, dictionaryId, normalized);
+    for (const row of exactRows) {
+      const key = [row.dictionary_id, row.term, row.reading, row.content_id].join("\u0001");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(row);
+      if (rows.length >= limit) break;
+    }
   }
-  const rows = database.prepare(`
-    SELECT e.dictionary_id, e.sequence, e.term, e.reading, e.content_id, d.name AS dictionary,
-      d.type, d.sort_order, d.language
-    FROM dictionary_entries e
-    JOIN dictionaries d ON d.id = e.dictionary_id
-    WHERE ${where}
-    ORDER BY ${orderClause}, CASE WHEN e.term = ? THEN 0 WHEN e.reading = ? THEN 1 ELSE 2 END, e.sequence ASC
-    LIMIT ?
-  `).all(...params, normalized, normalized, limit);
   return hydrateDictionaryEntryRows(database, rows);
+}
+
+// Cache compiled statements outside the functions so they only compile ONCE on startup
+let stmtExactMatch = null;
+let stmtPrefixMatch = null;
+
+function lookupDictionaryEntryRowsByExactMatch(database, dictionaryId = "", term = "") {
+  const id = String(dictionaryId ?? "");
+  const normalized = String(term ?? "");
+  if (!id || !normalized) return [];
+
+  // Compile once, reuse indefinitely
+  if (!stmtExactMatch) {
+    stmtExactMatch = database.prepare(`
+      SELECT e.dictionary_id, e.sequence, e.term, e.reading, e.content_id, d.name AS dictionary,
+             d.type, d.sort_order, d.language
+      FROM dictionary_entries e
+      JOIN dictionaries d ON d.id = e.dictionary_id
+      WHERE e.dictionary_id = ? AND (e.term = ? OR e.reading = ?)
+      ORDER BY d.sort_order ASC, e.sequence ASC
+    `);
+  }
+
+  // Executes in a single ultra-fast index pass
+  return stmtExactMatch.all(id, normalized, normalized);
+}
+
+function lookupDictionaryEntryRowsByPrefix(database, dictionaryId = "", term = "") {
+  const id = String(dictionaryId ?? "");
+  const normalized = String(term ?? "");
+  if (!id || !normalized) return [];
+  const upper = prefixUpperBound(normalized);
+
+  if (!stmtPrefixMatch) {
+    stmtPrefixMatch = database.prepare(`
+      SELECT e.dictionary_id, e.sequence, e.term, e.reading, e.content_id, d.name AS dictionary,
+             d.type, d.sort_order, d.language
+      FROM dictionary_entries e
+      JOIN dictionaries d ON d.id = e.dictionary_id
+      WHERE e.dictionary_id = ? AND (
+        (e.term >= ? AND e.term < ?) OR 
+        (e.reading >= ? AND e.reading < ?)
+      )
+      ORDER BY d.sort_order ASC, e.sequence ASC
+    `);
+  }
+
+  return stmtPrefixMatch.all(id, normalized, upper, normalized, upper);
 }
 
 function lookupDictionaryEntriesBatchSql(database, dictionaryId = "", terms = [], options = {}) {

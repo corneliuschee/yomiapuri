@@ -4822,6 +4822,10 @@ window.addEventListener("keyup", (event) => {
   hoverLookupLastTerm = "";
   clearTimeout(hoverLookupTimer);
   clearLookupPreview();
+  const selection = window.getSelection();
+  if (elements.dictionaryLookup.classList.contains("hidden") && selectionInsideReader(selection) && !selection.isCollapsed) {
+    showDictionaryLookupFromSelection();
+  }
 });
 elements.reader.addEventListener("mouseleave", () => {
   shiftLookupAnchorRange = null;

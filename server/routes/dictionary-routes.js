@@ -112,25 +112,50 @@ function createDictionaryHandlers(ctx) {
 
     async getDictionaryLookup(req, res, next) {
       try {
+        const startedAt = Date.now();
         const term = String(req.query.term ?? "");
+        const lookupStartedAt = Date.now();
         const result = await lookupDictionaryForms(term, { prefix: req.query.prefix === "true" });
+        const lookupElapsedMs = Date.now() - lookupStartedAt;
+        const readabilityStartedAt = Date.now();
         result.readability = await readabilityForLookupTerm(term, result);
+        const readabilityElapsedMs = Date.now() - readabilityStartedAt;
         if (req.query.checkAnki === "true" && result.knownTerm?.ankiNoteIds?.length) {
           try {
-            const liveNoteId = await firstExistingAnkiNoteId(result.knownTerm.ankiNoteIds);
+            // Force a strict 80ms ceiling on the local network call to Anki
+            const ankiTimeout = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error("Anki timeout")), 80)
+            );
+            
+            const liveNoteId = await Promise.race([
+              firstExistingAnkiNoteId(result.knownTerm.ankiNoteIds),
+              ankiTimeout
+            ]);
+
             result.knownTerm.hasAnkiNote = Boolean(liveNoteId);
-            if (liveNoteId) result.knownTerm.ankiNoteIds = [liveNoteId, ...result.knownTerm.ankiNoteIds.filter((id) => Number(id) !== liveNoteId)];
-          } catch {
-            result.knownTerm.hasAnkiNote = true;
+            if (liveNoteId) {
+              result.knownTerm.ankiNoteIds = [
+                liveNoteId, 
+                ...result.knownTerm.ankiNoteIds.filter((id) => Number(id) !== liveNoteId)
+              ];
+            }
+          } catch (ankiError) {
+            // If Anki is closed or times out, fail safe and don't stall the user lookup
+            result.knownTerm.hasAnkiNote = false; 
           }
         }
-        logLearningEvent("lookup.performed", {
+        void logLearningEvent("lookup.performed", {
           term: normalizeJapaneseTerm(term),
           matched: (result.entries?.length ?? 0) > 0,
           entries: result.entries?.length ?? 0,
           frequencies: result.frequencies?.length ?? 0
         });
-        invalidateReadabilityContext();
+        void Promise.resolve().then(() => invalidateReadabilityContext());
+        res.setHeader("X-Dictionary-Lookup-Timings", JSON.stringify({
+          lookupMs: lookupElapsedMs,
+          readabilityMs: readabilityElapsedMs,
+          totalMs: Date.now() - startedAt
+        }));
         res.json(result);
       } catch (error) {
         next(error);
