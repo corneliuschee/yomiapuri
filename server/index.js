@@ -2457,7 +2457,7 @@ function assistantMaxTokens(intent, contextText = "", options = {}) {
   if (options.exampleSearch) return 768;
   if (options.useRagContext) return 640;
   if (intent === "explain") return 448;
-  if (intent === "recap") return 512;
+  if (intent === "recap") return 1024;
   return 512;
 }
 
@@ -2494,15 +2494,26 @@ async function aiRuntimeForPort(port) {
 async function stopAiRuntime() {
   const runtimes = await aiRuntimeStatus();
   let stopped = 0;
+  // Try graceful kill based on PID files
   for (const runtime of runtimes.runtimes) {
     if (!runtime.running || !runtime.pid) continue;
     try {
       process.kill(runtime.pid);
       stopped += 1;
     } catch {
-      // Process may have exited between status check and kill.
+      // Process may have exited
     }
   }
+
+  // Guaranteed "Hard Kill" for any lingering llama-server.exe
+  try {
+    // /F = Force, /IM = Image Name, /T = Terminate child processes
+    execSync('taskkill /F /IM llama-server.exe /T', { stdio: 'ignore' });
+    stopped += 1;
+  } catch (e) {
+    // No llama-server.exe found, or already stopped
+  }
+
   return stopped;
 }
 

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 
 const SUGOI_TRANSLATION_PROMPT = "You are an expert Japanese-to-English literary localizer. Translate only the provided Japanese text into fluent, natural English.\n\nRules:\n- Preserve speaker tone, emotion, genre style, and relationship dynamics.\n- Prefer contextual, natural English over literal phrasing.\n- Use app-provided author ruby/name reading notes as authoritative for character name romanization.\n- Use slang, subculture terms, profanity, or explicit wording when needed for accuracy.\n- Output only the final English translation. No notes, preambles, explanations, or markdown.";
 const DEFAULT_ASSISTANT_PROMPTS = {
@@ -44,7 +44,6 @@ const LOW_MEMORY_TRANSLATION_MODEL = {
 
 const BUILT_IN_TRANSLATION_MODELS = [DEFAULT_TRANSLATION_MODEL, LOW_MEMORY_TRANSLATION_MODEL];
 const DEPRECATED_TRANSLATION_MODEL_IDS = new Set([
-  "liquidai-lfm2-350m-enjp-mt",
   "sugoitoolkit-sugoi-14b-ultra-hf"
 ]);
 
@@ -289,11 +288,16 @@ function withRuntimeModelPath(model = null) {
 
 function runTranslationCommand(command, payload) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, [], { shell: true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, [], { 
+      shell: true, 
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env } 
+    });
     let stdout = "";
     let stderr = "";
     const timeout = setTimeout(() => {
-      child.kill();
+      killProcessTree(child.pid);
       reject(new Error("Local AI runtime timed out."));
     }, Number(process.env.LOCAL_TRANSLATION_TIMEOUT_MS) || 60000);
     child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
@@ -321,11 +325,16 @@ function runTranslationCommand(command, payload) {
 
 function runChatCommand(command, payload) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, [], { shell: true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, [], { 
+      shell: true, 
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env } 
+    });;
     let stdout = "";
     let stderr = "";
     const timeout = setTimeout(() => {
-      child.kill();
+      killProcessTree(child.pid);
       reject(new Error("Local AI runtime timed out."));
     }, Number(process.env.LOCAL_TRANSLATION_TIMEOUT_MS) || 60000);
     child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
@@ -354,12 +363,17 @@ function runChatCommand(command, payload) {
 
 function runChatStreamCommand(command, payload, onToken = () => {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, [], { shell: true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, [], { 
+      shell: true, 
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env } 
+    });
     let stdoutBuffer = "";
     let stderr = "";
     let fullText = "";
     const timeout = setTimeout(() => {
-      child.kill();
+      killProcessTree(child.pid);
       reject(new Error("Local AI runtime timed out."));
     }, Number(process.env.LOCAL_TRANSLATION_TIMEOUT_MS) || 60000);
 
@@ -373,7 +387,7 @@ function runChatStreamCommand(command, payload, onToken = () => {}) {
           onToken(parsed.delta);
         }
       } catch {
-        // Ignore non-JSON progress lines from local runtimes.
+        // Ignore non-JSON progress lines
       }
     };
 
@@ -468,4 +482,16 @@ function languageHintFromUrl(url = "") {
   const lower = String(url).toLowerCase();
   if (/enjp|ja|jp|japanese|sugoi/.test(lower)) return "ja-en";
   return "unknown";
+}
+
+function killProcessTree(pid) {
+  try {
+    if (process.platform === "win32") {
+      execSync(`taskkill /pid ${pid} /T /F`, { stdio: "ignore" });
+    } else {
+      process.kill(-pid);
+    }
+  } catch {
+    // Process is likely already dead
+  }
 }

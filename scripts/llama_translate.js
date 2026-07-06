@@ -94,7 +94,8 @@ async function ensureServer({ endpoint, serverPath, modelPath, port, gpuLayers =
     "--port", String(port),
     "--ctx-size", String(process.env.LOCAL_TRANSLATION_CONTEXT_SIZE ?? 1536),
     "--parallel", "1",
-    "--no-webui"
+    "--no-webui",
+    "--flash-attn", "on"
   ];
   if (gpuLayers > 0) serverArgs.push("--n-gpu-layers", String(gpuLayers));
   if (noWarmup) serverArgs.push("--no-warmup");
