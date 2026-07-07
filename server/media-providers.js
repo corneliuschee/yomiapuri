@@ -246,73 +246,24 @@ async function synthesizeLiquidAiSpeech({ text, filePath, model, pythonPath, scr
     HF_HOME: hfHome || process.env.HF_HOME || "",
     HUGGINGFACE_HUB_CACHE: hfHome ? path.join(hfHome, "hub") : process.env.HUGGINGFACE_HUB_CACHE || ""
   };
-  const port = await ensureLiquidAiServer({ model, pythonPath, scriptPath, env });
-  const response = await fetch(`http://127.0.0.1:${port}/tts`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, out: filePath, max_new_tokens: maxNewTokens, rate: Number(rate) || 0 }),
-    signal: AbortSignal.timeout(120000)
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.ok === false) throw new Error(payload.error || `LiquidAI TTS request failed with ${response.status}`);
+
+  // Automatically swap the script filename so you don't have to change your .env
+  const oneShotScriptPath = scriptPath.replace("liquidai_tts_server.py", "liquidai_tts.py");
+
+  // Build the command line arguments
+  const args = [
+    oneShotScriptPath,
+    "--model", model,
+    "--text", text,
+    "--out", filePath,
+    "--max-new-tokens", String(maxNewTokens)
+  ];
+
+  // Execute the one-shot Python script directly
+  // This uses the runProcess function already at the bottom of your file
+  await runProcess(pythonPath, args, env);
 }
 
-async function ensureLiquidAiServer({ model, pythonPath, scriptPath, env }) {
-  const existing = liquidAiServers.get(model);
-  if (existing && await liquidAiHealth(existing.port, { requireRate: true })) return existing.port;
-
-  let port = LIQUIDAI_TTS_PORT;
-  for (let offset = 0; offset < 4; offset += 1) {
-    const candidatePort = LIQUIDAI_TTS_PORT + offset;
-    if (await liquidAiHealth(candidatePort, { requireRate: true })) {
-      liquidAiServers.set(model, { port: candidatePort, child: null });
-      return candidatePort;
-    }
-    if (!await liquidAiHealth(candidatePort)) {
-      port = candidatePort;
-      break;
-    }
-  }
-
-  let stderr = "";
-  const child = spawn(pythonPath, [scriptPath, "--model", model, "--host", "127.0.0.1", "--port", String(port)], {
-    env,
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-  child.stdout.on("data", () => {});
-  child.on("exit", () => {
-    const current = liquidAiServers.get(model);
-    if (current?.child === child) liquidAiServers.delete(model);
-  });
-  process.once("exit", () => {
-    child.kill();
-  });
-  liquidAiServers.set(model, { port, child });
-
-  const deadline = Date.now() + 180000;
-  while (Date.now() < deadline) {
-    if (await liquidAiHealth(port, { requireRate: true })) return port;
-    if (child.exitCode !== null) throw new Error(stderr.trim() || `LiquidAI TTS server exited with ${child.exitCode}`);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-  throw new Error(stderr.trim() || "LiquidAI TTS server did not become ready within 180 seconds.");
-}
-
-async function liquidAiHealth(port, { requireRate = false } = {}) {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(800) });
-    if (!response.ok) return false;
-    if (!requireRate) return true;
-    const payload = await response.json().catch(() => ({}));
-    return payload.supports_rate === true;
-  } catch {
-    return false;
-  }
-}
 
 function runPowerShell(script) {
   return runProcess("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]);

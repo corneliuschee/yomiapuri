@@ -506,15 +506,28 @@ function scheduleGeneratedAudioUpdates({
       }
     }
     if (Object.keys(updatedFields).length === 0) return;
-    try {
-      await connect("updateNoteFields", {
-        note: {
-          id: Number(noteId),
-          fields: updatedFields
+    let attempts = 0;
+    const maxAttempts = 20; // Try 20 times total 
+    
+    while (attempts < maxAttempts) {
+      try {
+        await connect("updateNoteFields", {
+          note: {
+            id: Number(noteId),
+            fields: updatedFields
+          }
+        });
+        // If successful, break out of the loop!
+        return; 
+      } catch (error) {
+        attempts++;
+        if (attempts >= maxAttempts) {
+           console.warn(`Background Anki audio update permanently failed for note ${noteId} after ${maxAttempts} attempts: ${error.message}`);
+        } else {
+           // Wait 15 seconds before trying again
+           await new Promise(resolve => setTimeout(resolve, 15000));
         }
-      });
-    } catch (error) {
-      console.warn(`Background Anki audio update failed for note ${noteId}: ${error.message}`);
+      }
     }
   });
 }
