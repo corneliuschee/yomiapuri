@@ -116,33 +116,68 @@ export function createFtsSearchService({
     }
 
     const activeIds = activeDocumentIds();
-    const existingChunk = database.prepare(`SELECT raw_text, source_hash, tokenizer_version, normalizer_version, dictionary_signature FROM ${CHUNKS_TABLE} WHERE id = ? LIMIT 1`);
-    const existingFts = database.prepare(`SELECT rowid FROM ${FTS_TABLE} WHERE chunkId = ? LIMIT 1`);
     const signatureValue = signature();
     const rowsById = new Map();
     let skipped = 0;
-    for (const chunk of chunks) {
+
+    const existingStates = new Map();
+    const existingFtsStates = new Set();
+    const allIds = chunks.map(chunk => chunkIdFor(chunk));
+    
+    const DB_BATCH_LIMIT = 500; 
+    for (let i = 0; i < allIds.length; i += DB_BATCH_LIMIT) {
+      const batchIds = allIds.slice(i, i + DB_BATCH_LIMIT);
+      const placeholders = batchIds.map(() => '?').join(',');
+      
+      const chunkRows = database.prepare(
+        `SELECT id, raw_text, source_hash, tokenizer_version, normalizer_version, dictionary_signature 
+         FROM ${CHUNKS_TABLE} WHERE id IN (${placeholders})`
+      ).all(...batchIds);
+      
+      for (const row of chunkRows) existingStates.set(row.id, row);
+      
+      const ftsRows = database.prepare(
+        `SELECT chunkId FROM ${FTS_TABLE} WHERE chunkId IN (${placeholders})`
+      ).all(...batchIds);
+      
+      for (const row of ftsRows) existingFtsStates.add(row.chunkId);
+    }
+
+    const chunksToProcess = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
       if (!activeIds.has(String(chunk.documentId ?? ""))) continue;
-      const id = chunkIdFor(chunk);
-      const existing = existingChunk.get(id);
-      if (
-        existing
-        && existingFts.get(id)
+      
+      const id = allIds[i];
+      const existing = existingStates.get(id);
+      const hasFts = existingFtsStates.has(id);
+      
+      const isUnchanged = existing
+        && hasFts
         && existing.raw_text === String(chunk.text ?? "")
         && existing.tokenizer_version === tokenizerVersion
         && existing.normalizer_version === normalizerVersion
-        && existing.dictionary_signature === signatureValue
-      ) {
+        && existing.dictionary_signature === signatureValue;
+
+      if (isUnchanged || (options.existingOnly === true && (!existing || !hasFts))) {
         skipped += 1;
         continue;
       }
-      if (options.existingOnly === true && (!existing || !existingFts.get(id))) {
-        skipped += 1;
-        continue;
-      }
-      const row = await ftsRowForChunk(chunk, options);
-      if (!rowsById.has(row.id)) rowsById.set(row.id, row);
+      
+      chunksToProcess.push(chunk);
     }
+
+    const ASYNC_BATCH_SIZE = 25; 
+    for (let i = 0; i < chunksToProcess.length; i += ASYNC_BATCH_SIZE) {
+      const batch = chunksToProcess.slice(i, i + ASYNC_BATCH_SIZE);
+      
+      const builtRows = await Promise.all(batch.map(c => ftsRowForChunk(c, options)));
+      
+      for (const row of builtRows) {
+        if (!rowsById.has(row.id)) rowsById.set(row.id, row);
+      }
+    }
+
     const rows = [...rowsById.values()];
 
     const insertChunk = database.prepare(`
@@ -196,9 +231,9 @@ export function createFtsSearchService({
     const txn = database.transaction(() => {
       for (const row of rows) {
         const payload = { ...row, updatedAt: now };
-        const existing = existingChunk.get(row.id);
+        const existing = existingStates.get(row.id);
         const unchanged = existing
-          && existingFts.get(row.id)
+          && existingFtsStates.has(row.id)
           && existing.source_hash === row.sourceHash
           && existing.tokenizer_version === row.tokenizerVersion
           && existing.normalizer_version === row.normalizerVersion
