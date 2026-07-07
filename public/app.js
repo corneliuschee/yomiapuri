@@ -5002,6 +5002,7 @@ elements.ankiImportForm.addEventListener("submit", async (event) => {
 });
 elements.dictionaryForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  
   if (!elements.dictionaryFile?.files?.length) {
     showDictionaryNotice("Choose a dictionary ZIP or JSON before importing.", "error");
     renderDictionaryAttachment();

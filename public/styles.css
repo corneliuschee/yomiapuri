@@ -45,7 +45,7 @@ button,
 .small-upload {
   align-items: center;
   background: transparent;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line);  
   border-radius: 4px;
   color: var(--text);
   cursor: pointer;
