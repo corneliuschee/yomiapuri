@@ -46,7 +46,7 @@ const source = {
   media: { audio: { enabled: true } },
   ai: { translation: { modelId: "q4" } },
   sync: { enabled: true, userEmail: "test@example.com" },
-  ml: { embeddingProviderId: "local-hash-ngram-v1" },
+  ml: { indexStale: true, indexStaleReason: "test" },
   progress: { "doc-1": { page: 2, bookmarks: [{ page: 2 }], highlights: { pages: { 2: "<mark>x</mark>" } } } },
   cards: [{ id: "card-1", expression: "図書館", fields: { Word: "図書館" } }],
   anki: { deckName: "Mining", modelName: "JP Mining" },
@@ -68,6 +68,7 @@ assert.equal(loaded.dictionaries[0].entries, undefined);
 assert.equal(store.lookupDictionaryEntries(["dict-1"], loaded.knownTerms[0])[0].definitions[0], "library");
 assert.equal(loaded.dictionarySettings.prefixWildcardSearch, true);
 assert.equal(loaded.reader.hideInferredReadableFurigana, true);
+assert.equal(loaded.ml.indexStale, true);
 assert.equal(loaded.progress["doc-1"].page, 2);
 assert.equal(loaded.cards[0].fields.Word, "図書館");
 assert.equal(loaded.anki.deckName, "Mining");

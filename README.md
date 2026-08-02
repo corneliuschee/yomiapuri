@@ -1,131 +1,101 @@
 # Yomiアプリ
 
-Yomiアプリ is a local-first Japanese reading app for EPUB, PDF, and text novels. It combines a reader, dictionary lookup, Anki export, Word Bank tracking, local search indexes, optional Supabase sync, and an optional local AI assistant.
+Yomiアプリ is a local-first Japanese reading application for EPUB, PDF, and plain-text novels. It combines a paged or scrolling reader with dictionary lookup, furigana, Word Bank tracking, Anki export, local search, learning analytics, optional Supabase sync, and an optional local AI assistant.
 
-The app is designed to keep the core reading workflow local. Book data, dictionaries, SQLite state, generated caches, vector indexes, and model files live on your machine. Supabase sync is optional and syncs source data only, not local model files or vector indexes.
+The core reading workflow runs on the local machine. SQLite is the canonical local store for application data. SQLite FTS5 with BM25 ranking is the derived text-search index for exact Japanese phrases and vocabulary.
 
 ## Features
 
 - Import EPUB, PDF, and plain-text books.
-- Read in paged or scroll-style reader modes.
-- Preserve book images, covers, chapters, bookmarks, highlights, and reading progress.
-- Add generated furigana for unknown vocabulary while preserving author-provided ruby/furigana.
-- Detect learned vocabulary from the Word Bank, including common conjugated forms.
-- Import vocabulary from Anki through AnkiConnect.
-- Export mined sentences to Anki with note-type field detection and editable preview.
-- Generate local Anki media fields, including local TTS audio and mnemonic images when configured.
+- Read in paged or scrolling modes.
+- Preserve covers, illustrations, chapters, bookmarks, highlights, and reading progress.
+- Preserve author-provided ruby/furigana and add generated furigana for other vocabulary.
+- Recognize learned vocabulary and common conjugated forms.
+- Import reviewed vocabulary from Anki through AnkiConnect.
+- Preview and export notes to Anki with automatic field detection and editable fields.
+- Generate local Anki media, including system TTS audio and mnemonic images when configured.
 - Import Yomitan/Jitendex-style term dictionaries and frequency dictionaries.
-- Use in-reader dictionary lookup from enabled dictionaries.
-- Maintain a Word Bank with dictionary-selected meanings, sorting, pagination, trash, and restore.
-- Sync books, progress, highlights, bookmarks, Word Bank, cards, and settings through Supabase.
-- Run local learning analytics in the Insights page.
-- Use SQLite FTS5/BM25 for fast phrase and vocabulary search.
-- Use LanceDB semantic vectors for local semantic search and RAG-style retrieval.
+- Look up selected or hovered Japanese vocabulary in enabled dictionaries.
+- Maintain a paginated, searchable Word Bank with dictionary-selected meanings, trash, and restore.
+- Track local reading and learning analytics in Insights.
+- Search book text with SQLite FTS5 and BM25.
 - Use a local llama.cpp assistant for translation, grammar explanation, recap, and reader questions.
+- Optionally sync books, progress, annotations, Word Bank, cards, and settings through Supabase.
 
-## Tech Stack
+## Architecture
 
-- Node.js + Express
-- Vanilla HTML/CSS/JavaScript frontend
-- SQLite via `better-sqlite3`
-- SQLite FTS5 for lexical search
-- LanceDB for local vector search
-- Kuromoji for Japanese tokenization
-- AnkiConnect for Anki Desktop integration
-- Supabase for optional cross-device sync
-- llama.cpp for optional local LLM chat/translation
-- Sentence Transformers for optional multilingual embeddings
+- Node.js and Express provide the local server.
+- Vanilla HTML, CSS, and JavaScript provide the frontend.
+- SQLite, through better-sqlite3, stores application state and the local FTS5 index.
+- Kuromoji provides Japanese tokenization for reader rendering and text-search normalization.
+- AnkiConnect connects the app to Anki Desktop.
+- llama.cpp runs the optional local assistant with local GGUF models.
+- Supabase provides optional cross-device synchronization of source data.
+
+The reader and local search continue to work without Anki, Supabase, or the local AI runtime.
 
 ## Requirements
 
 - Node.js 24 or newer is recommended.
-- npm
-- Anki Desktop and the AnkiConnect add-on, if you want Anki import/export.
-- Python 3.10+ only if you want real embedding models instead of the built-in hash fallback.
-- A local llama.cpp server binary and GGUF model files only if you want the AI reader assistant.
-- A Supabase project only if you want cross-device sync.
+- npm.
+- Anki Desktop and the AnkiConnect add-on for Anki import/export.
+- A local llama.cpp server binary and GGUF model files for the AI assistant.
+- A Supabase project only for cross-device synchronization.
 
 ## Install
 
 Clone the repository and install dependencies:
 
-```powershell
+~~~powershell
 git clone https://github.com/corneliuschee/yomiapuri.git
 cd yomiapuri
 npm install
-```
+~~~
 
-Start the app:
+Start the development server:
 
-```powershell
+~~~powershell
 npm run dev
-```
+~~~
 
-Open:
-
-```text
-http://localhost:3000
-```
+Open http://localhost:3000 in a browser.
 
 For a normal non-watch run:
 
-```powershell
+~~~powershell
 npm start
-```
+~~~
 
 ## Configuration
 
-Create a local `.env` file from the example:
+Create a local environment file from the example:
 
-```powershell
+~~~powershell
 Copy-Item .env.example .env
-```
+~~~
 
-The `.env` file is ignored by Git. Use it for local model paths and runtime settings.
+The .env file is ignored by Git. Use it for local model paths and runtime settings.
 
-### Optional AI Assistant
+### Local AI Assistant
 
-The AI reader assistant is local-first. It expects a llama.cpp-compatible server runtime and local GGUF models. The example configuration uses Sugoi 14B Ultra Q4/Q3 GGUF paths:
+The reader assistant uses a llama.cpp-compatible runtime and local GGUF models. The example configuration uses Sugoi 14B Ultra Q4 and Q3 models:
 
-```env
+~~~env
 LLAMA_SERVER_PATH=D:\YomiApuriModels\llama-tools\...\llama-server.exe
 SUGOI_Q4_MODEL_PATH=D:\YomiApuriModels\Sugoi-14B-Ultra-GGUF\Sugoi-14B-Ultra-Q4_K_M.gguf
 SUGOI_Q3_MODEL_PATH=D:\YomiApuriModels\Sugoi-14B-Ultra-GGUF\Sugoi-14B-Ultra-Q3_K_M.gguf
 LLAMA_GPU_LAYERS=24
 LLAMA_IDLE_TIMEOUT_SECONDS=600
-```
+~~~
 
-Recommended starting points:
+Suggested starting points:
 
-- Windows RTX desktop: `LLAMA_GPU_LAYERS=24`
-- 16 GB Apple Silicon Mac: `LLAMA_GPU_LAYERS=16`
+- Windows RTX desktop: LLAMA_GPU_LAYERS=24.
+- 16 GB Apple Silicon Mac: LLAMA_GPU_LAYERS=16.
 
-The assistant starts only when needed and shuts down after the configured idle timeout.
+The assistant starts when a message is sent and can stop after the configured idle timeout. Assistant messages are kept in the current browser session and are not written to the application database.
 
-### Optional Embeddings
-
-The app can use `intfloat/multilingual-e5-small` through Sentence Transformers for semantic retrieval. If Python or the model runtime is unavailable, the app falls back to the built-in local hash embedding provider.
-
-Install Python dependencies in your preferred environment if you want the real embedding model:
-
-```powershell
-python -m pip install sentence-transformers torch
-```
-
-Set the Python path in the app's Integrations/Insights settings if needed. Embedding model files are cached under ignored local data paths.
-
-### Optional Supabase Sync
-
-Supabase sync is optional. It syncs source data between devices, while local derived indexes are rebuilt per device.
-
-1. Create a Supabase project.
-2. Run the SQL migrations in `supabase/migrations/`.
-3. In the app, open Integrations.
-4. Enter your Supabase URL and publishable key.
-5. Sign in.
-6. Use `Push local data`, `Pull remote data`, or `Sync now`.
-
-Do not commit Supabase keys in `.env` or source files.
+The assistant accepts the current reader message, the selected page context, and a short rolling conversation history. Translation, explanation, recap, and question handling use the same selected model.
 
 ## Anki Setup
 
@@ -133,90 +103,96 @@ Do not commit Supabase keys in `.env` or source files.
 2. Install the AnkiConnect add-on.
 3. Start Anki Desktop.
 4. Open Integrations > Anki.
-5. Click connect.
-6. Select a deck and note type.
-7. Save the deck and note type.
-8. Import reviewed vocabulary or export mined cards.
+5. Connect and select a deck and note type.
+6. Save the deck and note type.
+7. Import reviewed vocabulary or export a note from the reader.
 
-The app can auto-launch Anki Desktop on Windows when configured. Export uses AnkiConnect so custom note types, fields, media, and note IDs are preserved.
+On Windows, the app can open Anki Desktop automatically when AnkiConnect is unavailable. Exports use AnkiConnect so custom note types, fields, media, and note IDs are preserved.
 
 ## Dictionaries
 
 The dictionary manager supports:
 
-- Yomitan/Jitendex-style term dictionary ZIPs.
-- Yomitan frequency dictionary ZIPs.
-- Legacy JSON dictionaries with usable term/definition rows.
+- Yomitan/Jitendex-style term dictionary ZIP files.
+- Yomitan frequency dictionary ZIP files.
+- Legacy JSON dictionaries with usable term and definition rows.
 
-Dictionary roles:
+Enabled term dictionaries appear in reader lookup in their configured order. Frequency dictionaries provide frequency badges. The Word Bank dictionary selector chooses the dictionary used for Word Bank meanings. Full dictionary details are loaded only for matching lookup entries.
 
-- Enabled dictionaries appear in reader lookup.
-- Frequency dictionaries appear as lookup badges and support future difficulty/readability features.
-- The Word Bank dictionary selector controls which dictionary supplies Word Bank meanings.
+## Local Text Search
 
-## Local Search Indexes
+The Insights page provides the local text-search index controls:
 
-The Insights page has two separate local index actions:
+- Refresh text search index: updates the SQLite FTS5/BM25 index for active book text.
+- Search for phrase/vocab: searches indexed book sentences and paragraphs.
+- Index status: shows whether the text index is ready or stale and when it was last refreshed.
 
-- `Refresh text search index`: fast SQLite FTS5/BM25 refresh. This does not run embeddings.
-- `Update semantic vectors`: incremental LanceDB vector update. This embeds only missing or changed chunks.
+Text search uses the same Japanese normalization inputs as the reader, including surfaces, dictionary forms, readings, compounds, and protected author-ruby readings. Raw book text remains available for exact substring matching.
 
-Use text refresh after importing books or when exact search looks stale. Use semantic vector update when you want semantic search/RAG to include new book text.
+Refresh the text index after importing books or after a tokenizer, dictionary, or normalization change. Deleted books are removed from the active search index; restored books are added after the next refresh.
 
-Local index files are derived cache and are not synced to Supabase.
+## Supabase Sync
+
+Supabase sync is optional and does not replace the local SQLite store.
+
+1. Create a Supabase project.
+2. Run the SQL migrations in supabase/migrations.
+3. Open Integrations in the app.
+4. Enter the Supabase URL and publishable key, or configure them through the local environment.
+5. Sign in.
+6. Use Push local data, Pull remote data, or Sync now.
+
+Syncable source data includes books when the original file is available, progress, highlights, bookmarks, Word Bank terms, cards, settings, and learning events. Local dictionaries, generated media, SQLite files, search indexes, and model files stay on each device.
+
+Do not commit Supabase keys in .env or source files.
 
 ## Data Storage
 
 Important local paths:
 
-- `data/yomiapuri.sqlite`: local SQLite application store.
-- `data/vector-index/`: LanceDB vectors, chunk sidecars, and vector cache.
-- `data/document-cache/`: reader/document processing cache.
-- `data/events.jsonl`: append-only local learning events.
-- `data/media/`: generated Anki media.
-- `data/book-files/`: local imported book files when available.
+- data/yomiapuri.sqlite: canonical local application state and FTS5 tables.
+- data/document-cache: normalized reader/document cache.
+- data/events.jsonl: append-only local learning events.
+- data/media: generated Anki media.
+- data/book-files: imported source files when available.
+- models: local model files when configured.
 
 These paths are ignored by Git.
 
 ## Development
 
-Run tests:
+Run the full test suite:
 
-```powershell
+~~~powershell
 npm test
-```
+~~~
 
 Useful syntax checks:
 
-```powershell
+~~~powershell
 node --check public/app.js
 node --check server/index.js
 node --check server/ml-service.js
 node --check server/fts-search-service.js
-```
+~~~
+
+The test suite covers Anki field mapping and export, dictionary parsing and lookup, local media providers, AI runtime contracts, SQLite FTS5 search, SQLite state storage, Supabase mapping, analytics, and API smoke behavior.
 
 ## Git Safety
 
-The repository ignores local data, credentials, generated files, and model folders:
+Before pushing, inspect the worktree:
 
-- `.env`
-- `data/`
-- `node_modules/`
-- `.venv*`
-- `*.log`
-
-Before pushing, check:
-
-```powershell
+~~~powershell
 git status --short
-git ls-files .env data
-```
+git ls-files .env data models
+~~~
 
-`git ls-files .env data` should return nothing.
+The second command should return no sensitive local environment, database, model, or generated data files.
 
-## Notes
+## Design Notes
 
-- SQLite is the canonical local store for app state.
-- FTS and LanceDB are rebuildable local indexes.
-- Supabase sync is optional and does not upload local vector indexes or model files.
-- The app is still evolving; route modules and storage repositories are being progressively separated to keep future features easier to scale.
+- SQLite is the canonical local store for application state.
+- FTS5 is a rebuildable local text-search index.
+- Source data remains usable offline.
+- Supabase sync is optional and does not upload local databases, model files, or generated caches.
+- The server is organized around route modules, services, and storage repositories so future changes can remain isolated.

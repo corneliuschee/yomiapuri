@@ -228,7 +228,7 @@ export function createSyncService({
       lastError: "",
       status: "synced"
     });
-    markVectorIndexStale(state);
+    markTextIndexStale(state);
     clearDocumentCache();
     await savePulledState();
     await importRemoteEvents(eventLog, remote.learning_events ?? []);
@@ -780,10 +780,10 @@ function contentTypeForExt(ext = "") {
   return "application/octet-stream";
 }
 
-function markVectorIndexStale(state) {
+function markTextIndexStale(state) {
   state.ml ??= {};
   state.ml.indexStale = true;
-  state.ml.indexStaleReason = "Synced source data changed. Rebuild the local index.";
+  state.ml.indexStaleReason = "Synced source data changed. Refresh the local text search index.";
 }
 
 async function importRemoteEvents(eventLog, rows = []) {

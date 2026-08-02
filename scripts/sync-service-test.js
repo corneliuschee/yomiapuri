@@ -68,7 +68,7 @@ assert.equal(payload.documentFiles.length, 2);
 assert.equal(payload.documentFiles.some((row) => row.filename === "epub-assets/doc-1/cover.jpg"), true);
 assert.equal(payload.knownTerms.length, 2);
 assert.equal(payload.settings.find((item) => item.key === "dictionariesMetadata").value[0].entries, undefined);
-assert.equal(JSON.stringify(payload).includes("vector-index"), false);
+assert.equal(JSON.stringify(payload).includes("yomiapuri.sqlite"), false);
 
 state.trash.knownTerms.push({ term: state.knownTerms[0], meta: {}, deletedAt: "2025-12-01T00:00:00.000Z" });
 const duplicatePayload = await buildPushPayload(state, { ...state.sync, userId: "user-1", userEmail: "test@example.com" }, mediaDir, eventLog);

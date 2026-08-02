@@ -1,4 +1,4 @@
-﻿import fs from "node:fs/promises";
+import fs from "node:fs/promises";
 import AdmZip from "adm-zip";
 import os from "node:os";
 import path from "node:path";
@@ -13,7 +13,7 @@ await fs.mkdir(dataDir, { recursive: true });
 
 const server = spawn("node", ["server/index.js"], {
   cwd: rootDir,
-  env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
+  env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, LOCAL_TRANSLATION_COMMAND: "", LLAMA_SERVER_PATH: "" },
   stdio: ["ignore", "pipe", "pipe"]
 });
 
@@ -40,6 +40,7 @@ try {
   const imported = await uploadFile("/api/documents", "book", "samples/sample-novel.txt");
   const documentId = imported.document.id;
   const stateSnapshot = await getJson("/api/state");
+  assert((await fs.stat(path.join(dataDir, "yomiapuri.sqlite"))).isFile(), "SQLite state database should be created at startup.");
   const publicDocument = stateSnapshot.documents.find((document) => document.id === documentId);
   assert(publicDocument && !Object.hasOwn(publicDocument, "text") && !Object.hasOwn(publicDocument, "chapters"), "/api/state should not expose full document text or chapters.");
   const ingestEvents = await readSse(`/api/documents/${documentId}/ingest-stream`);
@@ -62,7 +63,6 @@ try {
   const driftEvents = await readSse(`/api/documents/${documentId}/ingest-stream`);
   const driftDone = driftEvents.find((event) => event.event === "done")?.data;
   assert(driftDone && (driftDone.deferred === true || driftDone.rebuilt === false), "Dictionary drift should not trigger a blocking rebuild during normal open.");
-  assert(!driftEvents.some((event) => event.event === "progress" && event.data.phase === "vector-index"), "Dictionary drift should not rebuild the semantic index during normal open.");
   assert(driftDone?.indexStale === true || driftDone?.deferred === true, `Dictionary-stale ingestion should mark or defer stale index work. Events: ${JSON.stringify(driftEvents)}`);
   const richLookup = await getJson(`/api/dictionary/lookup?term=${encodeURIComponent(smokeDictionaryTerm)}`);
   assert(richLookup.entries[0]?.dictionary, "Lookup should include dictionary labels.");
@@ -89,15 +89,37 @@ try {
   assert(authorRubyNameHtml.includes('class="author-ruby" data-author-ruby="true" data-base="\u5468" data-reading="\u3042\u307e\u306d"'), "Reader should preserve author-provided name ruby.");
   assert(!authorRubyNameHtml.includes('<ruby data-base="\u5468"'), "Reader should not add generated ruby to later bare occurrences of author-ruby names.");
   await assertWordCardCss();
-  const mlProviders = await getJson("/api/ml/providers");
-  assert(mlProviders.models.some((model) => model.id === "multilingual-e5-small"), "ML providers should include multilingual-e5-small.");
-  assert(!mlProviders.models.some((model) => ["jina-embeddings-v3", "bge-m3", "paraphrase-multilingual-minilm"].includes(model.id)), "ML providers should expose only E5 plus the local fallback.");
-  const mlSettings = await postJson("/api/ml/settings", { embeddingProviderId: "local-hash-ngram-v1" });
-  assert(mlSettings.settings.embeddingProviderId === "local-hash-ngram-v1", "ML embedding settings should persist provider selection.");
-  const mlIndex = await postJson("/api/ml/index/rebuild", {});
-  assert(mlIndex.embeddingProvider === "local-hash-ngram-v1", "Rebuilt ML index should report the selected embedding provider.");
-  const semanticResult = await postJson("/api/search/semantic", { query: smokeDictionaryTerm, limit: 5 });
-  assert(semanticResult.results[0]?.text?.includes(smokeDictionaryTerm), "Exact semantic search query should rank exact text matches first.");
+  const mediaProviders = await getJson("/api/media/providers");
+  assert(Array.isArray(mediaProviders.voices), "Media providers should expose detected voices.");
+  const mediaTest = await postJson("/api/media/test-image", { expression: "\u56f3\u66f8\u9928", meaning: "library" });
+  assert(Object.hasOwn(mediaTest, "status"), "Media test should return provider status.");
+  const analytics = await getJson("/api/ml/analytics");
+  assert(analytics.totals.documents >= 1, "Learning analytics should report imported books.");
+  const initialIndexStatus = await getJson("/api/ml/index/status");
+  assert(initialIndexStatus.fts || initialIndexStatus.provider === "sqlite-fts5", "Index status should expose the SQLite text index.");
+  const refreshedIndex = await postJson("/api/search/index/refresh", {});
+  assert(refreshedIndex.fts?.provider === "sqlite-fts5" || refreshedIndex.provider === "sqlite-fts5", "Text index refresh should report SQLite FTS5.");
+  const finalIndexStatus = await getJson("/api/ml/index/status");
+  assert(finalIndexStatus.fts?.ready === true || finalIndexStatus.ready === true, "SQLite text index should be ready after refresh.");
+  const ftsResult = await postJson("/api/search/fts", { query: smokeDictionaryTerm, limit: 5 });
+  assert(ftsResult.results[0]?.text?.includes(smokeDictionaryTerm), "Exact text search should rank containing book text.");
+  const assistantTranslation = await postJson("/api/reader/assistant", {
+    documentId,
+    question: "Translate this: \u56f3\u66f8\u9928\u3078\u884c\u304f\u3002",
+    history: []
+  });
+  assert(assistantTranslation.intent === "translate", "Reader assistant should detect translation requests.");
+  assert(Object.hasOwn(assistantTranslation, "translation"), "Reader assistant translation response should preserve its translation field.");
+  const assistantEvents = await postSse("/api/reader/assistant/stream", {
+    documentId,
+    question: "Translate this: \u56f3\u66f8\u9928\u3078\u884c\u304f\u3002",
+    history: []
+  });
+  assert(assistantEvents.some((event) => event.event === "meta"), "Assistant stream should emit metadata.");
+  assert(assistantEvents.some((event) => event.event === "done"), "Assistant stream should emit completion.");
+  await assertRouteMissing("/api/search/semantic", "POST", { query: smokeDictionaryTerm });
+  await assertRouteMissing("/api/rag/ask", "POST", { question: "Find related examples." });
+  await assertRouteMissing("/api/ml/vectors/update/stream", "POST", {});
   const progress = await postJson(`/api/documents/${documentId}/progress`, {
     percentage: 42,
     page: 3,
@@ -109,8 +131,6 @@ try {
   });
   assert(progress.mode === "paged" && progress.zoom === 175 && progress.bookmarks[0]?.page === 3, "Progress route should preserve mode/bookmarks and clamp zoom.");
   assert(progress.highlights?.pages?.[3] === "<mark>route</mark>" && progress.chapterId === "chapter-route-test", "Progress route should preserve highlights and chapter id.");
-  const assistantEvents = await postSse("/api/reader/assistant/stream", { documentId, question: "", history: [] });
-  assert(assistantEvents.some((event) => event.event === "error"), "Assistant stream should emit SSE errors without using Express error middleware.");
 
   const card = await postJson("/api/cards", {
     documentId,
@@ -198,6 +218,14 @@ async function postJson(route, body) {
   return response.json();
 }
 
+async function assertRouteMissing(route, method = "GET", body) {
+  const response = await fetch(baseUrl + route, {
+    method,
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  assert(response.status === 404, method + " " + route + " should be removed from the non-RAG build.");
+}
 async function uploadFile(route, fieldName, relativePath) {
   const filePath = path.join(rootDir, relativePath);
   const buffer = await fs.readFile(filePath);

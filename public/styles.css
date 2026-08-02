@@ -3049,19 +3049,19 @@ progress {
 .page-card-head h2 .help-dot,
 .ml-metric .help-dot,
 .ml-document-row .help-dot,
-.ml-search-form .help-dot {
+.book-text-search-form .help-dot {
   display: inline-grid;
   flex: 0 0 auto;
   font-size: 11px;
   vertical-align: middle;
 }
 
-.ml-search-form .help-dot {
+.book-text-search-form .help-dot {
   align-self: center;
 }
 
 .ml-document-list,
-.ml-results {
+.book-text-search-results {
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -3097,7 +3097,7 @@ progress {
   white-space: nowrap;
 }
 
-.ml-search-form {
+.book-text-search-form {
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -3265,13 +3265,6 @@ progress {
   display: block;
   font-style: normal;
   margin-top: 4px;
-}
-
-.ml-provider-row {
-  align-items: center;
-  display: grid;
-  gap: 6px;
-  margin: 10px 0;
 }
 
 .reader-load-status {

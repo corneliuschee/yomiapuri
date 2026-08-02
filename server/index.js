@@ -12,11 +12,10 @@ import { createAnkiService } from "./anki-service.js";
 import { createAnkiLauncher, detectAnkiExecutablePath } from "./anki-launcher.js";
 import { createAiService, defaultAiSettings, normalizeAiSettings } from "./ai-service.js";
 import { createDictionaryService, repairDictionaryState } from "./dictionary-service.js";
-import { createRuntimeEmbeddingProvider, defaultMlSettings, normalizeMlSettings, publicMlSettings } from "./embedding-providers.js";
+import { createMlService } from "./ml-service.js";
 import { createJsonStateStore } from "./json-state-store.js";
 import { createLearningEventLog } from "./learning-events.js";
 import { createFtsSearchService } from "./fts-search-service.js";
-import { createHashEmbeddingProvider, createMlService } from "./ml-service.js";
 import { createLocalMediaProvider, defaultMediaSettings, normalizeMediaSettings } from "./media-providers.js";
 import { createSqliteStateStore } from "./sqlite-state-store.js";
 import { createSyncService, defaultSyncSettings, normalizeSyncSettings, publicSyncSettings } from "./sync-service.js";
@@ -36,7 +35,6 @@ loadDotEnv(path.join(rootDir, ".env"));
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(rootDir, "data");
 const mediaDir = path.join(dataDir, "media");
 const eventsPath = path.join(dataDir, "events.jsonl");
-const vectorDir = path.join(dataDir, "vector-index");
 const documentCacheDir = path.join(dataDir, "document-cache");
 const dbPath = path.join(dataDir, "state.json");
 const dbTmpPath = path.join(dataDir, "state.json.tmp");
@@ -95,7 +93,11 @@ const initialState = {
   media: defaultMediaSettings(),
   ai: defaultAiSettings(),
   sync: defaultSyncSettings(),
-  ml: defaultMlSettings(),
+  // Legacy compatibility state. Text-index status comes from SQLite FTS5.
+  ml: {
+    indexStale: false,
+    indexStaleReason: ""
+  },
   progress: {},
   cards: [],
   anki: {
@@ -177,12 +179,6 @@ const dictionaryService = createDictionaryService({
   dictionaryStore: sqliteStateStore
 });
 const eventLog = createLearningEventLog({ eventsPath });
-const embeddingProvider = createRuntimeEmbeddingProvider({
-  getState: () => state,
-  rootDir,
-  dataDir,
-  hashProvider: createHashEmbeddingProvider()
-});
 const ftsSearchService = createFtsSearchService({
   dbPath: sqliteDbPath,
   getState: () => state,
@@ -205,15 +201,13 @@ const syncService = createSyncService({
 const mlService = createMlService({
   getState: () => state,
   getRevisions: () => sqliteStateStore.revisions({ readOnly: true }),
-  vectorDir,
   eventLog,
   analyzeText,
   lookupDictionary,
   normalizeJapaneseTerm,
   hasJapaneseText,
   hasKanji,
-  ftsSearch: ftsSearchService,
-  embeddingProvider
+  ftsSearch: ftsSearchService
 });
 const ankiLauncher = createAnkiLauncher();
 const ankiService = createAnkiService({
@@ -233,7 +227,6 @@ function ensureStorage() {
   return Promise.all([
     fs.mkdir(dataDir, { recursive: true }),
     fs.mkdir(mediaDir, { recursive: true }),
-    fs.mkdir(vectorDir, { recursive: true }),
     fs.mkdir(documentCacheDir, { recursive: true }),
     fs.mkdir(backupDir, { recursive: true })
   ]);
@@ -289,7 +282,11 @@ async function repairLoadedState(initialRepaired = false) {
   state.media = normalizeMediaSettings(state.media);
   state.ai = normalizeAiSettings(state.ai);
   state.sync = normalizeSyncSettings(state.sync);
-  state.ml = normalizeMlSettings(state.ml);
+  state.ml = {
+    ...(state.ml ?? {}),
+    indexStale: Boolean(state.ml?.indexStale),
+    indexStaleReason: String(state.ml?.indexStaleReason ?? "")
+  };
   if (repairDictionaryState(state, { normalizeJapaneseTerm })) repaired = true;
   const legacyBaseTime = Date.parse("2020-01-01T00:00:00.000Z");
   for (const [index, term] of state.knownTerms.entries()) {
@@ -825,15 +822,15 @@ function markMlIndexFresh() {
   state.ml.indexStaleReason = "";
 }
 
-async function deleteDocumentVectorsFromMlIndex(documentId = "") {
+async function deleteDocumentSearchIndex(documentId = "") {
   try {
-    const result = await mlService.deleteDocumentVectors(documentId);
+    const result = await mlService.deleteDocumentSearchIndex(documentId);
     if (result.deleted > 0) {
-      markMlIndexStale("Book vectors were removed. Rebuild the local semantic index after restoring books.");
+      markMlIndexStale("Book text-search rows were removed. Refresh the local text index after restoring books.");
     }
     return result;
   } catch (error) {
-    markMlIndexStale(`Book vector cleanup failed: ${error.message}`);
+    markMlIndexStale(`Book text-index cleanup failed: ${error.message}`);
     return { deleted: 0, error: error.message };
   }
 }
@@ -980,11 +977,11 @@ async function ensureDocumentIngestionCache(document = {}, options = {}) {
   const shouldBuild = cacheState.state !== "valid" || options.force === true;
   if (!shouldBuild) return { ...cacheState, rebuilt: false, cacheDir };
   if (cacheState.state === "dictionary-stale" && options.force !== true && options.rebuildDictionaryStale !== true) {
-    markMlIndexStale("Dictionary normalization changed. Rebuild the local semantic index when convenient.");
+    markMlIndexStale("Dictionary normalization changed. Refresh the local text search index when convenient.");
     return { ...cacheState, rebuilt: false, deferred: true, cacheDir };
   }
   if (cacheState.state === "full-stale" && options.force !== true && options.deferFullStale === true) {
-    markMlIndexStale("Document ingestion cache is stale. Rebuild the local semantic index when convenient.");
+    markMlIndexStale("Document ingestion cache is stale. Refresh the local text search index when convenient.");
     return { ...cacheState, rebuilt: false, deferred: true, cacheDir };
   }
 
@@ -1017,12 +1014,12 @@ async function ensureDocumentIngestionCache(document = {}, options = {}) {
 
   await writeDocumentCacheManifest(document, cacheState.current);
   if (cacheState.state === "dictionary-stale") {
-    markMlIndexStale("Dictionary normalization changed. Rebuild the local semantic index when convenient.");
+    markMlIndexStale("Dictionary normalization changed. Refresh the local text search index when convenient.");
     await saveSettingsState(["ml"]).catch((error) => {
       console.warn("Unable to persist ML stale flag after reader cache refresh:", error.message);
     });
   } else if (cacheState.state === "full-stale" || options.force === true) {
-    markMlIndexStale("Document ingestion cache changed. Rebuild the local semantic index.");
+    markMlIndexStale("Document ingestion cache changed. Refresh the local text search index.");
     await saveSettingsState(["ml"]).catch((error) => {
       console.warn("Unable to persist ML stale flag after reader cache refresh:", error.message);
     });
@@ -2029,22 +2026,6 @@ function compactReaderContext(value = "", limit = 5000) {
     .slice(0, limit);
 }
 
-function compactRetrievedSnippet(value = "", limit = 500) {
-  const text = compactReaderContext(value, Math.max(limit * 2, limit + 100));
-  if (text.length <= limit) return text;
-  const boundary = [...text.slice(0, limit + 1).matchAll(/[\u3002\uff01\uff1f!?」』]/g)].at(-1);
-  const cut = boundary && boundary.index > Math.floor(limit * 0.35)
-    ? boundary.index + boundary[0].length
-    : limit;
-  return text.slice(0, cut).replace(/[\u300c\u300e\s]+$/g, "").trim();
-}
-
-function hasUsableRetrievedSnippet(value = "") {
-  const text = compactReaderContext(value, 120);
-  const meaningful = text.replace(/[\s\u3000\u300c\u300d\u300e\u300f"'.,;:!?()\[\]{}<>-]/g, "");
-  return meaningful.length >= 4 && hasJapaneseText(meaningful);
-}
-
 function assistantTermNotes(tokens = []) {
   const notes = [];
   const seen = new Set();
@@ -2191,46 +2172,42 @@ function hiraganaToRomaji(value = "") {
   return output ? `${output[0].toUpperCase()}${output.slice(1)}` : "";
 }
 
-function assistantResponseText(task, { contextText, question, termNotes, citations, document, translation }) {
+function assistantResponseText(task, { contextText, question, termNotes, document, translation }) {
   const title = document?.title || "the current book";
   const terms = termNotes.slice(0, 6).map((term) => {
     const meaning = term.definitions?.slice(0, 2).join("; ") || "no dictionary definition";
-    return `- ${term.term}${term.reading ? ` (${term.reading})` : ""}: ${meaning}`;
+    return "- " + term.term + (term.reading ? " (" + term.reading + ")" : "") + ": " + meaning;
   });
   if (task === "recap") {
     const sentences = splitSentences(contextText).slice(0, 5);
     return [
-      `Recap seed for ${title}:`,
-      sentences.length ? sentences.map((sentence, index) => `${index + 1}. ${sentence}`).join("\n") : "No readable current-page text was available.",
-      citations.length ? "Related local passages are listed below." : "Rebuild the local index to add cross-book citations."
+      "Recap of current-page context for " + title + ":",
+      sentences.length
+        ? sentences.map((sentence, index) => (index + 1) + ". " + sentence).join("\n")
+        : "No readable current-page text was available."
     ].join("\n\n");
   }
   if (task === "translate") {
-    if (translation?.available && translation.translatedText) {
-      return translation.translatedText;
-    }
+    if (translation?.available && translation.translatedText) return translation.translatedText;
     return [
-      `Local AI is not ready yet. ${translation?.reason || "Configure a local assistant model in Integrations."}`,
-      contextText ? `Message text:\n${contextText.slice(0, 900)}` : "Type the text you want translated.",
-      terms.length ? `Dictionary anchors:\n${terms.join("\n")}` : "No dictionary anchors were found for this context."
+      "Local AI is not ready yet. " + (translation?.reason || "Configure a local assistant model in Integrations."),
+      contextText ? "Message text:\n" + contextText.slice(0, 900) : "Type the text you want translated.",
+      terms.length ? "Dictionary notes:\n" + terms.join("\n") : "No dictionary notes were found for this context."
     ].join("\n\n");
   }
   if (task === "ask") {
     return [
-      question ? `Question: ${question}` : "Question: current page",
-      contextText ? `Current context:\n${contextText.slice(0, 900)}` : "No current page context was available.",
-      terms.length ? `Useful terms:\n${terms.join("\n")}` : "No dictionary terms were found.",
-      citations.length ? "Relevant indexed passages are listed below." : "No indexed citations were found. Rebuild the local index after importing books."
+      question ? "Question: " + question : "Question: current page",
+      contextText ? "Current context:\n" + contextText.slice(0, 900) : "No current page context was available.",
+      terms.length ? "Useful terms:\n" + terms.join("\n") : "No dictionary terms were found."
     ].join("\n\n");
   }
   return [
     "Context explanation:",
     contextText ? contextText.slice(0, 900) : "No readable selected text or page text was available.",
-    terms.length ? `Key vocabulary and dictionary meanings:\n${terms.join("\n")}` : "No dictionary-backed vocabulary notes were found.",
-    citations.length ? "Related passages from your local library are listed below." : "No related indexed passages were found."
+    terms.length ? "Key vocabulary and dictionary meanings:\n" + terms.join("\n") : "No dictionary-backed vocabulary notes were found."
   ].join("\n\n");
 }
-
 function isTranslationPrompt(value = "") {
   return /^translate(?:\s+this)?(?:\s+to\s+english)?\s*[:：]/i.test(String(value).trim())
     || /^translate\s+/i.test(String(value).trim());
@@ -2244,115 +2221,6 @@ function inferAssistantIntent(value = "") {
   if (/\b(explain|break down|grammar|conjugat|nuance|why is|what does .* mean|difference between)\b/.test(lower)) return "explain";
   if (looksLikeJapanesePassage(text)) return "translate";
   return "ask";
-}
-
-function assistantWantsLocalCitations(value = "") {
-  const lower = String(value ?? "").toLowerCase();
-  return /\b(citation|citations|source|sources|evidence|quote|quotes|passage|passages|where else|other books?|similar examples?|similar sentences?|cross[- ]book|rag)\b/.test(lower)
-    || /他の本|引用|出典|根拠|似た例|似ている文/.test(String(value ?? ""));
-}
-
-function assistantWantsExplicitCitations(value = "") {
-  const lower = String(value ?? "").toLowerCase();
-  return /\b(citation|citations|source|sources|evidence|quote|quotes|passage|passages)\b/.test(lower)
-    || /å¼•ç”¨|å‡ºå…¸|æ ¹æ‹ /.test(String(value ?? ""));
-}
-
-function assistantWantsLocalRetrieval(value = "") {
-  const lower = String(value ?? "").toLowerCase();
-  return assistantWantsExplicitCitations(value)
-    || /\b(search|find|look for|where else|examples?|other examples?|other books?|my library|app'?s library|this app|local library|library|similar examples?|similar sentences?|cross[- ]book|rag|appears?|occurs?|show me)\b/.test(lower);
-}
-
-function assistantWantsExamples(value = "") {
-  const lower = String(value ?? "").toLowerCase();
-  return /\b(search|find|look for|where else|examples?|other examples?|similar examples?|similar sentences?|show me)\b/.test(lower);
-}
-
-const ASSISTANT_REVERSE_DEFINITION_STOPWORDS = new Set([
-  "about",
-  "after",
-  "again",
-  "among",
-  "another",
-  "app",
-  "book",
-  "books",
-  "example",
-  "examples",
-  "find",
-  "given",
-  "library",
-  "local",
-  "other",
-  "search",
-  "sentence",
-  "sentences",
-  "show",
-  "that",
-  "this",
-  "where",
-  "with",
-  "your"
-]);
-const assistantReverseDefinitionCache = new Map();
-
-function assistantRetrievalQuery(question = "", contextText = "", history = []) {
-  const previousUser = previousUserMessage(history);
-  const current = compactReaderContext(question, 700);
-  const previous = compactReaderContext(previousUser, 700);
-  const combined = previous && assistantFollowupNeedsPreviousQuestion(current)
-    ? `${previous}\n${current}`
-    : current;
-  const reverseTerms = reverseDictionaryTermsForAssistantQuery(combined);
-  const expanded = reverseTerms.length ? `${combined}\n${reverseTerms.join(" ")}` : combined;
-  return compactReaderContext(expanded, 900) || contextText.slice(0, 250);
-}
-
-function assistantFollowupNeedsPreviousQuestion(value = "") {
-  const lower = String(value ?? "").toLowerCase();
-  return lower.length < 160 && /\b(this|that|it|app'?s library|this app|library|yes|yeah|among|those|them|previous|above)\b/.test(lower);
-}
-
-function reverseDictionaryTermsForAssistantQuery(query = "") {
-  const anchors = englishDefinitionAnchors(query);
-  if (anchors.length === 0) return [];
-  const dictionarySignature = state.dictionaries
-    .filter((dictionary) => dictionary.type === "term" && dictionary.enabledForLookup)
-    .map((dictionary) => `${dictionary.id}:${dictionary.entries?.length ?? 0}:${dictionary.sortOrder ?? 0}`)
-    .join("|");
-  const cacheKey = `${dictionarySignature}\u0000${anchors.join("|")}`;
-  if (assistantReverseDefinitionCache.has(cacheKey)) return assistantReverseDefinitionCache.get(cacheKey);
-
-  const scored = new Map();
-  for (const dictionary of state.dictionaries.filter((item) => item.type === "term" && item.enabledForLookup).sort((a, b) => Number(a.sortOrder) - Number(b.sortOrder))) {
-    for (const entry of dictionary.entries ?? []) {
-      const term = normalizeJapaneseTerm(entry.term ?? "");
-      if (!term || !hasJapaneseText(term)) continue;
-      const definitions = Array.isArray(entry.definitions) ? entry.definitions : [];
-      const details = Array.isArray(entry.details) ? entry.details : [];
-      const text = [...definitions, ...details].join(" ").toLowerCase();
-      if (!text) continue;
-      const score = anchors.reduce((total, anchor) => total + (text.includes(anchor) ? 1 : 0), 0);
-      if (score <= 0) continue;
-      const existing = scored.get(term) ?? 0;
-      scored.set(term, Math.max(existing, score));
-    }
-  }
-  const terms = [...scored.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)
-    .slice(0, 12)
-    .map(([term]) => term);
-  assistantReverseDefinitionCache.set(cacheKey, terms);
-  if (assistantReverseDefinitionCache.size > 50) assistantReverseDefinitionCache.delete(assistantReverseDefinitionCache.keys().next().value);
-  return terms;
-}
-
-function englishDefinitionAnchors(query = "") {
-  return [...new Set(String(query ?? "").toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? [])]
-    .map((word) => word.replace(/^'+|'+$/g, ""))
-    .filter((word) => word.length >= 4 && !ASSISTANT_REVERSE_DEFINITION_STOPWORDS.has(word))
-    .slice(0, 4);
 }
 
 function looksLikeJapanesePassage(value = "") {
@@ -2389,60 +2257,40 @@ function previousUserMessage(history = []) {
   return "";
 }
 
-function assistantContextMessage({ intent, question, contextText, history = [], termNotes, nameNotes = [], citations, document, page, includeRetrievedContext = false, includeCitations = false, exampleSearch = false }) {
+function assistantContextMessage({ intent, question, contextText, history = [], termNotes = [], nameNotes = [], document, page }) {
   const lines = [
-    "You are running inside Yomiã‚¢ãƒ—ãƒª, a local Japanese reading app.",
-    `The app library currently contains ${state.documents.length} imported book${state.documents.length === 1 ? "" : "s"}.`,
-    "When the user says my library, this app's library, other books, examples, search, or similar, they mean this local app library and its indexed book text.",
-    "If local retrieved context is provided below, you have access to those app search results. Do not claim you cannot access the user's library.",
-    `Intent: ${intent}`,
-    `Current book: ${document?.title || "unknown"}`,
-    `Current page: ${Number(page) + 1 || "unknown"}`
+    "You are running inside YomiApuri, a local Japanese reading app.",
+    "The app library currently contains " + state.documents.length + " imported book" + (state.documents.length === 1 ? "" : "s") + ", but this assistant turn cannot search or retrieve passages from other books.",
+    "Use only the user's current message, current page context, dictionary notes, author-name notes, and recent conversation history.",
+    "Intent: " + intent,
+    "Current book: " + (document?.title || "unknown"),
+    "Current page: " + (Number(page) + 1 || "unknown")
   ];
   const previousUser = previousUserMessage(history);
   if (previousUser && intent !== "translate") {
-    lines.push(`Immediate previous user message. Use this first for follow-up references like "the second sentence", "previous sentence", or "that grammar point":\n${compactReaderContext(previousUser, 900)}`);
+    lines.push("Immediate previous user message. Use this first for follow-up references like \"the second sentence\", \"previous sentence\", or \"that grammar point\":\n" + compactReaderContext(previousUser, 900));
   }
   if (intent === "translate") {
     lines.push("Translate only the user's requested text. Do not translate unrelated page text.");
   }
   if (intent === "recap") {
-    lines.push("Use only already-read or supplied local context. Avoid spoilers.");
+    lines.push("Summarize only the current message and supplied current-page context. Do not infer events from unread or other books.");
   }
-  if (exampleSearch) {
-    lines.push("The user is asking for examples from the indexed app library. Use only the local retrieved app-library context below. Answer with up to four complete examples copied from that context, then one short reason each is similar. Do not invent dialogue. Do not output a standalone opening quote or incomplete quote as an example. If the retrieved context does not contain a usable match, say: No matching indexed examples were found.");
-  }
+  if (question) lines.push("User message:\n" + compactReaderContext(question, 1200));
   if (contextText && intent !== "translate") {
-    lines.push(`Reader context:\n${compactReaderContext(contextText, 900)}`);
+    lines.push("Reader context:\n" + compactReaderContext(contextText, 900));
   }
   if (termNotes.length) {
-    lines.push(`Dictionary lookup notes for grounding only. Do not label these as vocabulary anchors in the answer:\n${termNotes.slice(0, 6).map((term) => {
+    lines.push("Dictionary lookup notes for grounding only. Do not label these as vocabulary anchors in the answer:\n" + termNotes.slice(0, 6).map((term) => {
       const meaning = term.definitions?.slice(0, 2).join("; ") || "no dictionary definition";
-      return `- ${term.term}${term.reading ? ` (${term.reading})` : ""}: ${meaning}`;
-    }).join("\n")}`);
+      return "- " + term.term + (term.reading ? " (" + term.reading + ")" : "") + ": " + meaning;
+    }).join("\n"));
   }
   if (nameNotes.length) {
-    lines.push(`Author ruby/name reading notes from the current book. These override common kanji readings when romanizing character names:\n${nameNotes.slice(0, 12).map((note) => {
-      return `- ${note.surface}: ${note.reading} -> ${note.romaji}`;
-    }).join("\n")}`);
+    lines.push("Author ruby/name reading notes from the current book. These override common kanji readings when romanizing character names:\n" + nameNotes.slice(0, 12).map((note) => "- " + note.surface + ": " + note.reading + " -> " + note.romaji).join("\n"));
   }
-  if (includeRetrievedContext && citations.length) {
-    const usableCitations = citations.filter((item) => hasUsableRetrievedSnippet(item.text)).slice(0, 6);
-    const snippetLimit = exampleSearch ? 700 : 420;
-    if (!usableCitations.length) {
-      lines.push("Local retrieved app-library context: no usable indexed matches were found for this query. Say that no matching indexed examples were found instead of claiming you cannot access the library.");
-    } else {
-      lines.push(`Local retrieved app-library context for grounding. Use these book-text matches to answer search/example/library questions. Do not mention citations, sources, passages, or book/page labels unless the user explicitly asked for them:\n${usableCitations.map((item, index) => {
-      const label = `${item.title || "Untitled"}${item.chapterTitle ? `, ${item.chapterTitle}` : ""}${item.page ? `, page ${Number(item.page) + 1}` : ""}`;
-      return `${index + 1}. ${label}: ${compactRetrievedSnippet(item.text, snippetLimit)}`;
-      }).join("\n")}`);
-    }
-  } else if (includeRetrievedContext) {
-    lines.push("Local retrieved app-library context: no indexed matches were found for this query. Say that no matching indexed examples were found instead of claiming you cannot access the library.");
-  }
-  return compactReaderContext(lines.join("\n\n"), exampleSearch ? 4200 : 2600);
+  return compactReaderContext(lines.join("\n\n"), 2600);
 }
-
 function buildAssistantMessages({ intent, question, contextText, history, termNotes, nameNotes = [], citations, document, page, includeRetrievedContext = false, includeCitations = false, exampleSearch = false }) {
   const messages = [];
   const context = assistantContextMessage({ intent, question, contextText, history, termNotes, nameNotes, citations, document, page, includeRetrievedContext, includeCitations, exampleSearch });
@@ -2452,15 +2300,12 @@ function buildAssistantMessages({ intent, question, contextText, history, termNo
   return messages;
 }
 
-function assistantMaxTokens(intent, contextText = "", options = {}) {
+function assistantMaxTokens(intent, contextText = "") {
   if (intent === "translate") return Math.max(96, Math.min(768, Math.ceil(String(contextText).length * 1.8) + 64));
-  if (options.exampleSearch) return 768;
-  if (options.useRagContext) return 640;
   if (intent === "explain") return 448;
-  if (intent === "recap") return 1024;
+  if (intent === "recap") return 768;
   return 512;
 }
-
 async function aiRuntimeStatus() {
   const runtimes = await Promise.all(["8093", "8094"].map(aiRuntimeForPort));
   const active = runtimes.filter((runtime) => runtime.running);
@@ -4230,7 +4075,7 @@ function syncDiagnostics() {
     documents: documents.length,
     uploadableFiles,
     missingFiles,
-    vectorIndexStale: Boolean(state.ml?.indexStale)
+    textIndexStale: Boolean(state.ml?.indexStale)
   };
 }
 
@@ -4267,7 +4112,7 @@ const routeContext = {
     invalidateWordBankMeaningCache,
     markMlIndexStale,
     markMlIndexFresh,
-    deleteDocumentVectorsFromMlIndex
+    deleteDocumentSearchIndex
   },
   paths: {
     mediaDir
@@ -4277,7 +4122,6 @@ const routeContext = {
   },
   helpers: {
     initialState,
-    publicMlSettings,
     publicSyncSettings,
     logLearningEvent,
     syncDiagnostics,
@@ -4334,10 +4178,6 @@ const routeContext = {
     translationPromptText,
     analyzeText,
     assistantTermNotes,
-    assistantRetrievalQuery,
-    assistantWantsExplicitCitations,
-    assistantWantsLocalRetrieval,
-    assistantWantsExamples,
     assistantNameReadingNotes,
     buildAssistantMessages,
     assistantMaxTokens,

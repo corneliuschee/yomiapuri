@@ -28,7 +28,7 @@ function createDocumentHandlers(ctx) {
     clearDocumentCache,
     markMlIndexStale,
     markMlIndexFresh,
-    deleteDocumentVectorsFromMlIndex
+    deleteDocumentSearchIndex
   } = cache;
   const { documentResponseCache } = stores;
   const {
@@ -396,7 +396,7 @@ function createDocumentHandlers(ctx) {
       if (index === -1) return res.status(404).json({ error: "Deleted book not found." });
       const [deleted] = state.trash.documents.splice(index, 1);
       clearDocumentCache();
-      await deleteDocumentVectorsFromMlIndex(deleted.id);
+      await deleteDocumentSearchIndex(deleted.id);
       markMlIndexStale("Deleted book was permanently removed.");
       await saveDocumentsState();
       res.json({ deleted: 1, documentId: deleted.id, total: state.trash.documents.length });
@@ -408,7 +408,7 @@ function createDocumentHandlers(ctx) {
       const deleted = state.trash.documents.length;
       state.trash.documents = [];
       clearDocumentCache();
-      for (const id of deletedIds) await deleteDocumentVectorsFromMlIndex(id);
+      for (const id of deletedIds) await deleteDocumentSearchIndex(id);
       if (deleted > 0) markMlIndexStale("Deleted books were permanently removed.");
       await saveDocumentsState();
       res.json({ deleted, total: 0 });

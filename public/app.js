@@ -48,7 +48,7 @@ const state = {
   selectedTrashTerms: new Set(),
   currentPage: 0,
   voices: [],
-  ml: { analytics: null, indexStatus: null, settings: { embeddingProviderId: "multilingual-e5-small" }, providers: [] }
+  ml: { analytics: null, indexStatus: null }
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -145,14 +145,11 @@ const elements = {
   refreshInsights: $("#refresh-insights"),
   mlMetrics: $("#ml-metrics"),
   mlDocumentList: $("#ml-document-list"),
-  mlRebuildIndex: $("#ml-rebuild-index"),
   mlRefreshTextIndex: $("#ml-refresh-text-index"),
-  mlUpdateVectors: $("#ml-update-vectors"),
   mlIndexStatus: $("#ml-index-status"),
-  mlEmbeddingProvider: $("#ml-embedding-provider"),
-  semanticSearchForm: $("#semantic-search-form"),
-  semanticSearchInput: $("#semantic-search-input"),
-  semanticSearchResults: $("#semantic-search-results"),
+  bookTextSearchForm: $("#book-text-search-form"),
+  bookTextSearchInput: $("#book-text-search-input"),
+  bookTextSearchResults: $("#book-text-search-results"),
   trashBooksTab: $("#trash-books-tab"),
   trashWordsTab: $("#trash-words-tab"),
   trashRestoreWords: $("#trash-restore-words"),
@@ -266,7 +263,7 @@ async function loadState() {
   state.anki = snapshot.anki;
   state.media = snapshot.media ?? state.media;
   state.ai = snapshot.ai ?? state.ai;
-  state.ml.settings = snapshot.ml ?? state.ml.settings;
+
   state.sync = snapshot.sync ?? state.sync;
   state.knownTermsCount = snapshot.knownTermsCount ?? 0;
   elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
@@ -2027,28 +2024,16 @@ async function syncWordBankWithAnki() {
 async function loadInsights() {
   if (!elements.mlMetrics) return;
   renderInsightsLoading();
-  const [analyticsResult, indexStatusResult, providersResult] = await Promise.allSettled([
+  const [analyticsResult, indexStatusResult] = await Promise.allSettled([
     api("/api/ml/analytics"),
-    api("/api/ml/index/status"),
-    api("/api/ml/providers")
+    api("/api/ml/index/status")
   ]);
-
-  if (providersResult.status === "fulfilled") {
-    const providers = providersResult.value;
-    state.ml.providers = providers.models ?? [];
-    state.ml.settings = providers.settings ?? state.ml.settings;
-    renderMlProviderSelect();
-  } else {
-    renderMlProviderError(providersResult.reason);
-  }
-
   if (indexStatusResult.status === "fulfilled") {
     state.ml.indexStatus = indexStatusResult.value;
     renderMlIndexStatus(indexStatusResult.value);
   } else {
     renderMlIndexStatusError(indexStatusResult.reason);
   }
-
   if (analyticsResult.status === "fulfilled") {
     const analytics = analyticsResult.value;
     state.ml.analytics = analytics;
@@ -2059,33 +2044,9 @@ async function loadInsights() {
 }
 
 function renderInsightsLoading() {
-  elements.mlMetrics.innerHTML = `<p class="empty">Loading analytics...</p>`;
-  elements.mlDocumentList.innerHTML = `<p class="empty">Loading book analytics...</p>`;
-  if (elements.mlIndexStatus) elements.mlIndexStatus.innerHTML = `<span>Loading semantic index status...</span>`;
-  if (elements.mlEmbeddingProvider) {
-    elements.mlEmbeddingProvider.disabled = true;
-    elements.mlEmbeddingProvider.innerHTML = `<option>Loading models...</option>`;
-  }
-}
-
-function renderMlProviderSelect() {
-  if (!elements.mlEmbeddingProvider) return;
-  const models = state.ml.providers ?? [];
-  elements.mlEmbeddingProvider.innerHTML = models.map((model) => {
-    const suffix = model.runtime === "builtin" ? "fallback" : model.quality === "high" ? "high quality" : model.recommended ? "recommended" : "";
-    return `<option value="${escapeHtml(model.id)}">${escapeHtml(model.label)}${suffix ? ` (${escapeHtml(suffix)})` : ""}</option>`;
-  }).join("");
-  elements.mlEmbeddingProvider.value = state.ml.settings?.embeddingProviderId || "multilingual-e5-small";
-  elements.mlEmbeddingProvider.disabled = models.length === 0;
-}
-
-function renderMlProviderError(error) {
-  if (!elements.mlEmbeddingProvider) return;
-  elements.mlEmbeddingProvider.disabled = true;
-  elements.mlEmbeddingProvider.innerHTML = `<option>Embedding models unavailable</option>`;
-  if (elements.mlIndexStatus) {
-    elements.mlIndexStatus.insertAdjacentHTML("beforeend", unavailableNotice(error, "Embedding model list unavailable."));
-  }
+  elements.mlMetrics.innerHTML = "<p class=\"empty\">Loading analytics...</p>";
+  elements.mlDocumentList.innerHTML = "<p class=\"empty\">Loading book analytics...</p>";
+  if (elements.mlIndexStatus) elements.mlIndexStatus.innerHTML = "<span>Loading text search index status...</span>";
 }
 
 function renderInsights(analytics, indexStatus) {
@@ -2108,43 +2069,22 @@ function renderAnalyticsInsights(analytics) {
 
 function renderAnalyticsError(error) {
   elements.mlMetrics.innerHTML = unavailableNotice(error, "Learning analytics unavailable.");
-  elements.mlDocumentList.innerHTML = unavailableNotice(error, "Book analytics unavailable. Rebuild index or refresh analytics to update.");
+  elements.mlDocumentList.innerHTML = unavailableNotice(error, "Book analytics unavailable. Refresh analytics to try again.");
 }
 
 function renderMlIndexStatus(status = {}) {
   if (!elements.mlIndexStatus) return;
-  const text = status.textSearch ?? status.fts ?? {};
-  const semantic = status.semanticVectors ?? status;
+  const text = status.textSearch ?? status.fts ?? status;
   const textState = text.stale ? "Stale" : text.ready ? "Ready" : "Not built";
-  const semanticState = semantic.stale ? "Stale" : semantic.ready ? "Ready" : "Not built";
   const textUpdated = formatIndexTime(text.updatedAt || text.rebuiltAt);
-  const semanticUpdated = formatIndexTime(semantic.updatedAt || semantic.rebuiltAt);
-  const provider = semantic.embeddingProviderLabel || semantic.embeddingProvider || semantic.provider || "lancedb";
-  const dimensions = semantic.embeddingDimensions ? `${Number(semantic.embeddingDimensions).toLocaleString()}d` : "";
-  const device = semantic.embeddingDevice ? ` - ${escapeHtml(semantic.embeddingDevice)}` : "";
-  const vectorCounts = Number.isFinite(Number(semantic.embeddedVectors)) || Number.isFinite(Number(semantic.reusedVectors))
-    ? `${Number(semantic.embeddedVectors ?? 0).toLocaleString()} new / ${Number(semantic.reusedVectors ?? 0).toLocaleString()} reused`
-    : "";
-  const staleReason = semantic.stale && semantic.staleReason ? `<em>${escapeHtml(semantic.staleReason)}</em>` : "";
-  const embeddingError = String(semantic.embeddingError || "");
-  const visibleEmbeddingError = embeddingError.includes("cache_dir") && embeddingError.includes("deprecated") ? "" : embeddingError;
-  const fallback = semantic.embeddingFallback && visibleEmbeddingError ? `<em>Embedding fallback active: ${escapeHtml(visibleEmbeddingError)}</em>` : "";
-  elements.mlIndexStatus.innerHTML = `
-    <div class="index-status-row">
-      <strong>Text search index</strong>
-      <span>${escapeHtml(textState)} - ${Number(text.chunks ?? 0).toLocaleString()} chunks - Last updated ${escapeHtml(textUpdated)}</span>
-      <span>${Number(text.inserted ?? 0).toLocaleString()} inserted / ${Number(text.updated ?? 0).toLocaleString()} updated / ${Number(text.deleted ?? 0).toLocaleString()} deleted / ${Number(text.skipped ?? 0).toLocaleString()} skipped</span>
-      ${text.error ? `<em>${escapeHtml(text.error)}</em>` : ""}
-    </div>
-    <div class="index-status-row">
-      <strong>Semantic vectors</strong>
-      <span>${escapeHtml(semanticState)} - ${Number(semantic.chunks ?? 0).toLocaleString()} chunks - ${escapeHtml(provider)}${dimensions ? ` - ${escapeHtml(dimensions)}` : ""}${device} - Last updated ${escapeHtml(semanticUpdated)}</span>
-      ${vectorCounts ? `<span>${escapeHtml(vectorCounts)}</span>` : ""}
-      ${staleReason}
-      ${fallback}
-      ${semantic.error ? `<em>${escapeHtml(semantic.error)}</em>` : ""}
-    </div>
-  `;
+  elements.mlIndexStatus.innerHTML = [
+    "<div class=\"index-status-row\">",
+    "<strong>Text search index</strong>",
+    "<span>" + escapeHtml(textState) + " - " + Number(text.chunks ?? 0).toLocaleString() + " chunks - Last updated " + escapeHtml(textUpdated) + "</span>",
+    "<span>" + Number(text.inserted ?? 0).toLocaleString() + " inserted / " + Number(text.updated ?? 0).toLocaleString() + " updated / " + Number(text.deleted ?? 0).toLocaleString() + " deleted / " + Number(text.skipped ?? 0).toLocaleString() + " skipped</span>",
+    text.error ? "<em>" + escapeHtml(text.error) + "</em>" : "",
+    "</div>"
+  ].join("");
 }
 
 function formatIndexTime(value = "") {
@@ -2153,7 +2093,7 @@ function formatIndexTime(value = "") {
 
 function renderMlIndexStatusError(error) {
   if (!elements.mlIndexStatus) return;
-  elements.mlIndexStatus.innerHTML = unavailableNotice(error, "Semantic index status unavailable.");
+  elements.mlIndexStatus.innerHTML = unavailableNotice(error, "Text search index status unavailable.");
 }
 
 function unavailableNotice(error, fallback = "Unavailable.") {
@@ -2196,100 +2136,20 @@ async function refreshTextSearchIndex() {
   }
 }
 
-async function updateSemanticVectors() {
-  if (!elements.mlUpdateVectors) return;
-  elements.mlUpdateVectors.disabled = true;
-  const original = elements.mlUpdateVectors.textContent;
-  elements.mlUpdateVectors.textContent = "Updating...";
-  try {
-    await streamSemanticVectorUpdate({
-      onProgress: (progress) => {
-        const base = state.ml.indexStatus ?? {};
-        renderMlIndexStatus(base);
-        elements.mlIndexStatus.insertAdjacentHTML("beforeend", `<p class="empty">${escapeHtml(progress.message || "Updating semantic vectors...")}</p>`);
-      },
-      onDone: (status) => {
-        state.ml.indexStatus = status;
-        renderMlIndexStatus(status);
-      }
-    });
-  } catch (error) {
-    elements.mlIndexStatus.textContent = error.message;
-  } finally {
-    elements.mlUpdateVectors.disabled = false;
-    elements.mlUpdateVectors.textContent = original;
-  }
-}
-
-async function streamSemanticVectorUpdate(handlers = {}) {
-  const response = await fetch("/api/ml/vectors/update/stream", { method: "POST" });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed: ${response.status}`);
-  }
-  if (!response.body) throw new Error("Semantic vector update stream was not available.");
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const blocks = buffer.split(/\n\n/);
-    buffer = blocks.pop() ?? "";
-    for (const block of blocks) handleSemanticVectorStreamBlock(block, handlers);
-  }
-  if (buffer.trim()) handleSemanticVectorStreamBlock(buffer, handlers);
-}
-
-function handleSemanticVectorStreamBlock(block = "", handlers = {}) {
-  let eventName = "message";
-  const data = [];
-  for (const rawLine of String(block).split(/\r?\n/)) {
-    const line = rawLine.trimEnd();
-    if (line.startsWith("event:")) eventName = line.slice(6).trim();
-    if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
-  }
-  if (data.length === 0) return;
-  const payload = JSON.parse(data.join("\n"));
-  if (eventName === "progress") handlers.onProgress?.(payload);
-  else if (eventName === "done") handlers.onDone?.(payload);
-  else if (eventName === "error") throw new Error(payload.error || "Semantic vector update failed.");
-}
-
-async function updateMlEmbeddingProvider() {
-  if (!elements.mlEmbeddingProvider) return;
-  const embeddingProviderId = elements.mlEmbeddingProvider.value;
-  state.ml.settings = { ...(state.ml.settings ?? {}), embeddingProviderId };
-  try {
-    const result = await api("/api/ml/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ embeddingProviderId })
-    });
-    state.ml.settings = result.settings ?? state.ml.settings;
-    state.ml.indexStatus = result.status ?? state.ml.indexStatus;
-    renderMlIndexStatus(state.ml.indexStatus ?? {});
-  } catch (error) {
-    elements.mlIndexStatus.textContent = error.message;
-  }
-}
-
-async function runSemanticSearch(event) {
+async function runBookTextSearch(event) {
   event.preventDefault();
-  const query = elements.semanticSearchInput.value.trim();
+  const query = elements.bookTextSearchInput.value.trim();
   if (!query) return;
-  elements.semanticSearchResults.innerHTML = `<p class="empty">Searching...</p>`;
+  elements.bookTextSearchResults.innerHTML = "<p class=\"empty\">Searching...</p>";
   try {
-    const result = await api("/api/search/semantic", {
+    const result = await api("/api/search/fts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, limit: 8 })
     });
-    renderMlResults(elements.semanticSearchResults, result.results ?? []);
+    renderBookTextResults(elements.bookTextSearchResults, result.results ?? []);
   } catch (error) {
-    elements.semanticSearchResults.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+    elements.bookTextSearchResults.innerHTML = "<p class=\"empty\">" + escapeHtml(error.message) + "</p>";
   }
 }
 
@@ -2491,9 +2351,9 @@ function renderReaderAssistantAnswer(result = {}, pendingId = "", elapsed = "") 
   replaceReaderAssistantMessage(pendingId, "assistant", result.answer ?? "", "Assistant", elapsed, extraHtml);
 }
 
-function renderMlResults(container, results = []) {
+function renderBookTextResults(container, results = []) {
   if (results.length === 0) {
-    container.innerHTML = `<p class="empty">No indexed matches. Rebuild the index after importing books.</p>`;
+    container.innerHTML = "<p class=\"empty\">No indexed matches. Refresh the text search index after importing books.</p>";
     return;
   }
   container.innerHTML = citationRows(results);
@@ -2983,7 +2843,7 @@ function renderSyncStatus(extra = "") {
     `Device: ${sync.deviceName || "Local device"}`,
     `Last sync: ${sync.lastSyncAt ? formatDateTime(sync.lastSyncAt) : "Never"}`,
     sync.diagnostics ? `Book files: ${Number(sync.diagnostics.uploadableFiles ?? 0).toLocaleString()} uploadable / ${Number(sync.diagnostics.documents ?? 0).toLocaleString()} total${sync.diagnostics.missingFiles ? ` (${Number(sync.diagnostics.missingFiles).toLocaleString()} missing original files)` : ""}` : "",
-    sync.diagnostics?.vectorIndexStale ? "Vector index: rebuild needed after pull" : "",
+    sync.diagnostics?.textIndexStale ? "Text search index: refresh needed after pull" : "",
     sync.lastError ? `Last error: ${sync.lastError}` : "",
     extra
   ].filter(Boolean);
@@ -4608,11 +4468,8 @@ elements.readerSidebarToggle?.addEventListener("click", () => {
 });
 elements.readerLibrary?.addEventListener("click", () => setPage("books-page"));
 elements.refreshInsights?.addEventListener("click", loadInsights);
-elements.mlRebuildIndex?.addEventListener("click", refreshTextSearchIndex);
 elements.mlRefreshTextIndex?.addEventListener("click", refreshTextSearchIndex);
-elements.mlUpdateVectors?.addEventListener("click", updateSemanticVectors);
-elements.mlEmbeddingProvider?.addEventListener("change", updateMlEmbeddingProvider);
-elements.semanticSearchForm?.addEventListener("submit", runSemanticSearch);
+elements.bookTextSearchForm?.addEventListener("submit", runBookTextSearch);
 elements.readerAssistantForm?.addEventListener("submit", askReaderAssistant);
 elements.readerAssistantQuestion?.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;

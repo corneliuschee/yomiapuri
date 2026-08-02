@@ -247,25 +247,21 @@
             <section class="page-card">
               <div class="page-card-head">
                 <div>
-                  <h2>Local Search Indexes <span class="help-dot" tabindex="0" data-tooltip="Local rebuildable indexes for exact book search and semantic retrieval. Text search is fast; semantic vectors may take longer.">?</span></h2>
-                  <p>SQLite text search and LanceDB semantic vectors for local retrieval.</p>
+                  <h2>Book Text Search <span class="help-dot" tabindex="0" data-tooltip="Searches the text of imported books using the local SQLite text-search index.">?</span></h2>
+                  <p>Search indexed text from books in your library.</p>
                 </div>
                 <div class="index-actions">
-                  <button id="ml-refresh-text-index" type="button">Refresh text search index</button><span class="help-dot" tabindex="0" data-tooltip="Refreshes the fast SQLite text-search index. This does not start the embedding model.">?</span>
-                  <button id="ml-update-vectors" type="button">Update semantic vectors</button><span class="help-dot" tabindex="0" data-tooltip="Embeds only missing or changed chunks for semantic retrieval. Existing vectors are reused.">?</span>
+                  <button id="ml-refresh-text-index" type="button">Refresh text search index</button><span class="help-dot" tabindex="0" data-tooltip="Refreshes the local SQLite text-search index for imported book text.">?</span>
                 </div>
               </div>
-              <div id="ml-index-status" class="meta-box">Index status not loaded.</div>
-              <label class="ml-provider-row">
-                Embedding model
-                <select id="ml-embedding-provider"></select>
-              </label>
-              <form id="semantic-search-form" class="ml-search-form">
-                <input id="semantic-search-input" type="search" placeholder="Search for phrase/vocab" />
+              <div id="ml-index-status" class="meta-box">Text search index status not loaded.</div>
+              <h3>Book Text Search</h3>
+              <form id="book-text-search-form" class="book-text-search-form">
+                <input id="book-text-search-input" type="search" placeholder="Search for phrase/vocab" />
                 <button type="submit">Search</button>
-                <span class="help-dot" tabindex="0" data-tooltip="Finds relevant local book text using hybrid retrieval: exact Japanese text matching plus local vector similarity.">?</span>
+                <span class="help-dot" tabindex="0" data-tooltip="Searches exact phrases and vocabulary in indexed book text.">?</span>
               </form>
-              <div id="semantic-search-results" class="ml-results"></div>
+              <div id="book-text-search-results" class="book-text-search-results"></div>
             </section>
           </div>
         </section>

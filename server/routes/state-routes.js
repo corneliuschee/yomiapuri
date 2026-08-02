@@ -15,7 +15,6 @@ function createStateHandlers(ctx) {
   const { clearDocumentCache, invalidateReadabilityContext } = cache;
   const {
     initialState,
-    publicMlSettings,
     publicSyncSettings,
     syncDiagnostics,
     selectedWordBankDictionaryId,
@@ -44,7 +43,10 @@ function createStateHandlers(ctx) {
         anki: state.anki,
         media: state.media,
         ai: state.ai,
-        ml: publicMlSettings(state.ml),
+        ml: {
+          indexStale: Boolean(state.ml?.indexStale),
+          indexStaleReason: String(state.ml?.indexStaleReason ?? "")
+        },
         sync: { ...sync, diagnostics: syncDiagnostics() },
         templates: state.templates
       });

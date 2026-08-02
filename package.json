@@ -9,7 +9,6 @@
     "test": "node scripts/anki-service-test.js && node scripts/dictionary-service-test.js && node scripts/media-provider-test.js && node scripts/ai-service-test.js && node scripts/fts-search-service-test.js && node scripts/ml-service-test.js && node scripts/sync-service-test.js && node scripts/sqlite-state-store-test.js && node scripts/smoke-test.js"
   },
   "dependencies": {
-    "@lancedb/lancedb": "^0.30.0",
     "@supabase/supabase-js": "^2.108.2",
     "adm-zip": "^0.6.0",
     "better-sqlite3": "^12.11.1",

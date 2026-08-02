@@ -6,7 +6,7 @@ export function registerAssistantRoutes(app, ctx) {
 
 function createAssistantHandlers(ctx) {
   const { services, helpers } = ctx;
-  const { aiService, mlService } = services;
+  const { aiService } = services;
   const {
     compactReaderContext,
     inferAssistantIntent,
@@ -14,10 +14,6 @@ function createAssistantHandlers(ctx) {
     translationPromptText,
     analyzeText,
     assistantTermNotes,
-    assistantRetrievalQuery,
-    assistantWantsExplicitCitations,
-    assistantWantsLocalRetrieval,
-    assistantWantsExamples,
     assistantNameReadingNotes,
     buildAssistantMessages,
     assistantMaxTokens,
@@ -25,69 +21,92 @@ function createAssistantHandlers(ctx) {
     logLearningEvent
   } = helpers;
 
+  const localContextStatus = {
+    source: "current-message",
+    retrieval: "disabled",
+    citations: false
+  };
+
+  function assistantInputs(req) {
+    const state = ctx.getState();
+    const document = (state.documents ?? []).find((item) => item.id === req.body.documentId);
+    const question = compactReaderContext(req.body.question, 2500);
+    const task = inferAssistantIntent(question);
+    const history = normalizeAssistantHistory(req.body.history);
+    const contextText = task === "translate"
+      ? compactReaderContext(translationPromptText(question), 2500)
+      : question;
+    const currentPage = Number(req.body.page) || 0;
+    return { state, document, question, task, history, contextText, currentPage };
+  }
+
+  function buildChatPayload({ task, question, contextText, history, termNotes, nameNotes, document, currentPage }) {
+    return {
+      intent: task,
+      question: task === "translate" ? contextText : question,
+      contextText,
+      history,
+      termNotes,
+      nameNotes,
+      citations: [],
+      document,
+      page: currentPage,
+      includeRetrievedContext: false,
+      includeCitations: false,
+      exampleSearch: false
+    };
+  }
+
   return {
     async postReaderAssistant(req, res, next) {
       try {
-        const state = ctx.getState();
-        const document = state.documents.find((item) => item.id === req.body.documentId);
-        const question = compactReaderContext(req.body.question, 2500);
+        const { document, question, task, history, contextText, currentPage } = assistantInputs(req);
         if (!question) return res.status(400).json({ error: "Type a message before sending." });
-        const task = inferAssistantIntent(question);
-        const history = normalizeAssistantHistory(req.body.history);
-        const contextText = task === "translate" ? compactReaderContext(translationPromptText(question), 2500) : question;
+
         const analysis = await analyzeText(contextText);
         const termNotes = assistantTermNotes(analysis.tokens);
-        const query = assistantRetrievalQuery(question, contextText, history);
-        const exposeCitations = task !== "translate" && assistantWantsExplicitCitations(question);
-        const useRagContext = task === "recap" || (task !== "translate" && assistantWantsLocalRetrieval(query));
-        const exampleSearch = task !== "translate" && assistantWantsExamples(query);
-        const currentPage = Number(req.body.page) || 0;
-        const searchResult = !useRagContext
-          ? { results: [], status: { ready: false, skipped: true } }
-          : await mlService.search(query, {
-              limit: 6,
-              readSafe: true,
-              documentId: document?.id || "",
-              currentPage
-            });
-        const citations = searchResult.results ?? [];
-        const nameNotes = assistantNameReadingNotes({ document, question, contextText, citations });
+        const nameNotes = assistantNameReadingNotes({
+          document,
+          question,
+          contextText,
+          citations: []
+        });
+
         let chat;
         try {
           chat = await aiService.chat({
             intent: task,
             modelId: req.body.modelId,
-            messages: buildAssistantMessages({
-              intent: task,
-              question: task === "translate" ? contextText : question,
+            messages: buildAssistantMessages(buildChatPayload({
+              task,
+              question,
               contextText,
               history,
               termNotes,
               nameNotes,
-              citations,
               document,
-              page: currentPage,
-              includeRetrievedContext: useRagContext,
-              includeCitations: exposeCitations,
-              exampleSearch
-            }),
-            maxTokens: assistantMaxTokens(task, contextText, { useRagContext, exampleSearch }),
+              currentPage
+            })),
+            maxTokens: assistantMaxTokens(task, contextText),
             temperature: task === "translate" ? 0.1 : 0.25
           });
         } catch (error) {
           chat = { available: false, text: "", reason: error.message, model: null };
         }
+
         const fallback = assistantResponseText(task, {
           contextText,
           question,
           termNotes,
-          citations,
+          citations: [],
           document,
-          translation: task === "translate" ? {
-            available: chat.available,
-            translatedText: chat.text,
-            reason: chat.reason
-          } : null
+          translation: task === "translate"
+            ? {
+                available: chat.available,
+                translatedText: chat.text,
+                reason: chat.reason
+              }
+            : null
         });
         const answer = chat.available && chat.text ? chat.text : fallback;
         const result = {
@@ -96,20 +115,22 @@ function createAssistantHandlers(ctx) {
           question,
           answer,
           terms: termNotes,
-          citations: exposeCitations ? citations : [],
-          includeCitations: exposeCitations,
-          translation: task === "translate" ? {
-            available: chat.available,
-            translatedText: chat.text,
-            reason: chat.reason,
-            model: chat.model
-          } : null,
+          citations: [],
+          includeCitations: false,
+          translation: task === "translate"
+            ? {
+                available: chat.available,
+                translatedText: chat.text,
+                reason: chat.reason,
+                model: chat.model
+              }
+            : null,
           ai: {
             available: chat.available,
             reason: chat.reason,
             model: chat.model
           },
-          status: searchResult.status,
+          status: localContextStatus,
           context: {
             documentId: document?.id || "",
             title: document?.title || "",
@@ -122,7 +143,7 @@ function createAssistantHandlers(ctx) {
           task,
           page: result.context.page,
           terms: termNotes.length,
-          citations: citations.length,
+          citations: 0,
           source: result.context.source
         });
         res.json(result);
@@ -138,43 +159,31 @@ function createAssistantHandlers(ctx) {
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no"
       });
+
       try {
-        const state = ctx.getState();
-        const document = state.documents.find((item) => item.id === req.body.documentId);
-        const question = compactReaderContext(req.body.question, 2500);
+        const { document, question, task, history, contextText, currentPage } = assistantInputs(req);
         if (!question) {
           writeAssistantStream(res, "error", { error: "Type a message before sending." });
           res.end();
           return;
         }
-        const task = inferAssistantIntent(question);
-        const history = normalizeAssistantHistory(req.body.history);
-        const contextText = task === "translate" ? compactReaderContext(translationPromptText(question), 2500) : question;
+
         const analysis = await analyzeText(contextText);
         const termNotes = assistantTermNotes(analysis.tokens);
-        const query = assistantRetrievalQuery(question, contextText, history);
-        const exposeCitations = task !== "translate" && assistantWantsExplicitCitations(question);
-        const useRagContext = task === "recap" || (task !== "translate" && assistantWantsLocalRetrieval(query));
-        const exampleSearch = task !== "translate" && assistantWantsExamples(query);
-        const currentPage = Number(req.body.page) || 0;
-        const searchResult = !useRagContext
-          ? { results: [], status: { ready: false, skipped: true } }
-          : await mlService.search(query, {
-              limit: 6,
-              readSafe: true,
-              documentId: document?.id || "",
-              currentPage
-            });
-        const citations = searchResult.results ?? [];
-        const nameNotes = assistantNameReadingNotes({ document, question, contextText, citations });
+        const nameNotes = assistantNameReadingNotes({
+          document,
+          question,
+          contextText,
+          citations: []
+        });
 
         writeAssistantStream(res, "meta", {
           task,
           intent: task,
-          includeCitations: exposeCitations,
+          includeCitations: false,
           terms: termNotes,
-          citations: exposeCitations ? citations : [],
-          status: searchResult.status,
+          citations: [],
+          status: localContextStatus,
           context: {
             documentId: document?.id || "",
             title: document?.title || "",
@@ -188,21 +197,17 @@ function createAssistantHandlers(ctx) {
           chat = await aiService.chatStream({
             intent: task,
             modelId: req.body.modelId,
-            messages: buildAssistantMessages({
-              intent: task,
-              question: task === "translate" ? contextText : question,
+            messages: buildAssistantMessages(buildChatPayload({
+              task,
+              question,
               contextText,
               history,
               termNotes,
               nameNotes,
-              citations,
               document,
-              page: currentPage,
-              includeRetrievedContext: useRagContext,
-              includeCitations: exposeCitations,
-              exampleSearch
-            }),
-            maxTokens: assistantMaxTokens(task, contextText, { useRagContext, exampleSearch }),
+              currentPage
+            })),
+            maxTokens: assistantMaxTokens(task, contextText),
             temperature: task === "translate" ? 0.1 : 0.25,
             onToken: (delta) => writeAssistantStream(res, "delta", { delta })
           });
@@ -214,30 +219,33 @@ function createAssistantHandlers(ctx) {
           contextText,
           question,
           termNotes,
-          citations,
+          citations: [],
           document,
-          translation: task === "translate" ? {
-            available: chat.available,
-            translatedText: chat.text,
-            reason: chat.reason
-          } : null
+          translation: task === "translate"
+            ? {
+                available: chat.available,
+                translatedText: chat.text,
+                reason: chat.reason
+              }
+            : null
         });
         const answer = chat.available && chat.text ? chat.text : fallback;
         if (!chat.available || !chat.text) writeAssistantStream(res, "delta", { delta: answer });
+
         const result = {
           task,
           intent: task,
           question,
           answer,
           terms: termNotes,
-          citations: exposeCitations ? citations : [],
-          includeCitations: exposeCitations,
+          citations: [],
+          includeCitations: false,
           ai: {
             available: chat.available,
             reason: chat.reason,
             model: chat.model
           },
-          status: searchResult.status,
+          status: localContextStatus,
           context: {
             documentId: document?.id || "",
             title: document?.title || "",
@@ -250,7 +258,7 @@ function createAssistantHandlers(ctx) {
           task,
           page: result.context.page,
           terms: termNotes.length,
-          citations: citations.length,
+          citations: 0,
           source: result.context.source
         });
         writeAssistantStream(res, "done", result);
@@ -264,6 +272,6 @@ function createAssistantHandlers(ctx) {
 }
 
 function writeAssistantStream(res, event, data) {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+  res.write("event: " + event + "\n");
+  res.write("data: " + JSON.stringify(data) + "\n\n");
 }
