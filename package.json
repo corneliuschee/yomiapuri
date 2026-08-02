@@ -11,7 +11,7 @@
   "dependencies": {
     "@lancedb/lancedb": "^0.30.0",
     "@supabase/supabase-js": "^2.108.2",
-    "adm-zip": "^0.5.16",
+    "adm-zip": "^0.6.0",
     "better-sqlite3": "^12.11.1",
     "express": "^5.1.0",
     "kuromoji": "^0.1.2",
