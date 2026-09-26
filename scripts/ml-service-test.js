@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createLearningEventLog } from "../server/learning-events.js";
-import { createMlService } from "../server/ml-service.js";
+import { createLearningEventLog } from "../src/backend/learning-events.js";
+import { createMlService } from "../src/backend/ml-service.js";
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "yomiapuri-ml-"));
 const documentText = "\u56f3\u66f8\u9928\u3078\u884c\u304f\u3002\u56f3\u66f8\u9928\u3067\u672c\u3092\u8aad\u3080\u3002";

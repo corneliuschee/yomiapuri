@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createLocalMediaProvider, mediaFilenamesFromFields, normalizeMediaSettings } from "../server/media-providers.js";
+import { createLocalMediaProvider, mediaFilenamesFromFields, normalizeMediaSettings } from "../src/backend/media-providers.js";
 
 const mediaDir = await fs.mkdtemp(path.join(os.tmpdir(), "media-provider-test-"));
 

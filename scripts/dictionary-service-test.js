@@ -1,8 +1,8 @@
 import AdmZip from "adm-zip";
 import * as crypto from "node:crypto";
 import assert from "node:assert/strict";
-import { createDictionaryService } from "../server/dictionary-service.js";
-import { createJsonStateStore } from "../server/json-state-store.js";
+import { createDictionaryService } from "../src/backend/dictionary-service.js";
+import { createJsonStateStore } from "../src/backend/json-state-store.js";
 
 const libraryTerm = "\u56f3\u66f8\u9928";
 const libraryReading = "\u3068\u3057\u3087\u304b\u3093";

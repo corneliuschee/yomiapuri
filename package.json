@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch server/index.js",
-    "start": "node server/index.js",
+    "dev": "node --watch src/backend/index.js",
+    "start": "node src/backend/index.js",
     "test": "node scripts/anki-service-test.js && node scripts/dictionary-service-test.js && node scripts/media-provider-test.js && node scripts/ai-service-test.js && node scripts/fts-search-service-test.js && node scripts/ml-service-test.js && node scripts/sync-service-test.js && node scripts/sqlite-state-store-test.js && node scripts/smoke-test.js"
   },
   "dependencies": {
@@ -15,7 +15,6 @@
     "express": "^5.1.0",
     "kuromoji": "^0.1.2",
     "multer": "^2.2.0",
-    "pdf-parse": "^1.1.1",
-    "xml2js": "^0.6.2"
+    "pdf-parse": "^1.1.1"
   }
 }

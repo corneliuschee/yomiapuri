@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createFtsSearchService, escapeFtsTerm } from "../server/fts-search-service.js";
+import { createFtsSearchService, escapeFtsTerm } from "../src/backend/fts-search-service.js";
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "yomi-fts-"));
 const dbPath = path.join(tmp, "yomiapuri.sqlite");

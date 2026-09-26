@@ -170,10 +170,10 @@ npm test
 Useful syntax checks:
 
 ~~~powershell
-node --check public/app.js
-node --check server/index.js
-node --check server/ml-service.js
-node --check server/fts-search-service.js
+node --check src/frontend/app.js
+node --check src/backend/index.js
+node --check src/backend/ml-service.js
+node --check src/backend/fts-search-service.js
 ~~~
 
 The test suite covers Anki field mapping and export, dictionary parsing and lookup, local media providers, AI runtime contracts, SQLite FTS5 search, SQLite state storage, Supabase mapping, analytics, and API smoke behavior.

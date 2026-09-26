@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createAiService, defaultAiSettings, normalizeAiSettings } from "../server/ai-service.js";
+import { createAiService, defaultAiSettings, normalizeAiSettings } from "../src/backend/ai-service.js";
 
 let settings = normalizeAiSettings(defaultAiSettings());
 const sample = "勉強します。";

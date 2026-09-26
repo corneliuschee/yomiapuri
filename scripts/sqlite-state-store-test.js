@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createSqliteStateStore } from "../server/sqlite-state-store.js";
+import { createSqliteStateStore } from "../src/backend/sqlite-state-store.js";
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "yomiapuri-sqlite-"));
 const dbPath = path.join(tmp, "state.sqlite");

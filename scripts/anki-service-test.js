@@ -1,8 +1,8 @@
 import * as crypto from "node:crypto";
 import assert from "node:assert/strict";
-import { createAnkiService, buildAnkiFields, fieldMapForModel } from "../server/anki-service.js";
-import { createJsonStateStore } from "../server/json-state-store.js";
-import { createDefaultMediaProvider } from "../server/media-providers.js";
+import { createAnkiService, buildAnkiFields, fieldMapForModel } from "../src/backend/anki-service.js";
+import { createJsonStateStore } from "../src/backend/json-state-store.js";
+import { createDefaultMediaProvider } from "../src/backend/media-providers.js";
 
 const state = {
   documents: [{ id: "doc-1", title: "Test Book" }],

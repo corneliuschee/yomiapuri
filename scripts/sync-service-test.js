@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createSyncService, defaultSyncSettings, buildPushPayload } from "../server/sync-service.js";
+import { createSyncService, defaultSyncSettings, buildPushPayload } from "../src/backend/sync-service.js";
 
 const mediaDir = await fs.mkdtemp(path.join(os.tmpdir(), "kanji-reader-sync-media-"));
 await fs.mkdir(path.join(mediaDir, "epub-assets", "doc-1"), { recursive: true });

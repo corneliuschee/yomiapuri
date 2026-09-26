@@ -11,7 +11,7 @@ const baseUrl = `http://localhost:${port}`;
 
 await fs.mkdir(dataDir, { recursive: true });
 
-const server = spawn("node", ["server/index.js"], {
+const server = spawn("node", ["src/backend/index.js"], {
   cwd: rootDir,
   env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, LOCAL_TRANSLATION_COMMAND: "", LLAMA_SERVER_PATH: "" },
   stdio: ["ignore", "pipe", "pipe"]
@@ -334,7 +334,7 @@ async function writeAuthorRubyNameDocumentFixture() {
 }
 
 async function assertWordCardCss() {
-  const css = await fs.readFile(path.join(rootDir, "public/styles.css"), "utf8");
+  const css = await fs.readFile(path.join(rootDir, "src/frontend/styles.css"), "utf8");
   assert(/\.word-row\s*\{[\s\S]*height:\s*124px;/.test(css), "Word cards should have a fixed height.");
   assert(/\.word-row p\s*\{[\s\S]*-webkit-line-clamp:\s*3;/.test(css), "Word card definitions should be line-clamped.");
 }

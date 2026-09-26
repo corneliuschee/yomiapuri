@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createSqliteStateStore } from "../server/sqlite-state-store.js";
+import { createSqliteStateStore } from "../src/backend/sqlite-state-store.js";
 
 const rootDir = path.resolve(import.meta.dirname, "..");
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(rootDir, "data");

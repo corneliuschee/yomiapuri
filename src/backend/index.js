@@ -30,7 +30,7 @@ import { registerSyncRoutes } from "./routes/sync-routes.js";
 import { registerWordBankRoutes } from "./routes/wordbank-routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const rootDir = path.resolve(__dirname, "..");
+const rootDir = path.resolve(__dirname, "../..");
 loadDotEnv(path.join(rootDir, ".env"));
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(rootDir, "data");
 const mediaDir = path.join(dataDir, "media");
@@ -42,7 +42,7 @@ const dictionaryDbPath = path.join(dataDir, "dictionaries.json");
 const dictionaryDbTmpPath = path.join(dataDir, "dictionaries.json.tmp");
 const sqliteDbPath = path.join(dataDir, "yomiapuri.sqlite");
 const backupDir = path.join(dataDir, "backups");
-const publicDir = path.join(rootDir, "public");
+const publicDir = path.join(rootDir, "src", "frontend");
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 60 * 1024 * 1024 } });
 const DOCUMENT_CACHE_VERSION = 1;
 const TOKENIZER_VERSION = "kuromoji-ipadic-v1";
