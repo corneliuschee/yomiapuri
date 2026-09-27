@@ -48,7 +48,6 @@ const state = {
   selectedTrashTerms: new Set(),
   currentPage: 0,
   voices: [],
-  ml: { analytics: null, indexStatus: null }
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -142,14 +141,6 @@ const elements = {
   wordbankDeleteAll: $("#wordbank-delete-all"),
   wordbankList: $("#wordbank-list"),
   wordbankPagination: $("#wordbank-pagination"),
-  refreshInsights: $("#refresh-insights"),
-  mlMetrics: $("#ml-metrics"),
-  mlDocumentList: $("#ml-document-list"),
-  mlRefreshTextIndex: $("#ml-refresh-text-index"),
-  mlIndexStatus: $("#ml-index-status"),
-  bookTextSearchForm: $("#book-text-search-form"),
-  bookTextSearchInput: $("#book-text-search-input"),
-  bookTextSearchResults: $("#book-text-search-results"),
   trashBooksTab: $("#trash-books-tab"),
   trashWordsTab: $("#trash-words-tab"),
   trashRestoreWords: $("#trash-restore-words"),
@@ -297,14 +288,12 @@ function setPage(pageId) {
     "books-page": ["Books", "Library"],
     "reader-page": ["Reader", state.activeDocumentTitle || "Choose a book"],
     "wordbank-page": ["Word Bank", "Imported vocabulary"],
-    "insights-page": ["Insights", "Learning analytics"],
     "trash-page": ["Trash", "Deleted items"],
     "integrations-page": ["Integrations", "Anki and dictionaries"]
   };
   elements.pageEyebrow.textContent = labels[pageId]?.[0] ?? "";
   elements.pageTitle.textContent = labels[pageId]?.[1] ?? "";
   if (pageId === "wordbank-page") loadWordBank();
-  if (pageId === "insights-page") loadInsights();
   if (pageId === "trash-page") renderTrash();
 }
 
@@ -2021,138 +2010,6 @@ async function syncWordBankWithAnki() {
   }
 }
 
-async function loadInsights() {
-  if (!elements.mlMetrics) return;
-  renderInsightsLoading();
-  const [analyticsResult, indexStatusResult] = await Promise.allSettled([
-    api("/api/ml/analytics"),
-    api("/api/ml/index/status")
-  ]);
-  if (indexStatusResult.status === "fulfilled") {
-    state.ml.indexStatus = indexStatusResult.value;
-    renderMlIndexStatus(indexStatusResult.value);
-  } else {
-    renderMlIndexStatusError(indexStatusResult.reason);
-  }
-  if (analyticsResult.status === "fulfilled") {
-    const analytics = analyticsResult.value;
-    state.ml.analytics = analytics;
-    renderAnalyticsInsights(analytics);
-  } else {
-    renderAnalyticsError(analyticsResult.reason);
-  }
-}
-
-function renderInsightsLoading() {
-  elements.mlMetrics.innerHTML = "<p class=\"empty\">Loading analytics...</p>";
-  elements.mlDocumentList.innerHTML = "<p class=\"empty\">Loading book analytics...</p>";
-  if (elements.mlIndexStatus) elements.mlIndexStatus.innerHTML = "<span>Loading text search index status...</span>";
-}
-
-function renderInsights(analytics, indexStatus) {
-  renderAnalyticsInsights(analytics);
-  renderMlIndexStatus(indexStatus);
-}
-
-function renderAnalyticsInsights(analytics) {
-  const totals = analytics?.totals ?? {};
-  const metrics = analytics?.metrics ?? {};
-  elements.mlMetrics.innerHTML = `
-    <div class="ml-metric"><strong>${Number(totals.documents ?? 0).toLocaleString()}</strong><span>Books <span class="help-dot" tabindex="0" data-tooltip="Total imported PDF, EPUB, and text documents currently in your library.">?</span></span></div>
-    <div class="ml-metric"><strong>${Number(totals.knownTerms ?? 0).toLocaleString()}</strong><span>Known terms <span class="help-dot" tabindex="0" data-tooltip="Vocabulary currently in your Word Bank, including terms imported from Anki or added from lookup.">?</span></span></div>
-    <div class="ml-metric"><strong>${Number(metrics.averageCoverage ?? 0)}%</strong><span>Average coverage <span class="help-dot" tabindex="0" data-tooltip="Estimated percentage of kanji vocabulary in imported books that already appears in your Word Bank. Higher means easier reading.">?</span></span></div>
-    <div class="ml-metric"><strong>${Number(metrics.candidateAcceptanceRate ?? 0)}%</strong><span>Preview to export <span class="help-dot" tabindex="0" data-tooltip="How often sentence-mining card previews become actual Anki exports. This measures candidate usefulness over time.">?</span></span></div>
-    <div class="ml-metric"><strong>${Number(metrics.lookupToWordBankRate ?? 0)}%</strong><span>Lookup to Word Bank <span class="help-dot" tabindex="0" data-tooltip="How often dictionary lookups become Word Bank additions. This is based on local lookup and add events.">?</span></span></div>
-  `;
-  renderDocumentDifficulty(analytics?.documents ?? []);
-}
-
-function renderAnalyticsError(error) {
-  elements.mlMetrics.innerHTML = unavailableNotice(error, "Learning analytics unavailable.");
-  elements.mlDocumentList.innerHTML = unavailableNotice(error, "Book analytics unavailable. Refresh analytics to try again.");
-}
-
-function renderMlIndexStatus(status = {}) {
-  if (!elements.mlIndexStatus) return;
-  const text = status.textSearch ?? status.fts ?? status;
-  const textState = text.stale ? "Stale" : text.ready ? "Ready" : "Not built";
-  const textUpdated = formatIndexTime(text.updatedAt || text.rebuiltAt);
-  elements.mlIndexStatus.innerHTML = [
-    "<div class=\"index-status-row\">",
-    "<strong>Text search index</strong>",
-    "<span>" + escapeHtml(textState) + " - " + Number(text.chunks ?? 0).toLocaleString() + " chunks - Last updated " + escapeHtml(textUpdated) + "</span>",
-    "<span>" + Number(text.inserted ?? 0).toLocaleString() + " inserted / " + Number(text.updated ?? 0).toLocaleString() + " updated / " + Number(text.deleted ?? 0).toLocaleString() + " deleted / " + Number(text.skipped ?? 0).toLocaleString() + " skipped</span>",
-    text.error ? "<em>" + escapeHtml(text.error) + "</em>" : "",
-    "</div>"
-  ].join("");
-}
-
-function formatIndexTime(value = "") {
-  return value ? new Date(value).toLocaleString() : "Never";
-}
-
-function renderMlIndexStatusError(error) {
-  if (!elements.mlIndexStatus) return;
-  elements.mlIndexStatus.innerHTML = unavailableNotice(error, "Text search index status unavailable.");
-}
-
-function unavailableNotice(error, fallback = "Unavailable.") {
-  const message = error?.message || String(error || fallback);
-  return `<p class="empty"><span class="help-dot" tabindex="0" data-tooltip="${escapeHtml(message)}">i</span> ${escapeHtml(fallback)}</p>`;
-}
-
-function renderDocumentDifficulty(documents = []) {
-  if (documents.length === 0) {
-    elements.mlDocumentList.innerHTML = `<p class="empty">No imported books to analyze.</p>`;
-    return;
-  }
-  elements.mlDocumentList.innerHTML = documents.map((doc) => `
-    <button class="ml-document-row" type="button" data-document-id="${escapeHtml(doc.id)}">
-      <strong>${escapeHtml(doc.title)}</strong>
-      <span>${Number(doc.coverage ?? 0)}% coverage <span class="help-dot" tabindex="0" data-tooltip="Estimated share of this book's kanji vocabulary already covered by your Word Bank.">?</span></span>
-      <span>${Number(doc.uniqueUnknown ?? 0).toLocaleString()} unknown <span class="help-dot" tabindex="0" data-tooltip="Unique unknown kanji vocabulary detected in the analyzed portion of this book. Proper names are excluded where the tokenizer identifies them.">?</span></span>
-      <span>${escapeHtml(doc.difficulty ?? "")} <span class="help-dot" tabindex="0" data-tooltip="${escapeHtml(doc.error ? `Analytics unavailable for this book: ${doc.error}` : "Comfortable is high coverage, Stretch is moderate coverage, and Hard means many unknown terms remain.")}">${doc.error ? "i" : "?"}</span></span>
-    </button>
-  `).join("");
-  elements.mlDocumentList.querySelectorAll("[data-document-id]").forEach((button) => {
-    button.addEventListener("click", () => openDocument(button.dataset.documentId));
-  });
-}
-
-async function refreshTextSearchIndex() {
-  if (!elements.mlRefreshTextIndex) return;
-  elements.mlRefreshTextIndex.disabled = true;
-  const original = elements.mlRefreshTextIndex.textContent;
-  elements.mlRefreshTextIndex.textContent = "Refreshing...";
-  try {
-    const status = await api("/api/search/index/refresh", { method: "POST" });
-    state.ml.indexStatus = status;
-    renderMlIndexStatus(status);
-  } catch (error) {
-    elements.mlIndexStatus.textContent = error.message;
-  } finally {
-    elements.mlRefreshTextIndex.disabled = false;
-    elements.mlRefreshTextIndex.textContent = original;
-  }
-}
-
-async function runBookTextSearch(event) {
-  event.preventDefault();
-  const query = elements.bookTextSearchInput.value.trim();
-  if (!query) return;
-  elements.bookTextSearchResults.innerHTML = "<p class=\"empty\">Searching...</p>";
-  try {
-    const result = await api("/api/search/fts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, limit: 8 })
-    });
-    renderBookTextResults(elements.bookTextSearchResults, result.results ?? []);
-  } catch (error) {
-    elements.bookTextSearchResults.innerHTML = "<p class=\"empty\">" + escapeHtml(error.message) + "</p>";
-  }
-}
-
 function selectedReaderText() {
   const selection = window.getSelection();
   if (!selectionInsideReader(selection) || selection.isCollapsed) return "";
@@ -2349,26 +2206,6 @@ function renderReaderAssistantAnswer(result = {}, pendingId = "", elapsed = "") 
     ` : ""}
   `;
   replaceReaderAssistantMessage(pendingId, "assistant", result.answer ?? "", "Assistant", elapsed, extraHtml);
-}
-
-function renderBookTextResults(container, results = []) {
-  if (results.length === 0) {
-    container.innerHTML = "<p class=\"empty\">No indexed matches. Refresh the text search index after importing books.</p>";
-    return;
-  }
-  container.innerHTML = citationRows(results);
-}
-
-function citationRows(results = []) {
-  return results.map((item) => `
-    <article class="ml-result">
-      <div>
-        <strong>${escapeHtml(item.title || "Untitled")}</strong>
-        <span>${escapeHtml(item.chapterTitle || "")}${item.page ? ` - page ${Number(item.page) + 1}` : ""}</span>
-      </div>
-      <p>${escapeHtml(item.text || "")}</p>
-    </article>
-  `).join("");
 }
 
 function setTrashTab(tabName) {
@@ -4467,9 +4304,6 @@ elements.readerSidebarToggle?.addEventListener("click", () => {
   setSidebarHidden(!elements.shell.classList.contains("sidebar-hidden"), { readerMode: true });
 });
 elements.readerLibrary?.addEventListener("click", () => setPage("books-page"));
-elements.refreshInsights?.addEventListener("click", loadInsights);
-elements.mlRefreshTextIndex?.addEventListener("click", refreshTextSearchIndex);
-elements.bookTextSearchForm?.addEventListener("submit", runBookTextSearch);
 elements.readerAssistantForm?.addEventListener("submit", askReaderAssistant);
 elements.readerAssistantQuestion?.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;

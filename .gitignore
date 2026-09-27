@@ -3,6 +3,7 @@ data/
 .tmp/
 .venv-liquidai/
 .venv/
+.venv-backend/
 venv/
 __pycache__/
 *.pyc

@@ -28,10 +28,6 @@
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/><path d="M8 4v16"/></svg>
             <span class="nav-label">Word Bank</span>
           </button>
-          <button class="nav-item" type="button" data-page="insights-page" title="Insights" aria-label="Insights">
-            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"/><path d="M4 19h16"/><path d="m7 15 4-4 3 3 5-7"/></svg>
-            <span class="nav-label">Insights</span>
-          </button>
           <button class="nav-item" type="button" data-page="trash-page" title="Trash" aria-label="Trash">
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14"/><path d="M9 7V5h6v2"/><path d="M8 10v8"/><path d="M12 10v8"/><path d="M16 10v8"/><path d="M7 7l1 14h8l1-14"/></svg>
             <span class="nav-label">Trash</span>
@@ -227,42 +223,6 @@
             </div>
             <div id="wordbank-list" class="wordbank-list"></div>
             <nav id="wordbank-pagination" class="wordbank-pagination" aria-label="Word bank pages"></nav>
-          </div>
-        </section>
-
-        <section id="insights-page" class="page">
-          <div class="insights-layout">
-            <section class="page-card insights-analytics-card">
-              <div class="page-card-head">
-                <div>
-                  <h2>Learning Analytics <span class="help-dot" tabindex="0" data-tooltip="Summarizes local learning signals from imported books, Word Bank size, sentence-mining previews, Anki exports, lookups, and progress events.">?</span></h2>
-                  <p>Local metrics derived from reading, lookups, Word Bank changes, and Anki exports.</p>
-                </div>
-                <button id="refresh-insights" type="button">Refresh</button>
-              </div>
-              <div id="ml-metrics" class="ml-metrics"></div>
-              <div id="ml-document-list" class="ml-document-list"></div>
-            </section>
-
-            <section class="page-card">
-              <div class="page-card-head">
-                <div>
-                  <h2>Book Text Search <span class="help-dot" tabindex="0" data-tooltip="Searches the text of imported books using the local SQLite text-search index.">?</span></h2>
-                  <p>Search indexed text from books in your library.</p>
-                </div>
-                <div class="index-actions">
-                  <button id="ml-refresh-text-index" type="button">Refresh text search index</button><span class="help-dot" tabindex="0" data-tooltip="Refreshes the local SQLite text-search index for imported book text.">?</span>
-                </div>
-              </div>
-              <div id="ml-index-status" class="meta-box">Text search index status not loaded.</div>
-              <h3>Book Text Search</h3>
-              <form id="book-text-search-form" class="book-text-search-form">
-                <input id="book-text-search-input" type="search" placeholder="Search for phrase/vocab" />
-                <button type="submit">Search</button>
-                <span class="help-dot" tabindex="0" data-tooltip="Searches exact phrases and vocabulary in indexed book text.">?</span>
-              </form>
-              <div id="book-text-search-results" class="book-text-search-results"></div>
-            </section>
           </div>
         </section>
 

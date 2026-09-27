@@ -3,6 +3,7 @@ import AdmZip from "adm-zip";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 
 const rootDir = path.resolve(import.meta.dirname, "..");
 const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "smoke-data-"));
@@ -11,7 +12,8 @@ const baseUrl = `http://localhost:${port}`;
 
 await fs.mkdir(dataDir, { recursive: true });
 
-const server = spawn("node", ["src/backend/index.js"], {
+const python = process.env.TEST_PYTHON || path.join(rootDir, ".venv-backend", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+const server = spawn(python, ["-m", "src.backend"], {
   cwd: rootDir,
   env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, LOCAL_TRANSLATION_COMMAND: "", LLAMA_SERVER_PATH: "" },
   stdio: ["ignore", "pipe", "pipe"]
@@ -93,8 +95,6 @@ try {
   assert(Array.isArray(mediaProviders.voices), "Media providers should expose detected voices.");
   const mediaTest = await postJson("/api/media/test-image", { expression: "\u56f3\u66f8\u9928", meaning: "library" });
   assert(Object.hasOwn(mediaTest, "status"), "Media test should return provider status.");
-  const analytics = await getJson("/api/ml/analytics");
-  assert(analytics.totals.documents >= 1, "Learning analytics should report imported books.");
   const initialIndexStatus = await getJson("/api/ml/index/status");
   assert(initialIndexStatus.fts || initialIndexStatus.provider === "sqlite-fts5", "Index status should expose the SQLite text index.");
   const refreshedIndex = await postJson("/api/search/index/refresh", {});
@@ -340,11 +340,13 @@ async function assertWordCardCss() {
 }
 
 async function assertDocumentCacheCreated(documentId) {
-  const cacheRoot = path.join(dataDir, "document-cache", documentId);
-  const manifest = JSON.parse(await fs.readFile(path.join(cacheRoot, "manifest.json"), "utf8"));
-  assert(manifest.documentId === documentId, "Document cache manifest should be written.");
-  const tokenFiles = await fs.readdir(path.join(cacheRoot, "tokens"));
-  assert(tokenFiles.length > 0, "Document token cache should contain token files.");
+  const database = new DatabaseSync(path.join(dataDir, "yomiapuri.sqlite"), { readOnly: true });
+  try {
+    const count = database.prepare("SELECT COUNT(*) AS n FROM document_pages WHERE document_id=?").get(documentId).n;
+    assert(count > 0, "Document pages should be cached in SQLite.");
+  } finally {
+    database.close();
+  }
 }
 
 function assert(condition, message) {

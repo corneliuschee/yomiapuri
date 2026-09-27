@@ -982,15 +982,10 @@ h2 {
   display: grid;
 }
 
-#integrations-page,
-#insights-page {
+#integrations-page {
   overflow: auto;
 }
 
-#insights-page {
-  align-content: start;
-  padding-bottom: 24px;
-}
 
 #books-page {
   grid-template-rows: 48px minmax(0, 1fr);
@@ -2996,144 +2991,11 @@ progress {
   flex: 0 0 auto;
 }
 
-.insights-layout {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.55fr);
-}
-
-.insights-layout .page-card {
-  min-width: 0;
-}
-
-.insights-analytics-card {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  max-height: calc(100vh - 104px);
-  min-height: 0;
-  overflow: hidden;
-}
-
-.ml-metrics {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  margin-bottom: 12px;
-}
-
-.ml-metric {
-  background: #101116;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  padding: 10px;
-}
-
-.ml-metric strong {
-  font-size: 18px;
-}
-
-.ml-metric span,
-.ml-document-row span,
-.ml-result span,
-.ml-index-status span {
-  align-items: center;
-  color: var(--muted);
-  display: inline-flex;
-  font-size: 12px;
-  gap: 4px;
-}
-
-.page-card-head h2 .help-dot,
-.ml-metric .help-dot,
-.ml-document-row .help-dot,
-.book-text-search-form .help-dot {
+.page-card-head h2 .help-dot {
   display: inline-grid;
   flex: 0 0 auto;
   font-size: 11px;
   vertical-align: middle;
-}
-
-.book-text-search-form .help-dot {
-  align-self: center;
-}
-
-.ml-document-list,
-.book-text-search-results {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-}
-
-.ml-document-list {
-  align-content: start;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.ml-document-row,
-.ml-result {
-  background: #101116;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  min-width: 0;
-  padding: 10px;
-}
-
-.ml-document-row {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(0, 1fr) 90px 100px 90px;
-  text-align: left;
-  width: 100%;
-}
-
-.ml-document-row strong,
-.ml-result strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.book-text-search-form {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  margin: 12px 0;
-}
-
-.ml-result {
-  display: grid;
-  gap: 8px;
-}
-
-.ml-result div {
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  min-width: 0;
-}
-
-.ml-result p,
-.ml-answer {
-  color: var(--paper-text);
-  line-height: 1.55;
-  margin: 0;
-}
-
-.ml-answer {
-  background: #101116;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 10px;
-}
-
-.ml-citations {
-  display: grid;
-  gap: 8px;
-  margin-top: 8px;
 }
 
 .candidate-rank {
@@ -3162,24 +3024,6 @@ progress {
 
 .candidate-rank em {
   font-style: normal;
-}
-
-@media (max-width: 1100px) {
-  .insights-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .insights-analytics-card {
-    max-height: min(720px, calc(100vh - 104px));
-  }
-
-  .ml-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .ml-document-row {
-    grid-template-columns: 1fr;
-  }
 }
 
 .voice-model-row {
