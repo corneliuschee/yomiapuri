@@ -4,40 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Yomiアプリ</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=top-navigation" />
   </head>
   <body>
     <div id="shell" class="shell">
       <aside id="sidebar" class="sidebar">
-        <div class="side-head">
-          <div class="brand">
-            <span class="brand-mark">読</span>
-            <span class="brand-name">Yomiアプリ</span>
-          </div>
-          <button id="collapse-sidebar" class="icon-button hamburger sidebar-toggle sidebar-toggle-left-close" type="button" title="Hide sidebar" aria-label="Hide sidebar">
-            <svg class="sidebar-toggle-svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path class="sidebar-toggle-rail" d="M8 8v8"/><path class="sidebar-toggle-arrow-open" d="m11 9 4 3-4 3"/><path class="sidebar-toggle-arrow-close" d="m14 9-4 3 4 3"/></svg>
-          </button>
-        </div>
-
-        <nav class="nav-list" aria-label="App pages">
-          <button class="nav-item active" type="button" data-page="books-page" title="Books" aria-label="Books">
-            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5c2.3-.7 4.7-.4 7 1v12c-2.3-1.4-4.7-1.7-7-1V5.5Z"/><path d="M12 6.5c2.3-1.4 4.7-1.7 7-1v12c-2.3-.7-4.7-.4-7 1V6.5Z"/></svg>
-            <span class="nav-label">Books</span>
-          </button>
-          <button class="nav-item" type="button" data-page="wordbank-page" title="Word Bank" aria-label="Word Bank">
-            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/><path d="M8 4v16"/></svg>
-            <span class="nav-label">Word Bank</span>
-          </button>
-          <button class="nav-item" type="button" data-page="trash-page" title="Trash" aria-label="Trash">
-            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14"/><path d="M9 7V5h6v2"/><path d="M8 10v8"/><path d="M12 10v8"/><path d="M16 10v8"/><path d="M7 7l1 14h8l1-14"/></svg>
-            <span class="nav-label">Trash</span>
-          </button>
-          <button class="nav-item" type="button" data-page="integrations-page" title="Integrations" aria-label="Integrations">
-            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19 12h2"/><path d="M3 12h2"/><path d="m17 7 1.4-1.4"/><path d="M5.6 18.4 7 17"/><path d="m17 17 1.4 1.4"/><path d="M5.6 5.6 7 7"/></svg>
-            <span class="nav-label">Integrations</span>
-          </button>
-        </nav>
-
         <section id="reader-side-panel" class="reader-side-panel" aria-label="Reader navigation">
           <div id="reader-side-book" class="reader-side-book"></div>
           <div class="reader-side-tabs" role="tablist" aria-label="Reader sidebar">
@@ -49,18 +20,28 @@
           <div id="reader-side-bookmarks" class="reader-side-list"></div>
           <div id="reader-side-search" class="reader-side-list reader-side-search"></div>
         </section>
-
       </aside>
 
       <main class="main">
         <header class="topbar">
-          <button id="show-sidebar" class="icon-button hamburger sidebar-toggle sidebar-toggle-left-open hidden" type="button" title="Show sidebar" aria-label="Show sidebar">
-            <svg class="sidebar-toggle-svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path class="sidebar-toggle-rail" d="M8 8v8"/><path class="sidebar-toggle-arrow-open" d="m11 9 4 3-4 3"/><path class="sidebar-toggle-arrow-close" d="m14 9-4 3 4 3"/></svg>
-          </button>
-          <div>
+          <div class="topbar-identity">
             <p class="eyebrow" id="page-eyebrow">Books</p>
             <h1 id="page-title">Library</h1>
           </div>
+          <nav class="nav-list" aria-label="App pages">
+            <button class="nav-item active" type="button" data-page="books-page" title="Books" aria-label="Books">
+              <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5c2.3-.7 4.7-.4 7 1v12c-2.3-1.4-4.7-1.7-7-1V5.5Z"/><path d="M12 6.5c2.3-1.4 4.7-1.7 7-1v12c-2.3-.7-4.7-.4-7 1V6.5Z"/></svg>
+              <span class="nav-label">Books</span>
+            </button>
+            <button class="nav-item" type="button" data-page="trash-page" title="Trash" aria-label="Trash">
+              <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14"/><path d="M9 7V5h6v2"/><path d="M8 10v8"/><path d="M12 10v8"/><path d="M16 10v8"/><path d="M7 7l1 14h8l1-14"/></svg>
+              <span class="nav-label">Trash</span>
+            </button>
+            <button class="nav-item" type="button" data-page="integrations-page" title="Integrations" aria-label="Integrations">
+              <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19 12h2"/><path d="M3 12h2"/><path d="m17 7 1.4-1.4"/><path d="M5.6 18.4 7 17"/><path d="m17 17 1.4 1.4"/><path d="M5.6 5.6 7 7"/></svg>
+              <span class="nav-label">Integrations</span>
+            </button>
+          </nav>
           <div id="known-count" class="stat">0 known terms</div>
         </header>
 
@@ -195,56 +176,19 @@
           </footer>
         </section>
 
-        <section id="wordbank-page" class="page">
-          <div class="page-card">
-            <div class="page-card-head">
-              <div>
-                <h2>Imported Vocabulary</h2>
-                <p>Vocabulary imported from Anki reviews or manual files.</p>
-              </div>
-              <div class="wordbank-controls">
-                <input id="wordbank-search" type="search" placeholder="Search word bank" />
-                <select id="wordbank-dictionary" aria-label="Word Bank meaning dictionary"></select>
-                <label class="sort-control" title="Sort word bank">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h18"/><path d="M6 12h12"/><path d="M10 17h4"/></svg>
-                  <select id="wordbank-sort" aria-label="Sort word bank">
-                    <option value="gojuon">Japanese A-Z</option>
-                    <option value="gojuon-desc">Japanese Z-A</option>
-                    <option value="added-desc">Date added newest</option>
-                    <option value="added-asc">Date added oldest</option>
-                    <option value="length-asc">Shortest first</option>
-                    <option value="length-desc">Longest first</option>
-                  </select>
-                </label>
-                <button id="wordbank-sync-anki" type="button">Sync Anki</button>
-                <button id="wordbank-delete" class="wordbank-delete hidden" type="button">Delete</button>
-                <button id="wordbank-delete-all" class="wordbank-delete-all" type="button">Delete all</button>
-              </div>
-            </div>
-            <div id="wordbank-list" class="wordbank-list"></div>
-            <nav id="wordbank-pagination" class="wordbank-pagination" aria-label="Word bank pages"></nav>
-          </div>
-        </section>
-
         <section id="trash-page" class="page">
           <div class="page-card trash-card">
             <div class="page-card-head">
               <div>
                 <h2>Trash</h2>
-                <p>Restore deleted books and vocabulary.</p>
+                <p>Restore deleted books.</p>
               </div>
               <div class="trash-controls">
-                <div class="segmented">
-                  <button id="trash-books-tab" class="active" type="button">Books</button>
-                  <button id="trash-words-tab" type="button">Words</button>
-                </div>
-                <button id="trash-restore-words" class="wordbank-delete hidden" type="button">Restore</button>
-                <button id="trash-delete-words" class="trash-delete hidden" type="button">Delete</button>
+                <button id="trash-delete-selected" class="trash-delete hidden" type="button">Delete</button>
                 <button id="trash-delete-all" class="trash-delete" type="button">Delete all</button>
               </div>
             </div>
             <div id="trash-books" class="books-grid trash-panel active"></div>
-            <div id="trash-words" class="wordbank-list trash-panel"></div>
           </div>
         </section>
 
@@ -300,7 +244,7 @@
                 </div>
               </form>
               <div id="anki-field-status" class="mapping-status meta-box hidden">Connect to Anki to inspect note fields.</div>
-              <form id="anki-import-form" class="stack hidden">
+              <form id="anki-import-form" class="stack">
                 <label>
                   Reviewed vocabulary import
                   <select name="preset">
@@ -311,8 +255,9 @@
                   </select>
                 </label>
                 <p id="anki-import-deck" class="import-context">Importing from: No deck selected</p>
-                <button id="anki-import-button" type="submit">Import vocabulary from Anki</button>
+                <button id="anki-import-button" type="submit">Sync Anki</button>
               </form>
+              <p id="anki-vocabulary-status" class="import-context" role="status" aria-live="polite"></p>
               <div id="anki-import-notice" class="library-notice integration-notice" role="status" aria-live="polite"></div>
             </section>
 
@@ -320,49 +265,21 @@
               <div class="page-card-head">
                 <div>
                   <h2>Media</h2>
-                  <p>Generate local audio and mnemonic images for Anki fields.</p>
+                  <p>Generate local mnemonic images for Anki fields.</p>
                 </div>
-                <span class="status-with-help"><span id="media-status" class="status">Not loaded</span><span class="help-dot" tabindex="0" data-tooltip="Off means both local audio and local image generation are disabled. Changes save automatically when you edit these controls.">?</span></span>
+                <span class="status-with-help"><span id="media-status" class="status">Not loaded</span><span class="help-dot" tabindex="0" data-tooltip="Off means local image generation is disabled. Changes save automatically when you edit these controls.">?</span></span>
               </div>
               <form id="media-settings-form" class="stack media-settings-form">
-                <label class="toggle-row">
-                  <input id="media-audio-enabled" name="audioEnabled" type="checkbox" />
-                  Local sentence audio
-                  <span class="help-dot" tabindex="0" data-tooltip="When enabled, Anki exports generate an audio file from the mined sentence and fill audio fields like SentenceAudio or Audio.">?</span>
-                </label>
-                <label class="media-select-row">
-                  <span>Voice</span>
-                  <select id="media-voice-select" name="voiceName"></select>
-                </label>
-                <label>
-                  Test sentence
-                  <textarea id="media-test-text" name="testText" rows="2" placeholder="&#22259;&#26360;&#39208;&#12408;&#34892;&#12365;&#12414;&#12377;&#12290;"></textarea>
-                </label>
-                <label>
-                  Speed
-                  <input id="media-rate" name="rate" type="range" min="-4" max="4" step="1" value="0" />
-                </label>
                 <label class="toggle-row">
                   <input id="media-image-enabled" name="imageEnabled" type="checkbox" />
                   Local mnemonic image
                   <span class="help-dot" tabindex="0" data-tooltip="When enabled, Anki exports generate a small local SVG mnemonic image and fill image fields like Picture or Image.">?</span>
                 </label>
                 <div class="button-row">
-                  <button id="test-media-audio" type="button">Test voice</button><span class="help-dot" tabindex="0" data-tooltip="If a voice is selected, this plays that app voice and may generate a cached sample file. With no selected voice, it reads immediately through the browser.">?</span>
                   <button id="test-media-image" type="button">Test image</button><span class="help-dot" tabindex="0" data-tooltip="Generates a sample mnemonic image using the saved image setting. It does not use a paid AI image API.">?</span>
                 </div>
               </form>
-              <form id="voice-model-form" class="stack voice-model-form">
-                <label>
-                  Import voice model
-                  <input id="voice-model-url" name="url" type="url" placeholder="https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-JP" />
-                </label>
-                <div class="button-row">
-                  <button id="import-voice-model" type="submit">Import voice model</button><span class="help-dot" tabindex="0" data-tooltip="Registers a Hugging Face voice model for future local runtime support. It does not download large model files automatically.">?</span>
-                </div>
-                <div id="voice-model-list" class="voice-model-list"></div>
-              </form>
-              <div id="media-preview" class="media-preview meta-box">Local media is disabled by default.</div>
+              <div id="media-preview" class="media-preview meta-box">Local image generation is disabled by default.</div>
             </section>
 
             <section class="page-card">
@@ -389,29 +306,12 @@
               </div>
             </section>
 
-            <section class="page-card">
-              <div class="page-card-head">
-                <div>
-                  <h2>Cache</h2>
-                  <p>Manual rebuilds for derived local data. Rebuild only when meanings look stale.</p>
-                </div>
-              </div>
-              <div class="cache-controls">
-                <label>
-                  Word Bank meaning dictionary
-                  <select id="cache-wordbank-dictionary" aria-label="Cache Word Bank meaning dictionary"></select>
-                </label>
-                <button id="cache-rebuild-wordbank" type="button">Rebuild Word Bank meanings</button>
-              </div>
-              <div id="cache-wordbank-status" class="cache-status">Word Bank meaning cache not checked.</div>
-              <div id="cache-notice" class="library-notice integration-notice" role="status" aria-live="polite"></div>
-            </section>
 
             <section class="page-card">
               <div class="page-card-head">
                 <div>
                   <h2>Dictionary</h2>
-                  <p>Manage Word Bank meanings, reader lookup dictionaries, and frequency dictionaries.</p>
+                  <p>Manage reader lookup dictionaries and frequency dictionaries.</p>
                 </div>
               </div>
               <div class="dictionary-controls">
@@ -423,7 +323,7 @@
                   <input id="instant-anki-toggle" type="checkbox" />
                   Instant Anki export
                 </label>
-                <label class="toggle-row" title="Hide generated furigana for vocabulary the app predicts is readable from your Word Bank, known kanji, and enabled frequency dictionaries. Author-provided ruby stays visible.">
+                <label class="toggle-row" title="Hide generated furigana for vocabulary the app predicts is readable from your known vocabulary, known kanji, and enabled frequency dictionaries. Author-provided ruby stays visible.">
                   <input id="hide-inferred-furigana" type="checkbox" />
                   Hide inferred readable furigana
                 </label>
@@ -446,7 +346,7 @@
               <div class="page-card-head">
                 <div>
                   <h2>Sync</h2>
-                  <p>Optional Supabase source-data sync for books, progress, Word Bank, and settings.</p>
+                  <p>Optional Supabase source-data sync for books, progress, known vocabulary, and settings.</p>
                 </div>
                 <span id="sync-status" class="status">Offline</span>
               </div>
@@ -483,7 +383,7 @@
                   <button id="sync-sign-out" type="button">Sign out</button>
                 </div>
                 <div class="button-row">
-                  <button id="sync-push" type="button">Push local data</button><span class="help-dot" tabindex="0" data-tooltip="Uploads this device's local books, progress, highlights, bookmarks, Word Bank, cards, settings, and media metadata to Supabase.">?</span>
+                  <button id="sync-push" type="button">Push local data</button><span class="help-dot" tabindex="0" data-tooltip="Uploads this device's local books, progress, highlights, bookmarks, known vocabulary, cards, settings, and media metadata to Supabase.">?</span>
                   <button id="sync-pull" type="button">Pull remote data</button><span class="help-dot" tabindex="0" data-tooltip="Downloads Supabase data into this device. Use this on a new device or after another device has pushed changes.">?</span>
                   <button id="sync-now" type="button">Sync now</button><span class="help-dot" tabindex="0" data-tooltip="Runs a push, then a pull. Use this for normal day-to-day two-way syncing. Same-book edits use newest timestamp conflict rules.">?</span>
                 </div>
@@ -527,6 +427,6 @@
     <div id="dictionary-lookup" class="lookup-popover hidden" role="dialog" aria-live="polite"></div>
 
     <script src="/vendor/pdfjs/pdf.js"></script>
-    <script src="/app.js" type="module"></script>
+    <script src="/app.js?v=top-navigation" type="module"></script>
   </body>
 </html>

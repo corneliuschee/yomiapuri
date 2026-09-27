@@ -1,19 +1,9 @@
 """Register integrations endpoints while preserving frontend request and response contracts."""
 
-import csv
-import hashlib
-import io
-import json
-import re
-import uuid
+from fastapi import Body, Request
 
-from fastapi import Body, File, Request, UploadFile, Form
-from fastapi.responses import Response, StreamingResponse
-from starlette.concurrency import run_in_threadpool
-
-from ..storage.sqlite import decode, encode, merge, now
+from ..storage.sqlite import encode
 from ..services.dictionary import normalize
-from .common import uploaded
 
 def register(app):
     @app.post('/api/anki/settings')
@@ -42,6 +32,7 @@ def register(app):
         return request.app.state.anki.export(body)
 
     @app.post('/api/anki/import')
+    @app.post('/api/anki/sync-vocabulary')
     def import_anki(request: Request, body: dict = Body(...)):
         return request.app.state.anki.import_terms(body)
 
@@ -60,24 +51,8 @@ def register(app):
 
     @app.post('/api/media/settings')
     def media_settings(request: Request, body: dict = Body(...)):
-        settings = request.app.state.store.settings('media', body)
+        settings = request.app.state.store.settings('media', {'image': body.get('image', {}), 'audio': {'enabled': False}})
         return {'settings': settings, 'providers': request.app.state.media.providers()}
-
-    @app.post('/api/media/voice-models', status_code=201)
-    def voice_model(request: Request, body: dict = Body(...)):
-        url = str(body.get('url', '')).strip()
-        if not re.fullmatch(r'https://huggingface\.co/[^/\s]+/[^/\s]+/?', url):
-            raise ValueError('Enter a Hugging Face model URL, for example https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-JP')
-        model = {'id': hashlib.sha256(url.encode()).hexdigest()[:16], 'url': url, 'name': body.get('name') or url.split('huggingface.co/')[1], 'provider': 'huggingface', 'status': 'imported'}
-        s = request.app.state.store
-        models = [m for m in s.setting('media')['voiceModels'] if m['id'] != model['id']] + [model]
-        settings = s.settings('media', {'voiceModels': models, 'audio': {'voiceModelId': model['id']}})
-        return {'model': model, 'settings': settings, 'providers': request.app.state.media.providers()}
-
-    @app.post('/api/media/test-audio')
-    def test_audio(request: Request, body: dict = Body(default={})):
-        media = request.app.state.media
-        return {'value': media.audio(body.get('expression') or '図書館'), 'status': media.status()}
 
     @app.post('/api/media/test-image')
     def test_image(request: Request, body: dict = Body(default={})):

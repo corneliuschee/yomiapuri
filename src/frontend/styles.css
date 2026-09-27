@@ -132,7 +132,7 @@ h2 {
 
 .shell {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
   transition: grid-template-columns 160ms ease;
@@ -158,6 +158,10 @@ h2 {
   min-height: 0;
   overflow: hidden;
   transition: margin-left 160ms ease;
+}
+
+.shell:not(.reader-sidebar-mode) .sidebar {
+  display: none;
 }
 
 .sidebar.collapsed {
@@ -366,6 +370,37 @@ h2 {
   background: var(--panel-2);
   border-color: transparent;
   color: var(--accent);
+}
+
+.topbar-identity {
+  align-items: center;
+  display: flex;
+  gap: 22px;
+  min-width: 0;
+}
+
+.topbar-identity h1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar .nav-list {
+  border: 0;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 0;
+}
+
+.topbar .nav-item {
+  min-height: 34px;
+  padding: 0 10px;
+  width: auto;
+}
+
+.shell.reader-sidebar-mode .topbar .nav-list {
+  display: none;
 }
 
 .reader-side-panel {
@@ -829,7 +864,6 @@ h2 {
 }
 
 .book-list,
-.wordbank-list,
 .dictionary-list,
 .chapter-list,
 .bookmark-list {
@@ -913,7 +947,6 @@ h2 {
 .status,
 .meta-box,
 .definition,
-.word-row span,
 .dictionary-row span {
   color: var(--muted);
 }
@@ -2315,12 +2348,6 @@ progress {
   font-weight: 600;
 }
 
-.readable-suggestions-wrap {
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 10px;
-  padding-bottom: 10px;
-}
-
 .drawer-subhead {
   color: var(--muted);
   font-size: 12px;
@@ -2328,48 +2355,8 @@ progress {
   margin-bottom: 8px;
 }
 
-.readable-suggestions {
-  display: grid;
-  gap: 8px;
-  max-height: 180px;
-  overflow-y: auto;
-}
-
-.readable-suggestion {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  display: grid;
-  gap: 6px;
-  padding: 10px;
-}
-
-.readable-suggestion > div {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.readable-suggestion strong {
-  color: var(--text);
-}
-
-.readable-suggestion span,
-.readable-suggestion p {
-  color: var(--muted);
-  font-size: 12px;
-  margin: 0;
-}
-
-.readable-suggestion button {
-  min-height: 28px;
-  padding: 4px 8px;
-}
-
 .candidate-card,
 .page-card,
-.word-row,
 .dictionary-row {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -2519,12 +2506,6 @@ progress {
   align-self: start;
   margin: 18px;
 }
-
-#wordbank-page {
-  min-height: 0;
-}
-
-#wordbank-page .page-card,
 #trash-page .page-card {
   align-self: stretch;
   display: grid;
@@ -2570,101 +2551,22 @@ progress {
   padding-top: 10px;
 }
 
-.wordbank-controls {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-}
-
-#wordbank-search {
-  min-width: 180px;
-}
-
-#wordbank-dictionary {
-  max-width: min(320px, 100%);
-  min-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .trash-controls {
   align-items: center;
   display: flex;
   gap: 8px;
 }
-
-.sort-control {
-  align-items: center;
-  background: #101116;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  color: var(--text);
-  display: flex;
-  gap: 6px;
-  height: 36px;
-  padding: 0 8px;
-}
-
-.sort-control svg {
-  fill: none;
-  height: 16px;
-  stroke: var(--muted);
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
-  width: 16px;
-}
-
-.sort-control select {
-  background: transparent;
-  border: 0;
-  color: var(--text);
-  font-weight: 600;
-  min-height: 32px;
-  padding: 0;
-}
-
-.sort-control option {
-  background: var(--panel);
-  color: var(--text);
-}
-
-.wordbank-delete,
-.wordbank-delete-all,
-.wordbank-sync-anki,
-#wordbank-sync-anki,
 .trash-delete {
   min-height: 36px;
 }
-
-#wordbank-delete,
-.wordbank-delete-all,
 .trash-delete,
 .delete-permanent {
   border-color: rgba(212, 111, 101, 0.5);
   color: var(--danger);
 }
-
-#wordbank-delete:hover,
-.wordbank-delete-all:hover,
 .trash-delete:hover,
 .delete-permanent:hover {
   border-color: var(--danger);
-}
-
-.sort-control select:focus {
-  outline: none;
-}
-
-.wordbank-list {
-  align-content: start;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 4px;
 }
 
 .trash-panel {
@@ -2709,14 +2611,6 @@ progress {
   color: #111;
 }
 
-.wordbank-pagination {
-  display: flex;
-  gap: 6px;
-  justify-content: center;
-  margin-top: 18px;
-  min-height: 30px;
-}
-
 .page-number {
   border-radius: 4px;
   flex: 0 0 36px;
@@ -2739,87 +2633,6 @@ progress {
 .page-number.blank {
   opacity: 0;
   pointer-events: none;
-}
-
-.word-row {
-  display: grid;
-  gap: 4px;
-  grid-template-rows: 28px 20px minmax(0, 1fr);
-  height: 124px;
-  overflow: hidden;
-  position: relative;
-}
-
-.word-row.selected {
-  border-color: var(--accent);
-}
-
-.word-select {
-  align-items: center;
-  background: var(--paper);
-  border: 1px solid var(--line-soft);
-  border-radius: 50%;
-  color: transparent;
-  display: flex;
-  height: 22px;
-  justify-content: center;
-  min-height: 22px;
-  opacity: 0;
-  padding: 0;
-  position: absolute;
-  right: 8px;
-  top: 8px;
-  width: 22px;
-}
-
-.word-row:hover .word-select,
-.word-row.selected .word-select {
-  opacity: 1;
-}
-
-.word-row.selected .word-select {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #111;
-}
-
-.word-select svg {
-  fill: none;
-  height: 14px;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-  width: 14px;
-}
-
-.word-row strong,
-.word-row span,
-.word-row p {
-  min-width: 0;
-  overflow: hidden;
-}
-
-.word-row strong {
-  line-height: 1.35;
-  padding-right: 28px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.word-row span {
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.word-row p {
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  color: #d9d4ce;
-  display: -webkit-box;
-  font-size: 13px;
-  line-height: 1.35;
-  margin-bottom: 0;
 }
 
 .settings-grid {
@@ -2958,7 +2771,6 @@ progress {
   max-width: 100%;
 }
 
-.voice-model-form,
 .ai-model-form {
   border-top: 1px solid var(--line);
   margin-top: 4px;
@@ -3421,8 +3233,6 @@ progress {
   padding: 0;
   width: 26px;
 }
-
-.lookup-add-wordbank,
 .lookup-add-card,
 .lookup-open-anki {
   background: #1f7a3a;
@@ -3430,10 +3240,6 @@ progress {
   color: #f3fff6;
   font-weight: 700;
   line-height: 1;
-}
-
-.lookup-add-wordbank {
-  order: 1;
 }
 
 .lookup-add-card,
@@ -3448,8 +3254,6 @@ progress {
 .lookup-add-card {
   font-size: 18px;
 }
-
-.lookup-add-wordbank svg,
 .lookup-open-anki svg {
   display: block;
   fill: none;
@@ -3460,28 +3264,10 @@ progress {
   stroke-width: 1.8;
   width: 16px;
 }
-
-.lookup-add-wordbank.is-added,
-.lookup-add-wordbank:disabled {
-  background: #15171b;
-  border-color: #2a2d34;
-  color: #6f747d;
-  cursor: default;
-  opacity: 1;
-}
-
-.lookup-add-wordbank:hover,
 .lookup-add-card:hover,
 .lookup-open-anki:hover {
   background: #269149;
   border-color: #49bd6b;
-}
-
-.lookup-add-wordbank.is-added:hover,
-.lookup-add-wordbank:disabled:hover {
-  background: #15171b;
-  border-color: #2a2d34;
-  color: #6f747d;
 }
 
 .lookup-frequency {
@@ -3594,10 +3380,19 @@ progress {
     grid-template-columns: 1fr;
   }
 
+  .shell.reader-sidebar-mode:not(.sidebar-hidden) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .sidebar {
+    height: 100vh;
     position: fixed;
     width: 260px;
     z-index: 20;
+  }
+
+  .shell.reader-sidebar-mode .sidebar {
+    width: min(320px, 100vw);
   }
 
   .sidebar.collapsed {
@@ -3634,5 +3429,49 @@ progress {
   .candidate-actions input {
     min-width: 0;
     width: 100%;
+  }
+}
+
+@media (max-width: 620px) {
+  .main {
+    grid-template-rows: 94px minmax(0, 1fr);
+  }
+
+  .topbar {
+    align-items: stretch;
+    display: grid;
+    gap: 4px;
+    grid-template-rows: 40px 42px;
+    padding: 4px 10px;
+  }
+
+  .topbar-identity {
+    gap: 12px;
+  }
+
+  .topbar .nav-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    min-width: 0;
+  }
+
+  .topbar .nav-item {
+    gap: 5px;
+    justify-content: center;
+    min-width: 0;
+    padding: 0 4px;
+  }
+
+  .shell.reader-sidebar-mode .main {
+    grid-template-rows: 50px minmax(0, 1fr);
+  }
+
+  .shell.reader-sidebar-mode .topbar {
+    align-items: center;
+    display: flex;
+  }
+
+  .shell.reader-sidebar-mode .topbar .nav-list {
+    display: none;
   }
 }

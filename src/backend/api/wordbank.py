@@ -61,14 +61,7 @@ def register(app):
 
     @app.post('/api/known-terms/sync-anki')
     def sync_anki(request: Request):
-        s, anki = request.app.state.store, request.app.state.anki
-        linked = {term: m['ankiNoteIds'] for term, m in s.known().items() if m.get('ankiNoteIds')}
-        ids = list({int(i) for values in linked.values() for i in values})
-        existing = set()
-        for start in range(0, len(ids), 75):
-            existing.update(n['noteId'] for n in anki.connect('notesInfo', {'notes': ids[start:start + 75]}) if n.get('noteId'))
-        removed = s.delete_terms([t for t, values in linked.items() if not any(int(i) in existing for i in values)])
-        return {'checked': len(linked), 'removed': len(removed), 'terms': removed, 'total': len(s.known())}
+        return request.app.state.anki.import_terms({})
 
     @app.post('/api/trash/known-terms/restore')
     def restore_terms(request: Request, body: dict = Body(...)):

@@ -156,9 +156,7 @@ class AnkiService:
             for canonical, field in mapping.items():
                 if field not in fields or fields[field].strip():
                     continue
-                if canonical in {'Audio', 'WordAudio', 'SentenceAudio'}:
-                    fields[field] = self.media.audio(body.get('sentence', '') if canonical == 'SentenceAudio' else expression)
-                elif canonical == 'Image':
+                if canonical == 'Image':
                     fields[field] = self.media.image(expression, body.get('reading', ''), body.get('meaning', ''))
             self.media.store_files(fields, self.connect)
         note_id = self.connect('addNote', {'note': {'deckName': deck, 'modelName': model, 'fields': fields,
@@ -188,7 +186,8 @@ class AnkiService:
         return card
 
     def import_terms(self, body):
-        preset = body.get('preset', 'reviewed-once')
+        """Import reviewed Anki vocabulary additively, preserving existing note links."""
+        preset = body.get('preset') or self.store.setting('anki').get('vocabularyPreset', 'reviewed-once')
         query = body.get('query') or {'reviewed-once': 'prop:reps>0', 'reviewed': 'rated:365', 'mature': 'prop:ivl>=21', 'all': ''}.get(preset, 'prop:reps>0')
         deck = body.get('deckName') or self.store.setting('anki')['deckName']
         if deck and not body.get('query'):
@@ -197,14 +196,24 @@ class AnkiService:
         metadata = {}
         for start in range(0, len(ids), 75):
             for note in self.connect('notesInfo', {'notes': ids[start:start + 75]}):
+                fields = note.get('fields', {})
+                mapping = self.mapping(note.get('modelName', ''), fields)
+                vocabulary_fields = {mapping.get('Expression'), mapping.get('DictionaryForm')}
                 for field, value in note.get('fields', {}).items():
-                    if canonical_field(field) not in {'Expression', 'DictionaryForm'}:
+                    if field not in vocabulary_fields:
                         continue
                     soup = BeautifulSoup(value.get('value', ''), 'html.parser')
                     for ruby in soup.select('rt,rp'):
                         ruby.decompose()
-                    term = normalize(soup.get_text())
+                    text = re.sub(r'\[sound:[^\]]+\]', '', soup.get_text())
+                    text = re.sub(r'(?<=[\u3400-\u9fff])\[[\u3040-\u30ff\u30fc]+\]', '', text)
+                    term = normalize(text)
                     if term:
                         metadata.setdefault(term, {'ankiNoteIds': [], 'importedAt': now()})['ankiNoteIds'].append(note['noteId'])
-        added = self.store.add_terms(list(metadata), metadata)
-        return {'imported': len(metadata), 'added': len(added), 'total': len(self.store.known())}
+        existing = self.store.known()
+        changed = {term: meta for term, meta in metadata.items()
+                   if term not in existing or set(meta['ankiNoteIds']) - set(existing[term].get('ankiNoteIds', []))}
+        added = self.store.add_terms(list(changed), changed) if changed else []
+        synced_at = now()
+        self.store.settings('anki', {'lastVocabularySyncAt': synced_at, 'vocabularyPreset': preset})
+        return {'imported': len(metadata), 'added': len(added), 'total': len(self.store.known()), 'syncedAt': synced_at}

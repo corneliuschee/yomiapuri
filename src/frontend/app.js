@@ -3,8 +3,8 @@ const state = {
   dictionaries: [],
   dictionarySettings: { prefixWildcardSearch: false },
   reader: { hideInferredReadableFurigana: false },
-  media: { audio: { enabled: false, provider: "local-system-tts", voiceName: "", rate: 0 }, image: { enabled: false, provider: "local-mnemonic" } },
-  mediaProviders: { voices: [], status: null },
+  media: { image: { enabled: false, provider: "local-mnemonic" } },
+  mediaProviders: { status: null },
   ai: { translation: { enabled: true, modelId: "sugoi-14b-ultra-q4-k-m" }, models: [] },
   aiProviders: { status: null, models: [] },
   sync: { enabled: false, configured: false, signedIn: false, status: "disabled" },
@@ -19,7 +19,6 @@ const state = {
   knownTermsCount: 0,
   activeDocumentId: null,
   activeDocumentTitle: "",
-  dismissedReadableSuggestions: new Set(),
   activeHtml: "",
   activePages: [""],
   activeChapters: [],
@@ -37,15 +36,9 @@ const state = {
   readerZoom: 100,
   libraryZoom: 140,
   libraryQuery: "",
-  wordbankPage: 1,
-  wordbankPageSize: 60,
-  wordbankSort: "gojuon",
-  wordbankCache: new Map(),
   dictionaryLookupCache: new Map(),
-  selectedTerms: new Set(),
   trashTab: "books",
   selectedTrashDocuments: new Set(),
-  selectedTrashTerms: new Set(),
   currentPage: 0,
   voices: [],
 };
@@ -70,8 +63,6 @@ let mediaSettingsSaveTimer = null;
 const elements = {
   shell: $("#shell"),
   sidebar: $("#sidebar"),
-  collapseSidebar: $("#collapse-sidebar"),
-  showSidebar: $("#show-sidebar"),
   navItems: document.querySelectorAll(".nav-item"),
   pageLinks: document.querySelectorAll("[data-page-link]"),
   pages: document.querySelectorAll(".page"),
@@ -133,21 +124,9 @@ const elements = {
   chapterResizeHandle: $("#chapter-resize-handle"),
   bookmarkPage: $("#bookmark-page"),
   bookmarkFeedback: $("#bookmark-feedback"),
-  readableSuggestions: $("#readable-suggestions"),
-  wordbankSearch: $("#wordbank-search"),
-  wordbankSort: $("#wordbank-sort"),
-  wordbankSyncAnki: $("#wordbank-sync-anki"),
-  wordbankDelete: $("#wordbank-delete"),
-  wordbankDeleteAll: $("#wordbank-delete-all"),
-  wordbankList: $("#wordbank-list"),
-  wordbankPagination: $("#wordbank-pagination"),
-  trashBooksTab: $("#trash-books-tab"),
-  trashWordsTab: $("#trash-words-tab"),
-  trashRestoreWords: $("#trash-restore-words"),
-  trashDeleteWords: $("#trash-delete-words"),
+  trashDeleteSelected: $("#trash-delete-selected"),
   trashDeleteAll: $("#trash-delete-all"),
   trashBooks: $("#trash-books"),
-  trashWords: $("#trash-words"),
   ankiSettingsForm: $("#anki-settings-form"),
   ankiAutoLaunch: $("#anki-auto-launch"),
   ankiExecutablePath: $("#anki-executable-path"),
@@ -162,24 +141,15 @@ const elements = {
   selectedNoteLabel: $("#selected-note-label"),
   ankiImportDeck: $("#anki-import-deck"),
   ankiImportNotice: $("#anki-import-notice"),
+  ankiVocabularyStatus: $("#anki-vocabulary-status"),
   deckSelect: $("#deck-select"),
   modelSelect: $("#model-select"),
   ankiFieldStatus: $("#anki-field-status"),
-  retentionSummary: $("#retention-summary"),
   mediaSettingsForm: $("#media-settings-form"),
-  voiceModelForm: $("#voice-model-form"),
-  voiceModelUrl: $("#voice-model-url"),
-  voiceModelList: $("#voice-model-list"),
-  importVoiceModel: $("#import-voice-model"),
   mediaStatus: $("#media-status"),
-  mediaAudioEnabled: $("#media-audio-enabled"),
-  mediaVoiceSelect: $("#media-voice-select"),
-  mediaTestText: $("#media-test-text"),
-  mediaRate: $("#media-rate"),
   mediaImageEnabled: $("#media-image-enabled"),
   mediaPreview: $("#media-preview"),
   saveMediaSettings: $("#save-media-settings"),
-  testMediaAudio: $("#test-media-audio"),
   testMediaImage: $("#test-media-image"),
   aiModelForm: $("#ai-model-form"),
   aiStatus: $("#ai-status"),
@@ -188,17 +158,12 @@ const elements = {
   aiModelList: $("#ai-model-list"),
   importAiModel: $("#import-ai-model"),
   stopAiRuntime: $("#stop-ai-runtime"),
-  cacheWordbankDictionary: $("#cache-wordbank-dictionary"),
-  cacheRebuildWordbank: $("#cache-rebuild-wordbank"),
-  cacheWordbankStatus: $("#cache-wordbank-status"),
-  cacheNotice: $("#cache-notice"),
   dictionaryForm: $("#dictionary-form"),
   dictionaryFile: $("#dictionary-file"),
   dictionaryAttachment: $("#dictionary-attachment"),
   dictionaryImportButton: $("#dictionary-import-button"),
   dictionaryNotice: $("#dictionary-notice"),
   dictionaryList: $("#dictionary-list"),
-  wordbankDictionary: $("#wordbank-dictionary"),
   dictionaryPrefixToggle: $("#dictionary-prefix-toggle"),
   instantAnkiToggle: $("#instant-anki-toggle"),
   dictionaryLookup: $("#dictionary-lookup"),
@@ -261,12 +226,12 @@ async function loadState() {
   elements.knownCount.classList.add("hidden");
   elements.ankiSettingsForm.connectUrl.value = state.anki?.connectUrl ?? "http://127.0.0.1:8765";
   syncAnkiLaunchControls();
+  elements.ankiImportForm.elements.preset.value = state.anki?.vocabularyPreset || "reviewed-once";
+  renderVocabularyStatus();
   if (elements.instantAnkiToggle) elements.instantAnkiToggle.checked = Boolean(state.anki?.instantExport);
   renderDocuments();
   renderBooksGrid();
   renderDictionaries();
-  refreshWordBankMeaningCacheStatus();
-  renderAnkiSummary();
   renderSyncStatus();
   await loadMediaProviders();
   await loadAiProviders();
@@ -283,28 +248,21 @@ function setPage(pageId) {
   updateReaderToolbar();
   renderReaderSidePanel();
   syncReaderModeButtons();
-  elements.knownCount.classList.toggle("hidden", pageId !== "wordbank-page");
+  elements.knownCount.classList.add("hidden");
   const labels = {
     "books-page": ["Books", "Library"],
     "reader-page": ["Reader", state.activeDocumentTitle || "Choose a book"],
-    "wordbank-page": ["Word Bank", "Imported vocabulary"],
     "trash-page": ["Trash", "Deleted items"],
     "integrations-page": ["Integrations", "Anki and dictionaries"]
   };
   elements.pageEyebrow.textContent = labels[pageId]?.[0] ?? "";
   elements.pageTitle.textContent = labels[pageId]?.[1] ?? "";
-  if (pageId === "wordbank-page") loadWordBank();
   if (pageId === "trash-page") renderTrash();
 }
 
 function setSidebarHidden(hidden, options = {}) {
   elements.shell.classList.toggle("sidebar-hidden", hidden);
   elements.sidebar.classList.toggle("collapsed", hidden);
-  elements.collapseSidebar.classList.toggle("sidebar-toggle-left-open", hidden);
-  elements.collapseSidebar.classList.toggle("sidebar-toggle-left-close", !hidden);
-  elements.collapseSidebar.title = hidden ? "Show sidebar" : "Hide sidebar";
-  elements.collapseSidebar.setAttribute("aria-label", hidden ? "Show sidebar" : "Hide sidebar");
-  elements.showSidebar.classList.add("hidden");
   if (elements.readerSidebarToggle) {
     elements.readerSidebarToggle.classList.toggle("sidebar-toggle-left-open", hidden);
     elements.readerSidebarToggle.classList.toggle("sidebar-toggle-left-close", !hidden);
@@ -416,7 +374,6 @@ let libraryDragInsertAfter = false;
 let libraryNoticeTimer;
 let ankiNoticeTimer;
 let dictionaryNoticeTimer;
-let cacheNoticeTimer;
 
 function showLibraryNotice(message, type = "success") {
   libraryNoticeTimer = showNotice(elements.libraryNotice, libraryNoticeTimer, message, type);
@@ -430,12 +387,8 @@ function showDictionaryNotice(message, type = "success") {
   dictionaryNoticeTimer = showNotice(elements.dictionaryNotice, dictionaryNoticeTimer, message, type);
 }
 
-function showCacheNotice(message, type = "success") {
-  cacheNoticeTimer = showNotice(elements.cacheNotice, cacheNoticeTimer, message, type);
-}
 
 function clearLookupRelatedCaches() {
-  state.wordbankCache.clear();
   state.dictionaryLookupCache.clear();
 }
 
@@ -1549,88 +1502,6 @@ function nudgeReaderSidebarWidth(event) {
   setReaderSidebarWidth(current + (event.key === "ArrowLeft" ? 24 : -24));
 }
 
-function renderReadableSuggestions() {
-  if (!elements.readableSuggestions) return;
-  const visible = (state.readabilitySuggestions ?? [])
-    .filter((item) => !state.dismissedReadableSuggestions.has(item.dictionaryForm || item.expression))
-    .slice(0, 12);
-  if (visible.length === 0) {
-    elements.readableSuggestions.innerHTML = `<p class="empty compact-empty">No inferred readable words on this page.</p>`;
-    return;
-  }
-  elements.readableSuggestions.innerHTML = visible.map((item) => {
-    const term = item.dictionaryForm || item.expression;
-    const reasons = (item.readabilityReasons ?? []).slice(0, 3).join(", ");
-    return `
-      <article class="readable-suggestion" data-term="${escapeHtml(term)}">
-        <div>
-          <strong>${escapeHtml(term)}</strong>
-          <span>${escapeHtml(item.reading || "")}</span>
-        </div>
-        <p>${Number(item.readabilityScore ?? 0)} - ${escapeHtml(reasons || "inferred readable")}</p>
-        <div>
-          <button class="readable-add" type="button">Add</button>
-          <button class="readable-anki" type="button">Anki</button>
-          <button class="readable-dismiss" type="button">Dismiss</button>
-        </div>
-      </article>
-    `;
-  }).join("");
-  elements.readableSuggestions.querySelectorAll(".readable-add").forEach((button) => {
-    button.addEventListener("click", () => addReadableSuggestionToWordBank(button.closest(".readable-suggestion")?.dataset.term ?? ""));
-  });
-  elements.readableSuggestions.querySelectorAll(".readable-anki").forEach((button) => {
-    button.addEventListener("click", () => exportReadableSuggestion(button.closest(".readable-suggestion")?.dataset.term ?? ""));
-  });
-  elements.readableSuggestions.querySelectorAll(".readable-dismiss").forEach((button) => {
-    button.addEventListener("click", () => dismissReadableSuggestion(button.closest(".readable-suggestion")?.dataset.term ?? ""));
-  });
-}
-
-function readableSuggestionByTerm(term = "") {
-  return (state.readabilitySuggestions ?? []).find((item) => (item.dictionaryForm || item.expression) === term);
-}
-
-async function addReadableSuggestionToWordBank(term = "") {
-  const suggestion = readableSuggestionByTerm(term);
-  if (!suggestion) return;
-  const result = await api("/api/known-terms", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ term, source: "readable-suggestion", documentId: state.activeDocumentId })
-  });
-  state.knownTermsCount = result.total ?? state.knownTermsCount;
-  elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
-  clearLookupRelatedCaches();
-  state.dismissedReadableSuggestions.add(term);
-  renderReadableSuggestions();
-  await refreshActiveDocumentForKnownTerms(term);
-}
-
-async function exportReadableSuggestion(term = "") {
-  const suggestion = readableSuggestionByTerm(term);
-  if (!suggestion) return;
-  await openAnkiPreview({
-    expression: suggestion.dictionaryForm || suggestion.expression,
-    surface: suggestion.surface,
-    dictionaryForm: suggestion.dictionaryForm || suggestion.expression,
-    reading: suggestion.reading,
-    sentence: currentReaderPageText(),
-    source: state.activeDocumentTitle || "Reader"
-  }, null);
-}
-
-async function dismissReadableSuggestion(term = "") {
-  if (!term) return;
-  state.dismissedReadableSuggestions.add(term);
-  renderReadableSuggestions();
-  await api("/api/reader/readable-suggestion/dismiss", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ term, documentId: state.activeDocumentId })
-  }).catch(() => {});
-}
-
 async function openAnkiPreview(candidate, node) {
   const preview = await api("/api/anki/card-preview", {
     method: "POST",
@@ -1699,7 +1570,6 @@ async function refreshStateMetadataOnly() {
   state.knownTermsCount = snapshot.knownTermsCount ?? state.knownTermsCount;
   elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
   clearLookupRelatedCaches();
-  if (elements.wordbankList.closest(".page.active")) await loadWordBank();
 }
 
 async function refreshLookupAfterAnkiExport(exported, candidate = {}) {
@@ -1836,178 +1706,6 @@ function exportFailureMessage(error) {
     return "Export failed (AnkiConnect unreachable. Open Anki Desktop with AnkiConnect enabled, then try again.)";
   }
   return `Export failed (${reason || "Unknown error"})`;
-}
-
-async function loadWordBank() {
-  const q = elements.wordbankSearch.value.trim();
-  const limit = state.wordbankPageSize;
-  const offset = (state.wordbankPage - 1) * limit;
-  const sort = encodeURIComponent(state.wordbankSort);
-  const dictionaryId = elements.wordbankDictionary?.value ?? "";
-  const cacheKey = JSON.stringify({ q, limit, offset, sort: state.wordbankSort, dictionaryId });
-  const result = state.wordbankCache.get(cacheKey) ?? await api(`/api/known-terms?limit=${limit}&offset=${offset}&sort=${sort}&q=${encodeURIComponent(q)}&dictionaryId=${encodeURIComponent(dictionaryId)}`);
-  state.wordbankCache.set(cacheKey, result);
-  if (state.wordbankCache.size > 40) state.wordbankCache.delete(state.wordbankCache.keys().next().value);
-  elements.wordbankList.innerHTML = "";
-  elements.wordbankPagination.innerHTML = "";
-
-  if (result.terms.length === 0) {
-    elements.wordbankList.innerHTML = `<p class="empty">No vocabulary imported yet.</p>`;
-    updateWordbankDeleteButton();
-    return;
-  }
-
-  for (const item of result.terms) {
-    const entry = item.dictionaryEntries?.[0];
-    const row = document.createElement("div");
-    row.className = `word-row${state.selectedTerms.has(item.term) ? " selected" : ""}`;
-    row.dataset.term = item.term;
-    row.innerHTML = `
-      <button class="word-select" type="button" aria-label="Select ${escapeHtml(item.term)}">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 4.5 6.4 11.5 2.5 7.7"/></svg>
-      </button>
-      <strong>${escapeHtml(item.term)}</strong>
-      <span>${escapeHtml(entry?.reading ?? "")}</span>
-      <p>${escapeHtml(entry?.definitions?.slice(0, 2).join("; ") ?? "")}</p>
-    `;
-    row.querySelector(".word-select").addEventListener("click", (event) => {
-      event.stopPropagation();
-      toggleWordSelection(item.term);
-    });
-    elements.wordbankList.append(row);
-  }
-  updateWordbankDeleteButton();
-  renderWordbankPagination(result.total, result.limit);
-}
-
-async function refreshWordBankMeaningCacheStatus() {
-  if (!elements.cacheWordbankStatus) return;
-  const dictionaryId = elements.cacheWordbankDictionary?.value || selectedWordBankDictionaryId();
-  try {
-    const status = await api(`/api/cache/wordbank-meanings/status?dictionaryId=${encodeURIComponent(dictionaryId)}`);
-    const rebuiltAt = status.builtAt ? new Date(status.builtAt).toLocaleString() : "Never";
-    elements.cacheWordbankStatus.innerHTML = `
-      <strong>${escapeHtml(status.dictionaryName || "No dictionary")}</strong>
-      <span>${escapeHtml(status.message)}</span>
-      <span>Last rebuilt: ${escapeHtml(rebuiltAt)}</span>
-    `;
-    elements.cacheWordbankStatus.classList.toggle("ready", Boolean(status.ready));
-    elements.cacheWordbankStatus.classList.toggle("stale", Boolean(status.stale || !status.ready));
-  } catch (error) {
-    elements.cacheWordbankStatus.textContent = error.message;
-    elements.cacheWordbankStatus.classList.remove("ready");
-    elements.cacheWordbankStatus.classList.add("stale");
-  }
-}
-
-async function rebuildWordBankMeaningCache() {
-  if (!elements.cacheRebuildWordbank) return;
-  const dictionaryId = elements.cacheWordbankDictionary?.value || selectedWordBankDictionaryId();
-  if (!dictionaryId) {
-    showCacheNotice("Choose a term dictionary first.", "error");
-    return;
-  }
-  const previousText = elements.cacheRebuildWordbank.textContent;
-  elements.cacheRebuildWordbank.disabled = true;
-  elements.cacheRebuildWordbank.textContent = "Rebuilding...";
-  try {
-    const status = await api("/api/cache/wordbank-meanings/rebuild", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dictionaryId })
-    });
-    clearLookupRelatedCaches();
-    await refreshWordBankMeaningCacheStatus();
-    if (elements.wordbankList.closest(".page.active")) await loadWordBank();
-    showCacheNotice(`${Number(status.cachedTerms ?? 0).toLocaleString()} Word Bank meanings rebuilt for ${status.dictionaryName}.`, "success");
-  } catch (error) {
-    showCacheNotice(error.message, "error");
-  } finally {
-    elements.cacheRebuildWordbank.disabled = false;
-    elements.cacheRebuildWordbank.textContent = previousText;
-  }
-}
-
-function toggleWordSelection(term) {
-  if (state.selectedTerms.has(term)) state.selectedTerms.delete(term);
-  else state.selectedTerms.add(term);
-  const row = elements.wordbankList.querySelector(`[data-term="${cssEscape(term)}"]`);
-  row?.classList.toggle("selected", state.selectedTerms.has(term));
-  updateWordbankDeleteButton();
-}
-
-function updateWordbankDeleteButton() {
-  const selectedCount = state.selectedTerms.size;
-  elements.wordbankDelete.classList.toggle("hidden", selectedCount === 0);
-  elements.wordbankDelete.textContent = state.selectedTerms.size > 0 ? `Delete ${state.selectedTerms.size}` : "Delete";
-  if (elements.wordbankDeleteAll) {
-    elements.wordbankDeleteAll.classList.toggle("hidden", selectedCount > 0);
-    elements.wordbankDeleteAll.disabled = state.knownTermsCount === 0;
-  }
-}
-
-async function deleteSelectedTerms() {
-  const terms = [...state.selectedTerms];
-  if (terms.length === 0) return;
-  const label = terms.length === 1 ? `Delete "${terms[0]}" from the Word Bank?` : `Delete ${terms.length} vocabulary items from the Word Bank?`;
-  if (!(await confirmAction(label, { title: "Delete vocabulary?", confirmText: "Delete" }))) return;
-  await api("/api/known-terms", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ terms })
-  });
-  state.selectedTerms.clear();
-  state.wordbankPage = 1;
-  await loadState();
-  await loadWordBank();
-  await refreshActiveDocumentForKnownTerms();
-}
-
-async function deleteAllTerms() {
-  if (state.knownTermsCount === 0) return;
-  const label = `Delete all ${state.knownTermsCount.toLocaleString()} vocabulary items from the Word Bank? They will move to Trash.`;
-  if (!(await confirmAction(label, { title: "Delete all vocabulary?", confirmText: "Delete all" }))) return;
-  await api("/api/known-terms", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ all: true })
-  });
-  state.selectedTerms.clear();
-  state.wordbankPage = 1;
-  await loadState();
-  await loadWordBank();
-  await refreshActiveDocumentForKnownTerms();
-}
-
-async function syncWordBankWithAnki() {
-  if (elements.wordbankSyncAnki) {
-    elements.wordbankSyncAnki.disabled = true;
-    elements.wordbankSyncAnki.textContent = "Syncing...";
-  }
-  try {
-    const result = await api("/api/known-terms/sync-anki", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({})
-    });
-    state.selectedTerms.clear();
-    state.wordbankPage = 1;
-    await loadState();
-    await loadWordBank();
-    await refreshActiveDocumentForKnownTerms();
-    const removed = Number(result.removed ?? 0);
-    showAnkiNotice(removed > 0
-      ? `${removed.toLocaleString()} vocabulary removed from Word Bank after Anki sync`
-      : `Anki sync complete. ${Number(result.checked ?? 0).toLocaleString()} linked vocabulary checked`,
-    "success");
-  } catch (error) {
-    showAnkiNotice(`Anki sync failed: ${error.message}`, "error");
-  } finally {
-    if (elements.wordbankSyncAnki) {
-      elements.wordbankSyncAnki.disabled = false;
-      elements.wordbankSyncAnki.textContent = "Sync Anki";
-    }
-  }
 }
 
 function selectedReaderText() {
@@ -2208,24 +1906,15 @@ function renderReaderAssistantAnswer(result = {}, pendingId = "", elapsed = "") 
   replaceReaderAssistantMessage(pendingId, "assistant", result.answer ?? "", "Assistant", elapsed, extraHtml);
 }
 
-function setTrashTab(tabName) {
-  state.trashTab = tabName === "words" ? "words" : "books";
+function setTrashTab() {
   renderTrash();
 }
 
 function renderTrash() {
-  if (!elements.trashBooks || !elements.trashWords) return;
-  const deletedDocumentIds = new Set((state.trash?.documents ?? []).map((document) => document.id).filter(Boolean));
+  if (!elements.trashBooks) return;
+  const deletedDocumentIds = new Set((state.trash?.documents ?? []).map((document) => document.id));
   state.selectedTrashDocuments = new Set([...state.selectedTrashDocuments].filter((id) => deletedDocumentIds.has(id)));
-  const deletedTerms = new Set((state.trash?.knownTerms ?? []).map(trashTerm).filter(Boolean));
-  state.selectedTrashTerms = new Set([...state.selectedTrashTerms].filter((term) => deletedTerms.has(term)));
-  const showBooks = state.trashTab !== "words";
-  elements.trashBooksTab?.classList.toggle("active", showBooks);
-  elements.trashWordsTab?.classList.toggle("active", !showBooks);
-  elements.trashBooks.classList.toggle("active", showBooks);
-  elements.trashWords.classList.toggle("active", !showBooks);
   renderTrashBooks();
-  renderTrashWords();
   updateTrashActionButtons();
 }
 
@@ -2269,41 +1958,6 @@ function renderTrashBooks() {
   renderPdfCovers(elements.trashBooks);
 }
 
-function renderTrashWords() {
-  if (!elements.trashWords) return;
-  elements.trashWords.innerHTML = "";
-  const terms = state.trash?.knownTerms ?? [];
-  if (terms.length === 0) {
-    elements.trashWords.innerHTML = `<p class="empty trash-empty">No deleted words.</p>`;
-    return;
-  }
-
-  for (const entry of terms) {
-    const term = trashTerm(entry);
-    if (!term) continue;
-    const row = document.createElement("div");
-    row.className = `word-row${state.selectedTrashTerms.has(term) ? " selected" : ""}`;
-    row.dataset.term = term;
-    row.innerHTML = `
-      <button class="word-select" type="button" aria-label="Select ${escapeHtml(term)}">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 4.5 6.4 11.5 2.5 7.7"/></svg>
-      </button>
-      <strong>${escapeHtml(term)}</strong>
-      <span>${escapeHtml(formatDeletedAt(entry))}</span>
-      <p>Deleted vocabulary</p>
-    `;
-    row.querySelector(".word-select").addEventListener("click", (event) => {
-      event.stopPropagation();
-      toggleTrashWordSelection(term);
-    });
-    elements.trashWords.append(row);
-  }
-}
-
-function trashTerm(entry) {
-  return typeof entry === "string" ? entry : entry?.term ?? "";
-}
-
 function formatDeletedAt(entry) {
   const value = typeof entry === "object" ? entry?.deletedAt : "";
   if (!value) return "";
@@ -2311,13 +1965,6 @@ function formatDeletedAt(entry) {
   return Number.isNaN(date.getTime()) ? "" : `Deleted ${date.toLocaleDateString()}`;
 }
 
-function toggleTrashWordSelection(term) {
-  if (state.selectedTrashTerms.has(term)) state.selectedTrashTerms.delete(term);
-  else state.selectedTrashTerms.add(term);
-  const row = elements.trashWords.querySelector(`[data-term="${cssEscape(term)}"]`);
-  row?.classList.toggle("selected", state.selectedTrashTerms.has(term));
-  updateTrashActionButtons();
-}
 
 function toggleTrashDocumentSelection(id) {
   if (state.selectedTrashDocuments.has(id)) state.selectedTrashDocuments.delete(id);
@@ -2328,16 +1975,10 @@ function toggleTrashDocumentSelection(id) {
 }
 
 function updateTrashActionButtons() {
-  const showWords = state.trashTab === "words";
-  const count = showWords ? state.selectedTrashTerms.size : state.selectedTrashDocuments.size;
-  const booksCount = state.trash?.documents?.length ?? 0;
-  const wordsCount = state.trash?.knownTerms?.length ?? 0;
-  elements.trashRestoreWords?.classList.toggle("hidden", !showWords || count === 0);
-  if (elements.trashRestoreWords) elements.trashRestoreWords.textContent = count > 0 ? `Restore ${count}` : "Restore";
-  elements.trashDeleteWords?.classList.toggle("hidden", count === 0);
-  if (elements.trashDeleteWords) elements.trashDeleteWords.textContent = count > 0 ? `Delete ${count}` : "Delete";
-  elements.trashDeleteAll?.classList.toggle("hidden", count > 0 || (showWords ? wordsCount === 0 : booksCount === 0));
-  if (elements.trashDeleteAll) elements.trashDeleteAll.textContent = showWords ? "Delete all words" : "Delete all books";
+  const count = state.selectedTrashDocuments.size;
+  elements.trashDeleteSelected?.classList.toggle("hidden", count === 0);
+  if (elements.trashDeleteSelected) elements.trashDeleteSelected.textContent = count ? `Delete ${count}` : "Delete";
+  elements.trashDeleteAll?.classList.toggle("hidden", count > 0 || !state.trash?.documents?.length);
 }
 
 async function restoreTrashDocument(item) {
@@ -2354,36 +1995,6 @@ async function deleteTrashDocument(item) {
   setTrashTab("books");
 }
 
-async function restoreSelectedTrashTerms() {
-  const terms = [...state.selectedTrashTerms];
-  if (terms.length === 0) return;
-  const label = terms.length === 1 ? `Restore "${terms[0]}" to the Word Bank?` : `Restore ${terms.length} vocabulary items to the Word Bank?`;
-  if (!(await confirmAction(label, { title: "Restore vocabulary?", confirmText: "Restore", variant: "restore" }))) return;
-  await api("/api/trash/known-terms/restore", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ terms })
-  });
-  state.selectedTrashTerms.clear();
-  await loadState();
-  setTrashTab("words");
-}
-
-async function deleteSelectedTrashTerms() {
-  const terms = [...state.selectedTrashTerms];
-  if (terms.length === 0) return;
-  const label = terms.length === 1 ? `Permanently delete "${terms[0]}"?` : `Permanently delete ${terms.length} vocabulary items?`;
-  if (!(await confirmAction(`${label} This cannot be undone.`, { title: "Delete forever?", confirmText: "Delete" }))) return;
-  await api("/api/trash/known-terms", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ terms })
-  });
-  state.selectedTrashTerms.clear();
-  await loadState();
-  setTrashTab("words");
-}
-
 async function deleteSelectedTrashDocuments() {
   const ids = [...state.selectedTrashDocuments];
   if (ids.length === 0) return;
@@ -2398,48 +2009,18 @@ async function deleteSelectedTrashDocuments() {
 }
 
 function deleteSelectedTrashItems() {
-  return state.trashTab === "words" ? deleteSelectedTrashTerms() : deleteSelectedTrashDocuments();
+  return deleteSelectedTrashDocuments();
 }
 
 async function deleteAllTrashItems() {
-  const showWords = state.trashTab === "words";
-  const count = showWords ? state.trash?.knownTerms?.length ?? 0 : state.trash?.documents?.length ?? 0;
-  if (count === 0) return;
-  const noun = showWords ? "deleted vocabulary items" : "deleted books";
-  if (!(await confirmAction(`Permanently delete all ${count.toLocaleString()} ${noun}? This cannot be undone.`, { title: "Delete all forever?", confirmText: "Delete all" }))) return;
-  if (showWords) {
-    await api("/api/trash/known-terms", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ all: true })
-    });
-    state.selectedTrashTerms.clear();
-  } else {
-    await api("/api/trash/documents", { method: "DELETE" });
-  }
+  const count = state.trash?.documents?.length ?? 0;
+  if (!count) return;
+  if (!(await confirmAction(`Permanently delete all ${count.toLocaleString()} deleted books? This cannot be undone.`, { title: "Delete all forever?", confirmText: "Delete all" }))) return;
+  await api("/api/trash/documents", { method: "DELETE" });
   await loadState();
-  setTrashTab(showWords ? "words" : "books");
+  renderTrash();
 }
 
-function renderWordbankPagination(total, limit) {
-  const pageCount = Math.max(1, Math.ceil(total / limit));
-  state.wordbankPage = Math.max(1, Math.min(state.wordbankPage, pageCount));
-  const pages = compactPageNumbers(state.wordbankPage, pageCount);
-  for (const page of pages) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `page-number${page === state.wordbankPage ? " active" : ""}${page === "blank" ? " blank" : ""}`;
-    button.textContent = page === "gap" ? "..." : page === "blank" ? "" : String(page);
-    button.disabled = page === "gap" || page === "blank" || page === state.wordbankPage;
-    if (typeof page === "number" && page !== state.wordbankPage) {
-      button.addEventListener("click", () => {
-        state.wordbankPage = page;
-        loadWordBank();
-      });
-    }
-    elements.wordbankPagination.append(button);
-  }
-}
 
 function compactPageNumbers(current, total) {
   const slots = 10;
@@ -2451,8 +2032,6 @@ function compactPageNumbers(current, total) {
 
 function renderDictionaries() {
   elements.dictionaryList.innerHTML = "";
-  const termDictionaries = state.dictionaries.filter((dictionary) => dictionary.type === "term");
-  renderWordBankDictionarySelects(termDictionaries);
   elements.dictionaryPrefixToggle.checked = Boolean(state.dictionarySettings?.prefixWildcardSearch);
 
   if (state.dictionaries.length === 0) {
@@ -2496,33 +2075,6 @@ function renderDictionaries() {
   }
 }
 
-function renderWordBankDictionarySelects(termDictionaries = state.dictionaries.filter((dictionary) => dictionary.type === "term")) {
-  const selectedId = selectedWordBankDictionaryId();
-  for (const select of [elements.wordbankDictionary, elements.cacheWordbankDictionary].filter(Boolean)) {
-    select.innerHTML = `<option value="">No dictionary selected</option>`;
-    for (const dictionary of termDictionaries) {
-      const option = document.createElement("option");
-      option.value = dictionary.id;
-      option.textContent = dictionary.name;
-      option.selected = dictionary.id === selectedId;
-      select.append(option);
-    }
-    select.disabled = termDictionaries.length === 0;
-  }
-}
-
-function selectedWordBankDictionaryId() {
-  return state.dictionaries.find((dictionary) => dictionary.type === "term" && dictionary.selectedForWordBank)?.id ?? "";
-}
-
-function setSelectedWordBankDictionaryLocal(id) {
-  state.dictionaries = state.dictionaries.map((dictionary) => ({
-    ...dictionary,
-    selectedForWordBank: dictionary.type === "term" && dictionary.id === id
-  }));
-  renderWordBankDictionarySelects();
-}
-
 function orderedDictionariesForUi(dictionaries = []) {
   return [...dictionaries].sort((a, b) =>
     Number(a.type === "frequency") - Number(b.type === "frequency") ||
@@ -2531,7 +2083,7 @@ function orderedDictionariesForUi(dictionaries = []) {
 }
 
 async function updateDictionarySettings(id, patch, options = {}) {
-  if (options.clearCache !== false && (patch.selectedForWordBank || patch.enabledForLookup)) clearLookupRelatedCaches();
+  if (options.clearCache !== false && (Object.hasOwn(patch, "enabledForLookup"))) clearLookupRelatedCaches();
   const result = await api(`/api/dictionaries/${encodeURIComponent(id)}/settings`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -2540,7 +2092,6 @@ async function updateDictionarySettings(id, patch, options = {}) {
   state.dictionaries = result.dictionaries ?? state.dictionaries;
   state.dictionarySettings = result.settings ?? state.dictionarySettings;
   if (options.render !== false) renderDictionaries();
-  if (options.reloadWordBank !== false && elements.wordbankList.closest(".page.active")) loadWordBank();
   return result;
 }
 
@@ -2574,15 +2125,13 @@ async function dropDictionary(event, targetId) {
   renderDictionaries();
   try {
     const results = await Promise.all(group.map((dictionary, index) =>
-      updateDictionarySettings(dictionary.id, { sortOrder: index }, { render: false, reloadWordBank: false })
+      updateDictionarySettings(dictionary.id, { sortOrder: index }, { render: false })
     ));
     state.dictionaries = results.at(-1)?.dictionaries ?? state.dictionaries;
     renderDictionaries();
-    await refreshWordBankMeaningCacheStatus();
   } catch (error) {
     state.dictionaries = previousDictionaries;
     renderDictionaries();
-    await refreshWordBankMeaningCacheStatus();
     showDictionaryNotice(error.message, "error");
   }
 }
@@ -2646,23 +2195,12 @@ async function deleteDictionary(dictionary) {
     state.dictionarySettings = result.settings ?? state.dictionarySettings;
     clearLookupRelatedCaches();
     renderDictionaries();
-    await refreshWordBankMeaningCacheStatus();
-    if (elements.wordbankList.closest(".page.active")) loadWordBank();
     showDictionaryNotice("Dictionary deleted", "success");
   } catch (error) {
     showDictionaryNotice(error.message, "error");
   }
 }
 
-function renderAnkiSummary() {
-  if (!elements.retentionSummary) return;
-  const stats = state.anki?.retentionStats;
-  if (!stats) {
-    elements.retentionSummary.textContent = "After connecting, choose an import preset and import reviewed vocabulary into the Word Bank.";
-    return;
-  }
-  elements.retentionSummary.textContent = `${stats.importedTerms.toLocaleString()} terms imported from ${stats.cards.toLocaleString()} cards. Query: ${stats.query}`;
-}
 
 function renderSyncStatus(extra = "") {
   if (!elements.syncSummary) return;
@@ -2785,7 +2323,6 @@ function updateAnkiConnectionUi(connected = false) {
   elements.settingsGrid?.classList.toggle("anki-connected", connected);
   elements.ankiConnectedArea?.classList.toggle("hidden", !connected);
   elements.ankiFieldStatus?.classList.toggle("hidden", !connected);
-  elements.ankiImportForm?.classList.toggle("hidden", !connected);
   if (elements.selectedDeckLabel) elements.selectedDeckLabel.textContent = `Current Selected Deck: ${deckName || "None"}`;
   if (elements.selectedNoteLabel) elements.selectedNoteLabel.textContent = `Current Selected Note: ${modelName || "None"}`;
   if (elements.ankiImportDeck) elements.ankiImportDeck.textContent = `Importing from: ${deckName || "No deck selected"}`;
@@ -2798,7 +2335,7 @@ function setAnkiImportLoading(loading) {
   elements.ankiImportButton.classList.toggle("loading", loading);
   elements.ankiImportButton.innerHTML = loading
     ? `<span class="button-spinner" aria-hidden="true"></span><span>Importing vocabulary</span>`
-    : "Import vocabulary from Anki";
+    : "Sync Anki";
 }
 
 async function loadModelFields() {
@@ -2827,7 +2364,6 @@ function renderAnkiFieldStatus(result) {
     const canonical = Object.entries(mapped).find(([, ankiField]) => ankiField === field)?.[0] || "Unmapped";
     return `<tr><td>${escapeHtml(field)}</td><td>${escapeHtml(canonical)}</td></tr>`;
   }).join("");
-  const media = result.media;
   elements.ankiFieldStatus.innerHTML = `
     <div class="mapping-scroll">
       <table class="mapping-table">
@@ -2840,7 +2376,6 @@ function renderAnkiFieldStatus(result) {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <p>${escapeHtml(media?.audio?.label ?? "Audio provider not configured")} - ${escapeHtml(media?.image?.label ?? "Image provider not configured")}</p>
   `;
 }
 
@@ -2859,92 +2394,27 @@ async function loadMediaProviders() {
 
 function renderMediaSettings(result = state.mediaProviders) {
   if (!elements.mediaSettingsForm) return;
-  const settings = result.settings ?? state.media;
-  const voices = result.voices ?? [];
-  const status = result.status ?? {};
-  const voiceModels = result.voiceModels ?? status.voiceModels ?? settings.voiceModels ?? [];
-  const japaneseModels = voiceModels.filter(isJapaneseVoiceModel);
-  const japaneseVoices = voices.filter(isJapaneseSystemVoice);
-  state.media = settings;
-  elements.mediaAudioEnabled.checked = Boolean(settings.audio?.enabled);
-  elements.mediaImageEnabled.checked = Boolean(settings.image?.enabled);
-  elements.mediaRate.value = String(settings.audio?.rate ?? 0);
-  const options = [
-    `<option value="">No Japanese voice selected</option>`,
-    ...japaneseModels.map((model) => `<option value="model:${escapeHtml(model.id)}">LiquidAI: ${escapeHtml(model.name)}</option>`),
-    ...japaneseVoices.map((voice) => `<option value="voice:${escapeHtml(voice.name)}">Windows: ${escapeHtml(`${voice.name}${voice.culture ? ` (${voice.culture})` : ""}`)}</option>`)
-  ].join("");
-  elements.mediaVoiceSelect.innerHTML = options;
-  const selectedValue = settings.audio?.voiceModelId
-    ? `model:${settings.audio.voiceModelId}`
-    : settings.audio?.voiceName
-      ? `voice:${settings.audio.voiceName}`
-      : "";
-  const optionValues = Array.from(elements.mediaVoiceSelect.options).map((option) => option.value);
-  elements.mediaVoiceSelect.value = optionValues.includes(selectedValue)
-    ? selectedValue
-    : "";
+  state.media = result.settings ?? state.media;
+  elements.mediaImageEnabled.checked = Boolean(state.media.image?.enabled);
   renderMediaStatus(result);
-  renderVoiceModels(japaneseModels);
 }
 
 function renderMediaStatus(result = state.mediaProviders) {
   if (!elements.mediaStatus || !elements.mediaPreview) return;
-  const status = result.status ?? {};
-  const audioLabel = status.audio?.label ?? "Audio provider not configured";
-  const imageLabel = status.image?.label ?? "Image provider not configured";
-  const anyConfigured = status.audio?.configured || status.image?.configured;
-  const anyEnabled = status.audio?.enabled || status.image?.enabled;
-  elements.mediaStatus.textContent = anyConfigured ? "Local" : anyEnabled ? "Setup needed" : "Off";
-  elements.mediaPreview.textContent = `${audioLabel} - ${imageLabel}`;
-}
-
-function isJapaneseVoiceModel(model = {}) {
-  const text = `${model.name ?? ""} ${model.url ?? ""} ${model.language ?? ""} ${model.locale ?? ""}`;
-  return /\bja(?:panese)?\b|jp\b|jpn\b|\u65e5\u672c\u8a9e|nihongo/i.test(text);
-}
-
-function isJapaneseSystemVoice(voice = {}) {
-  const culture = String(voice.culture ?? voice.lang ?? "").toLowerCase();
-  const name = String(voice.name ?? "").toLowerCase();
-  return culture.startsWith("ja") || /\bjapanese\b|\u65e5\u672c\u8a9e/.test(name);
-}
-
-function renderVoiceModels(models = []) {
-  if (!elements.voiceModelList) return;
-  if (models.length === 0) {
-    elements.voiceModelList.innerHTML = `<p class="empty compact-empty">No imported Japanese voice models.</p>`;
-    return;
-  }
-  elements.voiceModelList.innerHTML = models.map((model) => `
-    <div class="voice-model-row">
-      <div>
-        <strong>${escapeHtml(model.name)}</strong>
-        <span>${escapeHtml(model.status === "ready" ? "Ready - local runtime installed" : model.status === "imported" ? "Imported - runtime required" : model.status)}</span>
-      </div>
-      <a href="${escapeHtml(model.url)}" target="_blank" rel="noreferrer">Open</a>
-    </div>
-  `).join("");
+  const enabled = Boolean(state.media.image?.enabled);
+  elements.mediaStatus.textContent = enabled ? "Local" : "Off";
+  elements.mediaPreview.textContent = enabled ? "Local mnemonic images enabled." : "Local image generation is disabled.";
 }
 
 async function saveMediaSettings(event, { updateStatus = true } = {}) {
   event?.preventDefault();
   if (!elements.mediaSettingsForm) return;
   if (elements.saveMediaSettings) elements.saveMediaSettings.disabled = true;
-  const selectedVoice = selectedMediaVoice();
-  const mediaRate = Number(elements.mediaRate.value) || 0;
   try {
     const result = await api("/api/media/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        audio: {
-          enabled: elements.mediaAudioEnabled.checked,
-          provider: "local-system-tts",
-          voiceName: selectedVoice.voiceName,
-          voiceModelId: selectedVoice.voiceModelId,
-          rate: mediaRate
-        },
         image: {
           enabled: elements.mediaImageEnabled.checked,
           provider: "local-mnemonic"
@@ -2967,121 +2437,32 @@ function queueSaveMediaSettings() {
   mediaSettingsSaveTimer = setTimeout(() => saveMediaSettings(), 260);
 }
 
-function selectedMediaVoice() {
-  const value = elements.mediaVoiceSelect?.value ?? "";
-  if (value.startsWith("model:")) return { voiceName: "", voiceModelId: value.slice("model:".length) };
-  if (value.startsWith("voice:")) return { voiceName: value.slice("voice:".length), voiceModelId: "" };
-  return { voiceName: "", voiceModelId: "" };
-}
-
-async function importVoiceModel(event) {
-  event?.preventDefault();
-  const url = elements.voiceModelUrl?.value?.trim();
-  if (!url) {
-    elements.mediaPreview.textContent = "Enter a Hugging Face model URL before importing.";
-    return;
-  }
-  elements.importVoiceModel.disabled = true;
+async function testMedia() {
+  const button = elements.testMediaImage;
+  button.disabled = true;
+  elements.mediaPreview.textContent = "Generating image...";
   try {
-    const result = await api("/api/media/voice-models", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url })
+    clearTimeout(mediaSettingsSaveTimer);
+    await saveMediaSettings();
+    const result = await api("/api/media/test-image", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expression: "\u56f3\u66f8\u9928", reading: "\u3068\u3057\u3087\u304b\u3093", meaning: "library" })
     });
-    state.mediaProviders = result.providers;
-    state.media = result.settings;
-    elements.voiceModelUrl.value = "";
-    renderMediaSettings(result.providers);
-    elements.mediaPreview.textContent = `${result.model.name} imported. Local liquid-audio runtime support is required before it can generate Anki audio.`;
+    renderMediaTestResult(result);
   } catch (error) {
     elements.mediaPreview.textContent = error.message;
   } finally {
-    elements.importVoiceModel.disabled = false;
-  }
-}
-
-async function testMedia(kind) {
-  if (kind === "audio" && !selectedMediaVoice().voiceName && !selectedMediaVoice().voiceModelId) {
-    previewMediaSpeech();
-    return;
-  }
-  const button = kind === "audio" ? elements.testMediaAudio : elements.testMediaImage;
-  if (!button) return;
-  const originalLabel = button.textContent;
-  button.disabled = true;
-  button.classList.add("loading");
-  button.innerHTML = `<span class="button-spinner" aria-hidden="true"></span><span>${kind === "audio" ? "Testing voice" : "Generating image"}</span>`;
-  const loadingMessage = kind === "audio"
-    ? "Generating a cached sample with the selected app voice. LiquidAI can take a while for uncached text."
-    : "Generating image.";
-  setMediaPreviewStatus(loadingMessage, { preserveAudio: kind === "audio" });
-  try {
-    if (kind === "audio") {
-      clearTimeout(mediaSettingsSaveTimer);
-      await saveMediaSettings(null, { updateStatus: false });
-      setMediaPreviewStatus(loadingMessage, { preserveAudio: true });
-    }
-    const result = await api(`/api/media/test-${kind}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sentence: elements.mediaTestText?.value?.trim() || "\u56f3\u66f8\u9928\u3078\u884c\u304d\u307e\u3059\u3002",
-        expression: "\u56f3\u66f8\u9928",
-        reading: "\u3068\u3057\u3087\u304b\u3093",
-        meaning: "library"
-      })
-    });
-    await loadMediaProviders();
-    renderMediaTestResult(kind, result);
-  } catch (error) {
-    setMediaPreviewStatus(error.message, { preserveAudio: kind === "audio" });
-  } finally {
     button.disabled = false;
-    button.classList.remove("loading");
-    button.textContent = originalLabel;
   }
 }
 
-function setMediaPreviewStatus(message, { preserveAudio = false } = {}) {
-  if (!preserveAudio || !elements.mediaPreview.querySelector("audio")) {
-    elements.mediaPreview.textContent = message;
-    return;
-  }
-  let status = elements.mediaPreview.querySelector(".media-preview-status");
-  if (!status) {
-    status = document.createElement("div");
-    status.className = "media-preview-status";
-    elements.mediaPreview.prepend(status);
-  }
-  status.textContent = message;
-}
-
-function previewMediaSpeech() {
-  const text = elements.mediaTestText?.value?.trim() || "\u56f3\u66f8\u9928\u3078\u884c\u304d\u307e\u3059\u3002";
-  if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
-    elements.mediaPreview.textContent = "This browser does not support instant speech preview.";
-    return;
-  }
-  const rate = 0.86 + ((Number(elements.mediaRate?.value) || 0) * 0.06);
-  playJapanese(text, { rate });
-  elements.mediaPreview.textContent = "Reading through the browser because no app voice is selected. Select a Japanese voice to test the actual Anki export voice.";
-}
-
-function renderMediaTestResult(kind, result = {}) {
+function renderMediaTestResult(result = {}) {
   const filename = mediaFilenameFromValue(result.value);
   if (!filename) {
-    elements.mediaPreview.textContent = kind === "audio"
-      ? "No audio generated. Enable local audio and install/select a voice."
-      : "No image generated. Enable local mnemonic image.";
+    elements.mediaPreview.textContent = "No image generated. Enable local mnemonic image.";
     return;
   }
-  const src = `/media/anki-media/${encodeURIComponent(filename)}`;
-  if (kind === "audio") {
-    elements.mediaPreview.innerHTML = `<audio controls autoplay src="${src}"></audio>`;
-    elements.mediaPreview.querySelector("audio")?.play?.().catch(() => {});
-  } else {
-    elements.mediaPreview.innerHTML = `<img class="media-preview-image" src="${src}" alt="Generated mnemonic preview">`;
-  }
+  elements.mediaPreview.innerHTML = `<img class="media-preview-image" src="/media/anki-media/${encodeURIComponent(filename)}" alt="Generated mnemonic preview">`;
 }
 
 function mediaFilenameFromValue(value = "") {
@@ -3983,12 +3364,6 @@ function renderDictionaryLookup(term, result, preview = null) {
     : "";
   const knownTerm = result.knownTerm?.exists ? result.knownTerm.term : "";
   const hasAnkiNote = Boolean(result.knownTerm?.hasAnkiNote);
-  const wordBankTerm = primary?.term || selectedTerm;
-  const bankButton = `
-    <button class="lookup-add-wordbank${knownTerm ? " is-added" : ""}" type="button" aria-label="${knownTerm ? "Already in Word Bank" : "Add to Word Bank"}" title="${knownTerm ? "Already in Word Bank" : "Add to Word Bank"}" data-wordbank-term="${escapeHtml(wordBankTerm)}"${knownTerm ? " disabled" : ""}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10h16"/><path d="M6 10v8"/><path d="M10 10v8"/><path d="M14 10v8"/><path d="M18 10v8"/><path d="M3 18h18"/><path d="M12 4 3 8h18l-9-4Z"/></svg>
-    </button>
-  `;
   const actionButton = hasAnkiNote
     ? `<button class="lookup-open-anki" type="button" aria-label="Open existing Anki flashcard" title="Open existing Anki flashcard" data-known-term="${escapeHtml(knownTerm)}">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5c2.7-.8 5.3-.5 8 1v12c-2.7-1.5-5.3-1.8-8-1V5.5Z"/><path d="M12 6.5c2.7-1.5 5.3-1.8 8-1v12c-2.7-.8-5.3-.5-8 1V6.5Z"/></svg>
@@ -4013,7 +3388,6 @@ function renderDictionaryLookup(term, result, preview = null) {
         <strong>${escapeHtml(headerTerm)}</strong>
       </div>
       <div class="lookup-actions">
-        ${bankButton}
         ${actionButton}
         <button class="lookup-close" type="button" aria-label="Close dictionary lookup">&times;</button>
       </div>
@@ -4030,29 +3404,6 @@ function renderDictionaryLookup(term, result, preview = null) {
     } catch (error) {
       elements.dictionaryLookup.insertAdjacentHTML("beforeend", `<p class="empty">${escapeHtml(error.message)}</p>`);
     } finally {
-      button.disabled = false;
-    }
-  });
-  elements.dictionaryLookup.querySelector(".lookup-add-wordbank:not(:disabled)")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    const wordbankTerm = button.dataset.wordbankTerm || primary?.term || term;
-    button.disabled = true;
-    try {
-      const result = await api("/api/known-terms", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ term: wordbankTerm })
-      });
-      state.knownTermsCount = result.total ?? state.knownTermsCount;
-      elements.knownCount.textContent = `${state.knownTermsCount.toLocaleString()} words`;
-      clearLookupRelatedCaches();
-      if (elements.wordbankList.closest(".page.active")) await loadWordBank();
-      button.classList.add("is-added");
-      button.title = "Added to Word Bank";
-      button.setAttribute("aria-label", "Added to Word Bank");
-      await refreshActiveDocumentForKnownTerms();
-    } catch (error) {
-      elements.dictionaryLookup.insertAdjacentHTML("beforeend", `<p class="empty">${escapeHtml(error.message)}</p>`);
       button.disabled = false;
     }
   });
@@ -4316,12 +3667,6 @@ elements.readerSideTabs.forEach((tab) => tab.addEventListener("click", () => {
   renderReaderSidePanel();
   if (state.readerSideTab === "search") requestAnimationFrame(() => elements.readerSideSearch?.querySelector("#reader-search-input")?.focus());
 }));
-elements.collapseSidebar.addEventListener("click", () => {
-  setSidebarHidden(!elements.shell.classList.contains("sidebar-hidden"), { readerMode: $("#reader-page")?.classList.contains("active") });
-});
-elements.showSidebar.addEventListener("click", () => {
-  setSidebarHidden(false);
-});
 elements.hideChapters.addEventListener("click", () => {
   setAssistantPanelHidden(true);
 });
@@ -4529,24 +3874,7 @@ document.addEventListener("mousedown", (event) => {
   if (!elements.dictionaryLookup.classList.contains("hidden") && !elements.dictionaryLookup.contains(event.target)) hideDictionaryLookup();
 });
 elements.reader.addEventListener("scroll", hideDictionaryLookup);
-elements.wordbankSearch.addEventListener("input", () => {
-  state.wordbankPage = 1;
-  state.selectedTerms.clear();
-  loadWordBank();
-});
-elements.wordbankSort.addEventListener("change", () => {
-  state.wordbankSort = elements.wordbankSort.value;
-  state.wordbankPage = 1;
-  state.selectedTerms.clear();
-  loadWordBank();
-});
-elements.wordbankDelete.addEventListener("click", deleteSelectedTerms);
-elements.wordbankSyncAnki?.addEventListener("click", syncWordBankWithAnki);
-elements.wordbankDeleteAll?.addEventListener("click", deleteAllTerms);
-elements.trashBooksTab?.addEventListener("click", () => setTrashTab("books"));
-elements.trashWordsTab?.addEventListener("click", () => setTrashTab("words"));
-elements.trashRestoreWords?.addEventListener("click", restoreSelectedTrashTerms);
-elements.trashDeleteWords?.addEventListener("click", deleteSelectedTrashItems);
+elements.trashDeleteSelected?.addEventListener("click", deleteSelectedTrashItems);
 elements.trashDeleteAll?.addEventListener("click", deleteAllTrashItems);
 elements.connectAnki.addEventListener("click", async () => {
   await api("/api/anki/settings", {
@@ -4558,8 +3886,8 @@ elements.connectAnki.addEventListener("click", async () => {
     const result = await api("/api/anki/connect");
     elements.ankiStatus.textContent = "Connected";
     state.anki = result.settings;
-    populateSelect(elements.deckSelect, result.decks, "", "None");
-    populateSelect(elements.modelSelect, result.models, "", "None");
+    populateSelect(elements.deckSelect, result.decks, state.anki?.deckName, "None");
+    populateSelect(elements.modelSelect, result.models, state.anki?.modelName, "None");
     updateAnkiConnectionUi(true);
     renderAnkiFieldStatus(null);
   } catch (error) {
@@ -4608,14 +3936,8 @@ elements.saveNote?.addEventListener("click", async () => {
   await loadModelFields();
 });
 elements.mediaSettingsForm?.addEventListener("submit", (event) => event.preventDefault());
-elements.mediaAudioEnabled?.addEventListener("change", queueSaveMediaSettings);
-elements.mediaVoiceSelect?.addEventListener("change", queueSaveMediaSettings);
-elements.mediaRate?.addEventListener("input", queueSaveMediaSettings);
-elements.mediaRate?.addEventListener("change", queueSaveMediaSettings);
 elements.mediaImageEnabled?.addEventListener("change", queueSaveMediaSettings);
-elements.voiceModelForm?.addEventListener("submit", importVoiceModel);
-elements.testMediaAudio?.addEventListener("click", () => testMedia("audio"));
-elements.testMediaImage?.addEventListener("click", () => testMedia("image"));
+elements.testMediaImage?.addEventListener("click", () => testMedia());
 elements.aiModelForm?.addEventListener("submit", importAiModel);
 elements.stopAiRuntime?.addEventListener("click", stopAiRuntime);
 elements.syncSaveSettings?.addEventListener("click", async () => {
@@ -4665,32 +3987,36 @@ document.addEventListener("focusout", (event) => {
 window.addEventListener("scroll", hideFloatingTooltip, true);
 elements.ankiImportForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const formData = new FormData(elements.ankiImportForm);
+  if (elements.ankiImportButton.disabled) return;
   const deckName = state.anki?.deckName || "";
   if (!deckName) {
-    showAnkiNotice("Choose a deck before importing vocabulary.", "error");
+    showAnkiNotice("Choose and save an Anki deck first.", "error");
     return;
   }
   setAnkiImportLoading(true);
   try {
-    const result = await api("/api/anki/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ preset: formData.get("preset"), deckName })
+    const preset = elements.ankiImportForm.elements.preset.value;
+    const result = await api("/api/anki/sync-vocabulary", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset, deckName })
     });
-    state.anki.retentionStats = result.retentionStats;
-    const imported = result.retentionStats?.addedTerms ?? 0;
-    await loadState();
-    updateAnkiConnectionUi(true);
-    showAnkiNotice(`${Number(imported).toLocaleString()} vocabulary imported from ${deckName}`, "success");
-    await loadWordBank();
-    renderAnkiSummary();
+    state.knownTermsCount = result.total;
+    state.anki.lastVocabularySyncAt = result.syncedAt;
+    state.anki.vocabularyPreset = preset;
+    clearLookupRelatedCaches();
+    renderVocabularyStatus();
+    showAnkiNotice(`${Number(result.added).toLocaleString()} new words imported from ${deckName}.`, "success");
   } catch (error) {
     showAnkiNotice(error.message, "error");
   } finally {
     setAnkiImportLoading(false);
   }
 });
+
+function renderVocabularyStatus() {
+  const stamp = state.anki?.lastVocabularySyncAt;
+  elements.ankiVocabularyStatus.textContent = `${state.knownTermsCount.toLocaleString()} known words · Last synced: ${stamp ? formatDateTime(stamp) : "Never"}`;
+}
 elements.dictionaryForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   
@@ -4716,7 +4042,6 @@ elements.dictionaryForm.addEventListener("submit", async (event) => {
       showDictionaryNotice(`${dictionary?.name ?? "Dictionary"} imported (${Number(importedCount ?? 0).toLocaleString()} rows)`, "success");
     }
     if (state.activeDocumentId) await openDocument(state.activeDocumentId);
-    await refreshWordBankMeaningCacheStatus();
   } catch (error) {
     showDictionaryNotice(error.message, "error");
   } finally {
@@ -4726,28 +4051,6 @@ elements.dictionaryForm.addEventListener("submit", async (event) => {
 
 elements.dictionaryFile?.addEventListener("change", renderDictionaryAttachment);
 
-async function changeWordBankDictionary(id) {
-  if (!id) return;
-  const previousDictionaries = state.dictionaries.map((dictionary) => ({ ...dictionary }));
-  setSelectedWordBankDictionaryLocal(id);
-  clearLookupRelatedCaches();
-  refreshWordBankMeaningCacheStatus();
-  if (elements.wordbankList.closest(".page.active")) loadWordBank();
-  try {
-    await updateDictionarySettings(id, { selectedForWordBank: true }, { render: false, reloadWordBank: false, clearCache: false });
-    await refreshWordBankMeaningCacheStatus();
-  } catch (error) {
-    state.dictionaries = previousDictionaries;
-    renderWordBankDictionarySelects();
-    if (elements.wordbankList.closest(".page.active")) loadWordBank();
-    await refreshWordBankMeaningCacheStatus();
-    showDictionaryNotice(error.message, "error");
-  }
-}
-
-elements.wordbankDictionary.addEventListener("change", () => changeWordBankDictionary(elements.wordbankDictionary.value));
-elements.cacheWordbankDictionary?.addEventListener("change", () => changeWordBankDictionary(elements.cacheWordbankDictionary.value));
-elements.cacheRebuildWordbank?.addEventListener("click", rebuildWordBankMeaningCache);
 
 elements.dictionaryPrefixToggle.addEventListener("change", async () => {
   const result = await api("/api/dictionaries/settings", {

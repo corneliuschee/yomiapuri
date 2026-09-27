@@ -1,15 +1,15 @@
 # Yomiアプリ
 
-A local-first Japanese novel reader with smart furigana, dictionary lookup, a Word Bank, Anki card generation, local text search, and optional local AI assistance.
+A local-first Japanese novel reader with smart furigana, dictionary lookup, Anki vocabulary sync, Anki card generation, local text search, and optional local AI assistance.
 
 ## Features
 
 - EPUB, PDF, and TXT import, covers, illustrations, and chapter navigation.
 - Paged and scrolling reading, bookmarks, highlights, and saved progress.
 - Generated furigana for unknown vocabulary; author-provided ruby stays intact.
-- Anki vocabulary import and Word Bank add, delete, restore, and dictionary meanings.
+- Sync reviewed Anki vocabulary into the internal SQLite database from Integrations; repeat syncs add newly learned words without duplicates.
 - Yomitan term/frequency dictionaries and dictionary-aware conjugation lookup.
-- Editable Anki card previews, field mapping, sentence highlighting, audio, and images.
+- Editable Anki card previews, field mapping, sentence highlighting, and images.
 - Incremental SQLite FTS5/BM25 book search.
 - Streaming local llama.cpp translation and grammar assistance, model selection, and idle shutdown.
 - Optional, user-triggered Supabase sync of source data.
@@ -28,7 +28,6 @@ src/
     api/                 HTTP endpoints grouped by domain
     services/            Books, NLP, dictionaries, search, Anki, AI, media, sync
     storage/             SQLite persistence and schema
-    runtimes/            Optional local speech-model entry point
   frontend/
     index.html
     app.js
@@ -38,7 +37,7 @@ tests/                   Python regression tests and API contract
 scripts/                 Export utility and HTTP smoke test
 ```
 
-SQLite remains the canonical local store, with WAL enabled. Dictionary definitions are fetched for matching entries rather than loaded wholesale at startup. Reader pages and token caches are stored locally in SQLite. Word Bank changes update rendering without re-tokenizing the entire library.
+SQLite remains the canonical local store, with WAL enabled. Dictionary definitions are fetched for matching entries rather than loaded wholesale at startup. Reader pages and token caches are stored locally in SQLite. Known-vocabulary changes update rendering without re-tokenizing the entire library.
 
 Japanese tokenization uses **SudachiPy**, replacing Kuromoji. Token boundaries can differ from older versions. Text search uses deduplicated surfaces, base forms, and readings, with exact substring matches ranked first.
 
@@ -80,19 +79,20 @@ Imported source files, models, and existing media are not removed by the code mi
 
 ## Dictionaries and Furigana
 
-Import term and frequency dictionary ZIPs under Integrations. Legacy JSON dictionaries are also supported. Enable dictionaries for lookup and select one for Word Bank meanings.
+Import term and frequency dictionary ZIPs under Integrations. Legacy JSON dictionaries are also supported. Enable dictionaries for reader lookup.
 
-Known terms suppress generated furigana. Author-provided ruby is preserved independently. The inferred-readable setting uses conservative rules, not a trained model, and never adds vocabulary to the Word Bank automatically.
+Known terms suppress generated furigana. Author-provided ruby is preserved independently. The inferred-readable setting uses conservative rules, not a trained model, and never adds vocabulary to the known-word database automatically.
 
 ## Anki
 
 1. Install Anki Desktop and AnkiConnect.
 2. Start Anki, or configure its executable path for automatic launch.
 3. In Integrations, connect and choose a deck and note type.
-4. Import vocabulary or select reader vocabulary to preview a card.
-5. Review the mapped fields, then export.
+4. Click **Sync Anki** to import reviewed vocabulary. Repeat after learning more cards. Existing known words stay stored locally.
+5. Select reader vocabulary to preview a new card.
+6. Review the mapped fields, then export.
 
-Exports use a local journal and targeted SQLite writes. Reviewed fields are preserved, and vocabulary in sentence fields is highlighted. System TTS requires an installed Japanese Windows voice. LiquidAI speech uses a separately configured environment; install its model dependencies there rather than in the reader environment.
+Exports use a local journal and targeted SQLite writes. Reviewed fields are preserved, and vocabulary in sentence fields is highlighted. Local TTS generation has been removed; existing audio in reviewed card fields is preserved.
 
 ## Local AI
 

@@ -90,9 +90,9 @@ try {
   const authorRubyNameHtml = authorRubyNameData.pages[0]?.html ?? "";
   assert(authorRubyNameHtml.includes('class="author-ruby" data-author-ruby="true" data-base="\u5468" data-reading="\u3042\u307e\u306d"'), "Reader should preserve author-provided name ruby.");
   assert(!authorRubyNameHtml.includes('<ruby data-base="\u5468"'), "Reader should not add generated ruby to later bare occurrences of author-ruby names.");
-  await assertWordCardCss();
+  await assertVocabularyUi();
   const mediaProviders = await getJson("/api/media/providers");
-  assert(Array.isArray(mediaProviders.voices), "Media providers should expose detected voices.");
+  assert(mediaProviders.status.audio.enabled === false, "Removed TTS must not be enabled.");
   const mediaTest = await postJson("/api/media/test-image", { expression: "\u56f3\u66f8\u9928", meaning: "library" });
   assert(Object.hasOwn(mediaTest, "status"), "Media test should return provider status.");
   const initialIndexStatus = await getJson("/api/ml/index/status");
@@ -333,10 +333,11 @@ async function writeAuthorRubyNameDocumentFixture() {
   return path.relative(rootDir, fixturePath);
 }
 
-async function assertWordCardCss() {
-  const css = await fs.readFile(path.join(rootDir, "src/frontend/styles.css"), "utf8");
-  assert(/\.word-row\s*\{[\s\S]*height:\s*124px;/.test(css), "Word cards should have a fixed height.");
-  assert(/\.word-row p\s*\{[\s\S]*-webkit-line-clamp:\s*3;/.test(css), "Word card definitions should be line-clamped.");
+async function assertVocabularyUi() {
+  const page = await (await fetch(baseUrl)).text();
+  assert(!page.includes('id="wordbank-page"'), "Word Bank page should be removed.");
+  assert(!page.includes('id="voice-model-form"'), "TTS controls should be removed.");
+  assert(page.includes('>Sync Anki</button>'), "Integrations should expose vocabulary sync.");
 }
 
 async function assertDocumentCacheCreated(documentId) {

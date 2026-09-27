@@ -156,6 +156,65 @@ class BackendTests(unittest.TestCase):
                   for route in self.app.routes if hasattr(route, 'methods') for method in route.methods}
         self.assertFalse(set(map(tuple, expected)) - actual)
 
+    def test_anki_vocabulary_sync_is_additive_and_idempotent(self):
+        store = self.app.state.store
+        store.add_terms(['本'])
+        store.settings('anki', {'deckName': 'Japanese', 'modelFieldMaps': {'Custom': {'Expression': '単語'}}})
+        doc = self.book()
+        self.assertIn('>図書館<rt>', self.client.get('/api/documents/' + doc).json()['pages'][0]['html'])
+        notes = [{'noteId': 101, 'modelName': 'Custom', 'fields': {'単語': {'value': '<ruby>図書館<rt>としょかん</rt></ruby>'},
+                                                                 'Meaning': {'value': 'library'}}}]
+        calls = []
+
+        def transport(request):
+            body = json.loads(request.content)
+            calls.append(body)
+            result = [n['noteId'] for n in notes] if body['action'] == 'findNotes' else notes
+            return httpx.Response(200, json={'result': result, 'error': None})
+
+        self.app.state.anki.client.close()
+        self.app.state.anki.client = httpx.Client(transport=httpx.MockTransport(transport))
+        endpoint = '/api/anki/sync-vocabulary'
+        first = self.client.post(endpoint, json={})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()['added'], 1)
+        self.assertEqual(first.json()['total'], 2)
+        self.assertEqual(calls[0]['params']['query'], 'deck:"Japanese" prop:reps>0')
+        self.assertNotIn('>図書館<rt>', self.client.get('/api/documents/' + doc).json()['pages'][0]['html'])
+        revision = store.revision('known_terms')
+        self.assertEqual(self.client.post(endpoint, json={}).json()['added'], 0)
+        self.assertEqual(store.revision('known_terms'), revision)
+        notes.append({'noteId': 102, 'modelName': 'Basic', 'fields': {'Expression': {'value': '図書館[としょかん]'}}})
+        notes.append({'noteId': 103, 'modelName': 'Basic', 'fields': {'Expression': {'value': '学校'}}})
+        self.assertEqual(self.client.post(endpoint, json={}).json()['added'], 1)
+        self.assertEqual(set(store.known()['図書館']['ankiNoteIds']), {101, 102})
+        notes.clear()
+        self.assertEqual(self.client.post(endpoint, json={}).json()['added'], 0)
+        self.assertEqual(set(store.known()), {'本', '図書館', '学校'})
+        self.assertTrue(store.setting('anki')['lastVocabularySyncAt'])
+
+    def test_failed_anki_sync_preserves_vocabulary(self):
+        store = self.app.state.store
+        store.add_terms(['本'])
+        self.app.state.anki.client.close()
+        self.app.state.anki.client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={'result': None, 'error': 'Anki unavailable'})))
+        response = self.client.post('/api/anki/sync-vocabulary', json={})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(list(store.known()), ['本'])
+        self.assertFalse(store.setting('anki').get('lastVocabularySyncAt'))
+
+    def test_wordbank_ui_and_local_tts_removed(self):
+        page = self.client.get('/').text
+        for removed in ['wordbank-page', 'cache-wordbank', 'media-audio-enabled', 'voice-model-form', 'test-media-audio']:
+            self.assertNotIn(removed, page)
+        self.assertIn('Sync Anki', page)
+        self.assertIn('anki-vocabulary-status', page)
+        self.app.state.store.settings('media', {'audio': {'enabled': True, 'voiceName': 'Old saved voice'}})
+        self.assertFalse(self.client.get('/api/media/providers').json()['status']['audio']['enabled'])
+        self.assertEqual(self.client.post('/api/media/test-audio', json={}).status_code, 404)
+        self.assertEqual(self.client.post('/api/media/voice-models', json={}).status_code, 404)
+
     def test_learning_analytics_removed(self):
         self.assertEqual(self.client.get('/api/ml/analytics').status_code, 404)
         page = self.client.get('/').text
