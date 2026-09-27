@@ -7,6 +7,7 @@ import re
 import io
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 from fastapi.testclient import TestClient
@@ -128,6 +129,47 @@ class BackendTests(unittest.TestCase):
         self.assertIsNotNone(s.one('SELECT id FROM python_search_chunks WHERE document_id=?', (second,)))
         self.assertIsNotNone(s.one('SELECT document_id FROM document_tombstones WHERE document_id=?', (first,)))
 
+    def test_anki_auto_launch_keeps_diagnostics_in_own_log(self):
+        executable = Path(self.directory.name) / 'anki.exe'
+        executable.touch()
+        self.app.state.store.settings('anki', {'autoLaunchAnki': True, 'ankiExecutablePath': str(executable)})
+        calls = []
+
+        def transport(request):
+            calls.append(request)
+            if len(calls) == 1:
+                raise httpx.ConnectError('Anki is not started.', request=request)
+            return httpx.Response(200, json={'result': 6, 'error': None})
+
+        service = self.app.state.anki
+        service.client.close()
+        service.client = httpx.Client(transport=httpx.MockTransport(transport))
+
+        def launch(args, **kwargs):
+            self.assertEqual(args, [str(executable)])
+            self.assertEqual(kwargs['stderr'], -2)  # subprocess.STDOUT
+            self.assertEqual(Path(kwargs['stdout'].name), Path(self.directory.name) / 'logs' / 'anki.log')
+            kwargs['stdout'].write(b'Anki add-on compatibility warning\n')
+
+        with patch('src.backend.services.anki.subprocess.Popen', side_effect=launch) as spawned, \
+                patch('src.backend.services.anki.time.sleep'):
+            self.assertEqual(service.connect('version'), 6)
+            spawned.assert_called_once()
+        log = Path(self.directory.name) / 'logs' / 'anki.log'
+        self.assertEqual(log.read_text(), 'Anki add-on compatibility warning\n')
+
+    def test_anki_running_errors_still_reach_the_app(self):
+        service = self.app.state.anki
+        service.client.close()
+        service.client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={'result': None, 'error': 'cannot create note because it is a duplicate'})))
+        with patch('src.backend.services.anki.subprocess.Popen') as spawned:
+            response = self.client.get('/api/anki/connect')
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('duplicate', response.json()['error'])
+            spawned.assert_not_called()
+        self.assertFalse((Path(self.directory.name) / 'logs' / 'anki.log').exists())
+
     def test_anki_reviewed_fields_and_retry(self):
         doc = self.book()
         calls = []
@@ -148,7 +190,51 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(result.json()['fields']['Meaning'], 'my edited definition')
             self.assertIn('target-word', result.json()['fields']['Sentence'])
         self.assertEqual(len(calls), 1)
+        self.assertNotIn('Key', calls[0]['params']['note']['fields'])
         self.assertEqual(self.app.state.store.known()['図書館']['ankiNoteIds'], [12345])
+
+    def test_anki_mining_key_preview_and_stale_export(self):
+        doc = self.book()
+        notes = []
+
+        def transport(request):
+            body = json.loads(request.content)
+            if body['action'] == 'modelFieldNames':
+                result = ['Key', 'Word', 'WordReading', 'Sentence', 'PrimaryDefinition']
+            else:
+                self.assertEqual(body['action'], 'addNote')
+                note = body['params']['note']
+                if not note['fields']['Key'].strip():
+                    return httpx.Response(200, json={'result': None, 'error': 'cannot create note because it is empty'})
+                notes.append(note)
+                result = 20000 + len(notes)
+            return httpx.Response(200, json={'result': result, 'error': None})
+
+        service = self.app.state.anki
+        service.client.close()
+        service.client = httpx.Client(transport=httpx.MockTransport(transport))
+        candidate = {'documentId': doc, 'expression': '図書館', 'reading': 'としょかん',
+                     'modelName': 'JP Mining Note', 'deckName': 'Test'}
+        response = self.client.post('/api/anki/card-preview', json=candidate)
+        self.assertEqual(response.status_code, 200, response.text)
+        preview = response.json()
+        self.assertEqual(preview['fieldMap']['Expression'], 'Word')
+        self.assertEqual(preview['values']['Word'], '図書館')
+        self.assertEqual(preview['values']['Key'], '図書館')
+
+        for key_value, expected in [('', '図書館'), ('   ', '図書館'), ('my-custom-key', 'my-custom-key')]:
+            with self.subTest(key=key_value):
+                fields = {**preview['values'], 'Key': key_value, 'PrimaryDefinition': 'edited definition'}
+                response = self.client.post('/api/anki/export-card', json={**candidate, 'fields': fields,
+                                           'fieldMapUpdates': preview['fieldMap']})
+                self.assertEqual(response.status_code, 201, response.text)
+                exported = response.json()
+                self.assertEqual(exported['fields']['Key'], expected)
+                self.assertEqual(exported['fields']['Word'], '図書館')
+                self.assertEqual(exported['fields']['PrimaryDefinition'], 'edited definition')
+                self.assertFalse(notes[-1]['options']['allowDuplicate'])
+                journal = self.app.state.store.one('SELECT status FROM anki_export_journal WHERE id=?', (exported['id'],))
+                self.assertEqual(journal['status'], 'complete')
 
     def test_all_legacy_routes_are_registered(self):
         expected = json.loads(Path(__file__).with_name('api_contract.json').read_text())

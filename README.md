@@ -96,6 +96,8 @@ Known terms suppress generated furigana. Author-provided ruby is preserved indep
 
 Exports use a local journal and targeted SQLite writes. Reviewed fields are preserved, and vocabulary in sentence fields is highlighted. Local TTS generation has been removed; existing audio in reviewed card fields is preserved.
 
+When the app automatically starts Anki, Anki's console diagnostics are saved in `data/logs/anki.log` (under `DATA_DIR` when configured). Compatibility warnings from Anki or its add-ons are separate from export errors, which still appear in the app. This logging applies the next time Anki is started by the app; an already-running Anki process keeps its current output destination.
+
 ## Local AI
 
 Copy `.env.example` to `.env`, then configure the executable and model paths:

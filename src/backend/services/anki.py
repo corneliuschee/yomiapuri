@@ -43,6 +43,15 @@ def canonical_field(name):
     return ''
 
 
+def fill_note_key(fields, expression):
+    """Fill an empty mining-note Key without changing reviewed fields or adding unknown fields."""
+    # Key and Word both map to Expression, but the one-to-one field map retains only Word.
+    # Anki still requires Key when it is the note type's first field.
+    for field, value in fields.items():
+        if field.casefold() == 'key' and not value.strip():
+            fields[field] = expression
+
+
 class AnkiService:
     def __init__(self, store, dictionaries, nlp, transport=None):
         self.store, self.dictionaries, self.nlp = store, dictionaries, nlp
@@ -61,7 +70,13 @@ class AnkiService:
             executable = Path(settings.get('ankiExecutablePath', ''))
             if not settings.get('autoLaunchAnki') or not executable.is_file():
                 raise
-            subprocess.Popen([str(executable)], creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            # Anki and its add-ons emit diagnostics unrelated to the HTTP export result.
+            # Keep them available without mixing them into the app server's output.
+            log_dir = self.store.data_dir / 'logs'
+            log_dir.mkdir(exist_ok=True)
+            with (log_dir / 'anki.log').open('ab') as log:
+                subprocess.Popen([str(executable)], stdout=log, stderr=subprocess.STDOUT,
+                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             deadline = time.monotonic() + 15
             while True:
                 time.sleep(.25)
@@ -109,6 +124,7 @@ class AnkiService:
         fields = self.connect('modelFieldNames', {'modelName': model})
         mapping = self.mapping(model, fields)
         values = {f: next((canonical.get(k, '') for k, v in mapping.items() if v == f), '') for f in fields}
+        fill_note_key(values, term)
         self.store.event('sentence.previewed', {'documentId': doc['id'], 'expression': term})
         return {'deckName': body.get('deckName') or settings['deckName'], 'modelName': model, 'canonical': canonical,
                 'fields': fields, 'values': values, 'fieldMap': mapping,
@@ -127,6 +143,7 @@ class AnkiService:
         fields = {str(k): str(v or '') for k, v in body.get('fields', {}).items()}
         if not expression or not fields or not any(fields.values()):
             raise ValueError('Expression and reviewed Anki fields are required.')
+        fill_note_key(fields, expression)
         mapping = {**self.mapping(model, fields), **body.get('fieldMapUpdates', {})}
         # Only add highlighting to reviewed sentence text; never regenerate edited definitions.
         for key in ['Sentence', 'SentenceReading']:
