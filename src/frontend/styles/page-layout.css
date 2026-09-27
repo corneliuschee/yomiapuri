@@ -1,0 +1,181 @@
+.side-section {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  grid-template-rows: auto auto;
+  min-height: 0;
+  padding: 10px;
+}
+
+.section-title {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.side-link {
+  font-size: 12px;
+  justify-content: flex-start;
+  min-height: 30px;
+  padding: 0 8px;
+  width: 100%;
+}
+
+.book-list,
+.dictionary-list,
+.chapter-list,
+.bookmark-list {
+  align-content: start;
+  display: grid;
+  gap: 6px;
+}
+
+.book-list,
+.chapter-list,
+.bookmark-list {
+  overflow-y: auto;
+}
+
+.book-item {
+  border-radius: 4px;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.book-item.active {
+  background: var(--panel-2);
+}
+
+.book-open {
+  background: transparent;
+  border-color: transparent;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 34px minmax(0, 1fr);
+  min-width: 0;
+  padding: 8px;
+  text-align: left;
+}
+
+.book-open strong,
+.book-open span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-meta {
+  min-width: 0;
+}
+
+.book-thumb {
+  background: #0a0b0e;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  display: grid;
+  height: 46px;
+  overflow: hidden;
+  place-items: center;
+  width: 34px;
+}
+
+.book-thumb img {
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.cover-fallback {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.book-open strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.book-open span,
+.empty,
+.eyebrow,
+.stat,
+.status,
+.meta-box,
+.definition,
+.dictionary-row span {
+  color: var(--muted);
+}
+
+.book-actions {
+  display: none;
+  gap: 4px;
+  padding-right: 4px;
+}
+
+.book-item:hover .book-actions {
+  display: flex;
+}
+
+.book-actions button {
+  font-size: 12px;
+  min-height: 26px;
+  padding: 0 6px;
+}
+
+.rename-form {
+  display: grid;
+  gap: 6px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 4px;
+}
+
+.main {
+  display: grid;
+  grid-template-rows: 50px minmax(0, 1fr);
+  height: 100vh;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.topbar {
+  background: var(--bar);
+  border-bottom: 1px solid var(--line);
+  padding: 0 14px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.eyebrow {
+  display: none;
+}
+
+.stat {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.page {
+  display: none;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.page.active {
+  display: grid;
+}
+
+#integrations-page {
+  overflow: auto;
+}
+
+

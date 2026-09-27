@@ -1,0 +1,168 @@
+.drawer {
+  background: var(--bar);
+  border-top: 1px solid var(--line);
+  max-height: 30vh;
+  overflow: auto;
+  padding: 10px 14px;
+}
+
+.drawer summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.drawer-subhead {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.candidate-card,
+.page-card,
+.dictionary-row {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px;
+}
+
+.candidate-card {
+  display: grid;
+  gap: 8px;
+}
+
+.candidate-actions {
+  justify-content: start;
+}
+
+.candidate-actions input {
+  min-width: 260px;
+}
+
+.mapping-status {
+  margin-bottom: 16px;
+}
+
+.mapping-scroll {
+  max-height: 220px;
+  max-width: 100%;
+  overflow: auto;
+}
+
+.mapping-table {
+  border-collapse: collapse;
+  min-width: 360px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.mapping-table th,
+.mapping-table td {
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  padding: 6px 0;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.mapping-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.mapping-table th:first-child,
+.mapping-table td:first-child {
+  min-width: 190px;
+  padding-right: 12px;
+  width: 62%;
+}
+
+.mapping-table th:last-child,
+.mapping-table td:last-child {
+  min-width: 120px;
+  width: 38%;
+}
+
+.help-dot {
+  align-items: center;
+  border: 1px solid var(--line-soft);
+  border-radius: 50%;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 10px;
+  height: 16px;
+  justify-content: center;
+  line-height: 1;
+  margin-left: 4px;
+  position: relative;
+  vertical-align: middle;
+  width: 16px;
+}
+
+.help-dot:hover,
+.help-dot:focus {
+  background: var(--panel-2);
+  color: var(--text);
+  outline: none;
+}
+
+.floating-tooltip {
+  background: #101116;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+  padding: 8px;
+  pointer-events: none;
+  position: fixed;
+  width: 220px;
+  z-index: 200;
+}
+
+.dialog-head {
+  align-items: start;
+  display: flex;
+  justify-content: space-between;
+}
+
+.card-fields {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+
+.card-field-row {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 160px minmax(0, 1fr) 150px;
+  padding: 10px;
+}
+
+.card-field-row strong {
+  font-size: 13px;
+}
+
+.card-field-row label {
+  gap: 4px;
+}
+
+.sentence {
+  color: #d9d4ce;
+  font-family: "Noto Serif JP", "Yu Mincho", serif;
+  line-height: 1.6;
+  margin-bottom: 0;
+}
+
+.definition {
+  color: #f0a15f;
+  font-size: 13px;
+  margin-bottom: 0;
+}
+

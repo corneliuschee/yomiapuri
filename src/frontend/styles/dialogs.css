@@ -1,0 +1,60 @@
+.dialog-backdrop {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.56);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 50;
+}
+
+.dialog-backdrop.hidden {
+  display: none;
+}
+
+.confirm-dialog,
+.card-dialog {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  max-width: 360px;
+  padding: 18px;
+  width: min(100%, 360px);
+}
+
+.card-dialog {
+  max-height: calc(100vh - 48px);
+  max-width: 760px;
+  overflow: auto;
+  width: min(100%, 760px);
+}
+
+.confirm-dialog h2,
+.card-dialog h2 {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.confirm-dialog p,
+.card-dialog p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0 0 18px;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.confirm-actions .danger {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #fff;
+}
+

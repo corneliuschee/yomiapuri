@@ -1,0 +1,132 @@
+:root {
+  color-scheme: dark;
+  --app-bg: #0b0c0f;
+  --bar: #111216;
+  --bar-2: #17191f;
+  --panel: #15171d;
+  --panel-2: #1e2028;
+  --paper: #0f1014;
+  --paper-text: #e9e2d8;
+  --line: #262932;
+  --line-soft: #383b46;
+  --text: #f0ece7;
+  --muted: #96919a;
+  --accent: #f36b3d;
+  --accent-dark: #ff986f;
+  --danger: #d46f65;
+  font-family: "Noto Sans", "Noto Sans JP", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--app-bg);
+  color: var(--text);
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+.file-button,
+.small-upload {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--line);  
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 13px;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+button:hover,
+.file-button:hover,
+.small-upload:hover {
+  background: var(--panel-2);
+  border-color: var(--line-soft);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+button.loading {
+  gap: 8px;
+}
+
+.button-spinner {
+  animation: spin 800ms linear infinite;
+  border: 2px solid var(--line-soft);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  height: 14px;
+  width: 14px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+input,
+select,
+textarea {
+  background: #101116;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+textarea {
+  line-height: 1.45;
+  min-height: 70px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+label {
+  color: var(--muted);
+  display: grid;
+  font-size: 13px;
+  gap: 6px;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 0;
+}
+
+h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+

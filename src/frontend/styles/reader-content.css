@@ -1,0 +1,284 @@
+.chapter-item,
+.bookmark-item {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  justify-content: flex-start;
+  line-height: 1.35;
+  min-height: 38px;
+  overflow: hidden;
+  padding: 8px 10px;
+  text-align: left;
+  white-space: normal;
+  width: 100%;
+}
+
+.chapter-item {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  display: flex;
+  text-decoration: none;
+}
+
+.chapter-item:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.bookmark-item {
+  align-items: center;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px;
+  height: 56px;
+  min-height: 56px;
+  position: relative;
+}
+
+.bookmark-open {
+  background: transparent;
+  border: 0;
+  display: grid;
+  gap: 2px;
+  justify-content: start;
+  min-height: 34px;
+  min-width: 0;
+  padding: 0 22px 0 0;
+  text-align: left;
+  width: 100%;
+}
+
+.bookmark-open:hover {
+  background: transparent;
+}
+
+.bookmark-open strong,
+.bookmark-open span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bookmark-open span {
+  font-size: 12px;
+}
+
+.bookmark-delete {
+  align-self: start;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  position: absolute;
+  right: 5px;
+  top: 5px;
+  width: 22px;
+}
+
+.bookmark-delete:hover {
+  color: var(--danger);
+}
+
+.chapter-item.active,
+.bookmark-item.active {
+  background: var(--panel-2);
+  color: var(--accent);
+}
+
+.book-chapter {
+  margin-bottom: 40px;
+}
+
+.book-chapter h2 {
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-family: "Noto Sans", "Noto Sans JP", sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 24px;
+  padding-bottom: 10px;
+}
+
+.reader-page-frame {
+  box-sizing: border-box;
+  display: grid;
+  gap: 18px;
+  margin: 0 auto;
+  max-width: var(--reader-fit-width, 980px);
+  min-height: 100%;
+  width: 100%;
+}
+
+.reader-page-frame.image-only {
+  gap: 8px;
+  grid-template-rows: 34px minmax(0, 1fr);
+  height: var(--reader-fit-height, 100%);
+  min-height: var(--reader-fit-height, 100%);
+}
+
+.reader-page-title {
+  color: rgba(240, 236, 231, 0.36);
+  font-family: "Noto Sans", "Noto Sans JP", sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 34px;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-page-content {
+  min-height: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.reader-chapter-heading {
+  color: var(--text);
+  font-family: "Noto Serif JP", "Yu Mincho", serif;
+  line-height: 1.35;
+  margin: 22px 0 44px;
+}
+
+.reader-chapter-heading h2 {
+  border: 0;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.35;
+  margin: 0;
+  padding: 0;
+}
+
+.reader-chapter-heading p {
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 700;
+  margin: 2px 0 0 1.2em;
+}
+
+.book-line {
+  display: block;
+  margin: 0 0 14px;
+  line-break: strict;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: pre-wrap;
+}
+
+.book-lines {
+  display: block;
+  margin: 0 0 14px;
+  line-break: strict;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: pre-wrap;
+}
+
+.book-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.book-image {
+  align-items: center;
+  display: grid;
+  height: 100%;
+  justify-items: center;
+  margin: 0 auto;
+  text-align: center;
+  width: 100%;
+}
+
+.book-image img {
+  border-radius: 2px;
+  height: auto;
+  max-height: var(--reader-zoom-height, none);
+  max-width: var(--reader-zoom-width, none);
+  object-fit: contain;
+  width: min(100%, var(--reader-zoom-width, 100%));
+}
+
+.reader-page-frame.image-only .book-image img {
+  height: var(--reader-zoom-height, 100%);
+  max-height: none;
+  max-width: none;
+  width: var(--reader-zoom-width, 100%);
+}
+
+.pdf-page-render {
+  display: grid;
+  justify-items: center;
+  margin: 0 auto 18px;
+  width: 100%;
+}
+
+.pdf-canvas-wrap {
+  background: #fff;
+  display: grid;
+  max-width: calc(100% * var(--reader-zoom, 1));
+  position: relative;
+  width: calc(100% * var(--reader-zoom, 1));
+}
+
+.pdf-canvas {
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.pdf-link-layer {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 3;
+}
+
+.pdf-link {
+  border: 1px solid transparent;
+  display: block;
+  pointer-events: auto;
+  position: absolute;
+}
+
+.pdf-link:hover {
+  background: rgba(249, 115, 22, 0.14);
+  border-color: rgba(249, 115, 22, 0.5);
+}
+
+.pdf-extracted-text {
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  width: 1px;
+}
+
+.pdf-text-layer {
+  inset: 0;
+  overflow: hidden;
+  position: absolute;
+  user-select: text;
+  z-index: 2;
+}
+
+.pdf-text-layer span {
+  color: rgba(0, 0, 0, 0.01);
+  cursor: text;
+  line-height: 1;
+  position: absolute;
+  white-space: pre;
+}
+
+.pdf-text-layer .reader-highlight {
+  color: transparent !important;
+}
+

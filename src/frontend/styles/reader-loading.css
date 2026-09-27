@@ -1,0 +1,37 @@
+.reader-load-status {
+  color: var(--muted);
+  display: grid;
+  gap: 10px;
+  margin: 64px auto;
+  max-width: 360px;
+  padding: 0 16px;
+}
+
+.reader-load-status strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.reader-load-track {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  height: 6px;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.reader-load-fill {
+  background: var(--accent);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  left: 0;
+  min-width: 0;
+  position: absolute;
+  top: 0;
+  transform-origin: left center;
+  transition: width 140ms ease, transform 140ms ease;
+}
+

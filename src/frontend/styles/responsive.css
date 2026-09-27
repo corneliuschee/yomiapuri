@@ -1,0 +1,100 @@
+@media (max-width: 960px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .shell.reader-sidebar-mode:not(.sidebar-hidden) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    height: 100vh;
+    position: fixed;
+    width: 260px;
+    z-index: 20;
+  }
+
+  .shell.reader-sidebar-mode .sidebar {
+    width: min(320px, 100vw);
+  }
+
+  .sidebar.collapsed {
+    margin-left: -260px;
+  }
+
+  .settings-grid,
+  .two-col,
+  .target-grid,
+  .card-field-row,
+  .dictionary-controls,
+  .cache-controls,
+  .dictionary-manager-row {
+    grid-template-columns: 1fr;
+  }
+
+  .reader-actions,
+  .reader-footer,
+  .import-row,
+  .candidate-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reader-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .chapter-panel {
+    max-height: 260px;
+  }
+
+  .import-row input[type="text"],
+  .candidate-actions input {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+@media (max-width: 620px) {
+  .main {
+    grid-template-rows: 94px minmax(0, 1fr);
+  }
+
+  .topbar {
+    align-items: stretch;
+    display: grid;
+    gap: 4px;
+    grid-template-rows: 40px 42px;
+    padding: 4px 10px;
+  }
+
+  .topbar-identity {
+    gap: 12px;
+  }
+
+  .topbar .nav-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    min-width: 0;
+  }
+
+  .topbar .nav-item {
+    gap: 5px;
+    justify-content: center;
+    min-width: 0;
+    padding: 0 4px;
+  }
+
+  .shell.reader-sidebar-mode .main {
+    grid-template-rows: 50px minmax(0, 1fr);
+  }
+
+  .shell.reader-sidebar-mode .topbar {
+    align-items: center;
+    display: flex;
+  }
+
+  .shell.reader-sidebar-mode .topbar .nav-list {
+    display: none;
+  }
+}

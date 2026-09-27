@@ -29,9 +29,11 @@ src/
     services/            Books, NLP, dictionaries, search, Anki, AI, media, sync
     storage/             SQLite persistence and schema
   frontend/
-    index.html
-    app.js
-    styles.css
+    index.html           Page shell, forms, and dialogs
+    app.js               Startup and event registration
+    js/                  Native JavaScript modules grouped by feature
+    styles.css           Ordered stylesheet imports
+    styles/              Component and responsive styles
     vendor/pdfjs/        Browser PDF renderer and license
 tests/                   Python regression tests and API contract
 scripts/                 Export utility and HTTP smoke test

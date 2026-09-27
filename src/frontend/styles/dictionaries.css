@@ -1,0 +1,211 @@
+.dictionary-row {
+  display: flex;
+  justify-content: space-between;
+}
+
+.dictionary-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  margin-bottom: 8px;
+}
+
+.dictionary-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0 0 14px;
+}
+
+.cache-controls {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(220px, 1fr) auto;
+}
+
+.cache-controls label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cache-controls select {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cache-status {
+  color: var(--muted);
+  display: grid;
+  font-size: 12px;
+  gap: 3px;
+  line-height: 1.45;
+  margin-top: 10px;
+  min-width: 0;
+}
+
+.cache-status strong,
+.cache-status span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cache-status.ready {
+  color: var(--text);
+}
+
+.cache-status.stale {
+  color: var(--muted);
+}
+
+.toggle-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.toggle-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+  height: 16px;
+  margin: 0;
+  width: 18px;
+}
+
+.toggle-row input[type="checkbox"]:focus-visible {
+  outline: 2px solid rgba(255, 112, 67, 0.38);
+  outline-offset: 2px;
+}
+
+.toggle-row input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.dictionary-manager-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 28px 28px minmax(180px, 1fr) auto auto minmax(64px, auto);
+  min-height: 58px;
+  padding-right: 34px;
+  position: relative;
+}
+
+.dictionary-manager-row.dragging {
+  opacity: 0.5;
+}
+
+.dictionary-drag-handle {
+  align-items: center;
+  border-color: transparent;
+  color: var(--muted);
+  cursor: grab;
+  display: grid;
+  gap: 3px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  place-content: center;
+  width: 28px;
+}
+
+.dictionary-drag-handle span {
+  background: currentColor;
+  border-radius: 1px;
+  display: block;
+  height: 2px;
+  width: 14px;
+}
+
+.dictionary-drag-handle:active {
+  cursor: grabbing;
+}
+
+.dictionary-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dictionary-main strong,
+.dictionary-main span {
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.dictionary-main span,
+.dictionary-language {
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.dictionary-badge,
+.dictionary-count {
+  background: #1b1d22;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: #ded8d0;
+  font-size: 12px;
+  padding: 3px 6px;
+  white-space: nowrap;
+}
+
+.dictionary-language {
+  max-width: 120px;
+}
+
+.dictionary-delete {
+  background: #101116;
+  border-color: var(--line-soft);
+  border-radius: 50%;
+  color: var(--muted);
+  height: 24px;
+  min-height: 24px;
+  opacity: 0;
+  padding: 0;
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 24px;
+}
+
+.dictionary-manager-row:hover .dictionary-delete,
+.dictionary-delete:focus {
+  opacity: 1;
+}
+
+.dictionary-delete:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.dictionary-check {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+
+.dictionary-check input {
+  accent-color: var(--accent);
+  cursor: pointer;
+  height: 16px;
+  margin: 0;
+  width: 18px;
+}
+
+.dictionary-check input:focus-visible {
+  outline: 2px solid rgba(255, 112, 67, 0.38);
+  outline-offset: 2px;
+}
+

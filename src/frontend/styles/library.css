@@ -1,0 +1,265 @@
+#books-page {
+  grid-template-rows: 48px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.library-toolbar {
+  align-items: center;
+  background: var(--bar);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 10px;
+  padding: 0 14px;
+}
+
+.library-notice {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  display: none;
+  font-size: 13px;
+  gap: 8px;
+  height: 32px;
+  min-height: 0;
+  opacity: 0;
+  padding: 0 10px;
+  transition: opacity 180ms ease;
+  width: fit-content;
+}
+
+.library-notice.visible,
+.library-notice.fading {
+  display: flex;
+  min-height: 32px;
+}
+
+.library-notice.visible {
+  opacity: 1;
+}
+
+.library-notice.fading {
+  opacity: 0;
+}
+
+.library-notice.success {
+  border-color: rgba(34, 197, 94, 0.34);
+}
+
+.library-notice.error {
+  border-color: rgba(248, 113, 113, 0.42);
+}
+
+.notice-icon {
+  align-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: #22c55e;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.library-notice.error .notice-icon {
+  color: #f87171;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.notice-icon svg {
+  fill: none;
+  height: 12px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 12px;
+}
+
+.library-search {
+  align-items: center;
+  background: #0f1014;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  width: min(260px, 32vw);
+}
+
+.library-search svg {
+  fill: none;
+  flex: 0 0 auto;
+  height: 15px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 15px;
+}
+
+.library-search input {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  height: 28px;
+  min-width: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.library-search input:focus {
+  outline: none;
+}
+
+.books-grid {
+  align-content: start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(var(--library-book-size, 140px), var(--library-book-size, 140px)));
+  justify-content: start;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+}
+
+.library-book {
+  cursor: grab;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  position: relative;
+  width: var(--library-book-size, 140px);
+}
+
+.library-book.dragging {
+  opacity: 0.45;
+}
+
+.library-book:active {
+  cursor: grabbing;
+}
+
+.library-book.drop-before::before,
+.library-book.drop-after::after {
+  background: var(--accent);
+  border-radius: 2px;
+  bottom: 30px;
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 3px;
+  z-index: 2;
+}
+
+.library-book.drop-before::before {
+  left: -10px;
+}
+
+.library-book.drop-after::after {
+  right: -10px;
+}
+
+.library-open {
+  align-items: stretch;
+  background: transparent;
+  border-color: transparent;
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  justify-content: stretch;
+  min-height: 0;
+  outline: none;
+  padding: 0;
+  text-align: left;
+  user-select: none;
+}
+
+.library-open:hover,
+.library-open:focus-visible {
+  background: transparent;
+  border-color: transparent;
+}
+
+.library-open:focus-visible .library-cover {
+  border-color: var(--line-soft);
+}
+
+.library-cover {
+  aspect-ratio: 2 / 3;
+  background: #111216;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  display: grid;
+  overflow: hidden;
+  place-items: center;
+  width: 100%;
+}
+
+.library-cover img,
+.library-cover canvas {
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  -webkit-user-drag: none;
+  width: 100%;
+}
+
+.library-open strong,
+.library-open span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-open strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.library-open span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.library-book.active .library-cover {
+  border-color: var(--accent);
+}
+
+.library-book.editing {
+  align-content: start;
+}
+
+.library-book.editing .library-cover {
+  width: 100%;
+}
+
+.library-rename-form {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.library-rename-form input {
+  min-width: 0;
+  width: 100%;
+}
+
+.library-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.library-actions button {
+  flex: 1;
+  font-size: 12px;
+  min-height: 28px;
+}
+

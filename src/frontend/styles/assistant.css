@@ -1,0 +1,241 @@
+.assistant-panel.active {
+  box-sizing: border-box;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.assistant-panel-placeholder {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+  margin: 0;
+  padding: 2px 2px 6px;
+}
+
+.reader-assistant-form {
+  background: #2b2b2c;
+  border: 1px solid #343438;
+  border-radius: 10px;
+  box-sizing: border-box;
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 10px 10px 8px;
+  width: 100%;
+}
+
+.reader-assistant-form select,
+.reader-assistant-form textarea {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  min-width: 0;
+}
+
+.reader-assistant-form textarea {
+  color: var(--text);
+  line-height: 1.45;
+  min-height: 58px;
+  outline: none;
+  padding: 4px 2px;
+  resize: none;
+}
+
+.reader-assistant-form textarea::placeholder {
+  color: #8a8a8f;
+}
+
+.reader-assistant-form button {
+  justify-content: center;
+}
+
+.assistant-composer-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.assistant-composer-left {
+  align-items: center;
+  color: #b6b6ba;
+  display: flex;
+  flex: 0 1 76px;
+  font-size: 12px;
+  gap: 8px;
+  min-width: 0;
+}
+
+.assistant-composer-left span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-assistant-form select {
+  appearance: none;
+  background-color: transparent;
+  color: #f3f3f3;
+  cursor: pointer;
+  flex: 0 1 180px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-left: auto;
+  max-width: min(180px, 48%);
+  min-width: 0;
+  outline: none;
+  padding: 4px 16px 4px 4px;
+  text-overflow: ellipsis;
+}
+
+.reader-assistant-form select {
+  background-image: linear-gradient(45deg, transparent 50%, #a7a7aa 50%), linear-gradient(135deg, #a7a7aa 50%, transparent 50%);
+  background-position: calc(100% - 8px) 50%, calc(100% - 4px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px, 4px 4px;
+}
+
+.reader-assistant-form select option {
+  background: #2b2b2c;
+  color: #f3f3f3;
+}
+
+.assistant-send-button {
+  align-items: center;
+  border: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 18px;
+  height: 28px;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0;
+  width: 28px;
+}
+
+.assistant-send-button {
+  background: #b9b9bd;
+  color: #242426;
+  font-weight: 700;
+}
+
+.assistant-send-button:disabled {
+  opacity: 0.55;
+}
+
+.reader-assistant-answer {
+  align-content: start;
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.reader-assistant-answer:empty {
+  min-height: 0;
+}
+
+.assistant-message {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.assistant-message.user {
+  justify-items: end;
+}
+
+.assistant-message-body {
+  background: #101116;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 9px 10px;
+  white-space: pre-wrap;
+}
+
+.assistant-message.user .assistant-message-body {
+  background: #2b2b2c;
+  border-color: #3a3a3d;
+}
+
+.assistant-message.assistant .assistant-message-body {
+  width: 100%;
+}
+
+.assistant-message-meta {
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  gap: 8px;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.assistant-message.user .assistant-message-meta {
+  justify-content: flex-end;
+}
+
+.assistant-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
+.assistant-answer-block,
+.assistant-terms,
+.assistant-citations {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.assistant-answer-meta {
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.assistant-terms h4,
+.assistant-citations h4 {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
+}
+
+.assistant-terms article {
+  background: #101116;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+}
+
+.assistant-terms strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.assistant-terms strong span {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.assistant-terms p {
+  color: var(--paper-text);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+}
+
