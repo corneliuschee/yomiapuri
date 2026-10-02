@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Yomiアプリ</title>
-    <link rel="stylesheet" href="/styles.css?v=continuous-highlights-1" />
+    <link rel="stylesheet" href="/styles.css?v=ui-refinements-1" />
   </head>
   <body>
     <div id="shell" class="shell">
@@ -429,8 +429,11 @@
     <script src="/vendor/pdfjs/pdf.js"></script>
     <script src="/vendor/gsap/gsap.min.js" defer></script>
     <script type="importmap">
-      { "imports": { "/js/reader/highlights.js": "/js/reader/highlights.js?v=continuous-4" } }
+      { "imports": {
+        "/js/reader/highlights.js": "/js/reader/highlights.js?v=continuous-4",
+        "/js/shared/ui.js": "/js/shared/ui.js?v=ui-refinements-1"
+      } }
     </script>
-    <script src="/app.js?v=frontend-modules" type="module"></script>
+    <script src="/app.js?v=ui-refinements-1" type="module"></script>
   </body>
 </html>

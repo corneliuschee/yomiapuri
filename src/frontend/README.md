@@ -13,7 +13,10 @@ The frontend uses native JavaScript modules and CSS. FastAPI serves this directo
 - `js/integrations/`: Anki connection and vocabulary sync, dictionaries, AI models, image settings, and Supabase sync.
 - `js/shared/`: formatting, notifications, dialogs, tooltips, and browser speech helpers.
 - `js/shared/motion.js`: optional GSAP entrance fades with bounded work, reduced-motion support, and cleanup on navigation/hiding.
+- `js/shared/tooltips.js`: delegated, keyboard-accessible tooltips for labelled controls and help text, kept inside the viewport.
+- `js/library/loading.js`: initial library placeholders and failed-load retry; normal state refreshes retain the existing grid.
 - `styles.css`: ordered imports for the files in `styles/`.
+- `styles/refinements.css`: tooltip sizing, static loading placeholders, and shared dialog spacing.
 - `vendor/pdfjs/`: third-party browser PDF renderer and its license.
 - `vendor/gsap/`: pinned local GSAP browser build; regenerate with `npm run vendor:gsap` after installing dependencies.
 

@@ -1,0 +1,64 @@
+/* Shared finishing details; no reader text or scrolling rules. */
+.floating-tooltip {
+  width: max-content;
+  max-width: min(260px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 7px 10px;
+  background: var(--panel-2);
+  pointer-events: auto;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
+}
+
+.floating-tooltip[hidden] { display: none; }
+
+.library-placeholder { cursor: default; align-content: start; }
+.library-placeholder .library-cover {
+  background: var(--panel-2);
+  border-color: var(--line);
+  box-shadow: none;
+}
+.placeholder-line {
+  height: 12px;
+  width: 85%;
+  background: var(--panel-2);
+  border-radius: 3px;
+}
+.placeholder-line.short { width: 55%; height: 10px; }
+
+.confirm-dialog, .card-dialog {
+  padding: 20px;
+  border-color: var(--line-soft);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.confirm-dialog h2, .card-dialog h2 { margin-bottom: 12px; }
+.confirm-dialog p, .card-dialog p { line-height: 1.55; }
+.confirm-actions {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.confirm-actions button { min-height: 34px; padding: 6px 14px; }
+#card-export {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #141414;
+  font-weight: 600;
+}
+#card-export:hover:not(:disabled) { background: var(--accent-dark); }
+.lookup-popover { padding: 16px; gap: 12px; }
+.lookup-head { border-bottom: 1px solid var(--line); padding-bottom: 12px; gap: 12px; }
+.lookup-title { flex: 1; }
+.lookup-head strong { font-size: 28px; line-height: 1.25; overflow-wrap: anywhere; }
+.lookup-actions { gap: 6px; }
+.lookup-head button { width: 30px; height: 30px; min-height: 30px; }
+
+@media (max-width: 480px) {
+  .dialog-backdrop { padding: 12px; }
+  .confirm-dialog, .card-dialog { padding: 16px; max-height: calc(100dvh - 24px); }
+}

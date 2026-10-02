@@ -1,4 +1,4 @@
-// Notices, confirmation dialogs, and help tooltips.
+// Notices and confirmation dialogs.
 import { elements } from "../core/dom.js";
 import { escapeHtml } from "./utils.js";
 import { finishMotion, reveal } from "./motion.js";
@@ -76,51 +76,7 @@ function confirmAction(message, options = {}) {
   });
 }
 
-function showFloatingTooltip(target) {
-  const message = target?.dataset?.tooltip;
-  if (!message) return;
-  let tooltip = document.querySelector(".floating-tooltip");
-  if (!tooltip) {
-    tooltip = document.createElement("div");
-    tooltip.className = "floating-tooltip";
-    document.body.append(tooltip);
-  }
-  tooltip.textContent = message;
-  const rect = target.getBoundingClientRect();
-  const gap = 8;
-  const tooltipWidth = 220;
-  const left = Math.min(Math.max(gap, rect.left + rect.width / 2 - tooltipWidth / 2), window.innerWidth - tooltipWidth - gap);
-  const belowTop = rect.bottom + gap;
-  tooltip.style.left = `${left}px`;
-  tooltip.style.top = `${belowTop}px`;
-  tooltip.hidden = false;
-}
-
-function hideFloatingTooltip() {
-  const tooltip = document.querySelector(".floating-tooltip");
-  if (tooltip) tooltip.hidden = true;
-}
-
-function bindTooltipEvents() {
-  document.addEventListener("mouseover", (event) => {
-    const target = event.target.closest?.(".help-dot[data-tooltip]");
-    if (target) showFloatingTooltip(target);
-  });
-  document.addEventListener("focusin", (event) => {
-    const target = event.target.closest?.(".help-dot[data-tooltip]");
-    if (target) showFloatingTooltip(target);
-  });
-  document.addEventListener("mouseout", (event) => {
-    if (event.target.closest?.(".help-dot[data-tooltip]")) hideFloatingTooltip();
-  });
-  document.addEventListener("focusout", (event) => {
-    if (event.target.closest?.(".help-dot[data-tooltip]")) hideFloatingTooltip();
-  });
-  window.addEventListener("scroll", hideFloatingTooltip, true);
-}
-
 export {
-  bindTooltipEvents,
   confirmAction,
   showAnkiNotice,
   showDictionaryNotice,

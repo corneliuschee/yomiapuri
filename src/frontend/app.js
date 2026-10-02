@@ -19,7 +19,8 @@ import { initPdfRenderer } from "./js/reader/pdf.js";
 import { bindReaderSearchEvents } from "./js/reader/search.js";
 import { bindReaderSidebarEvents, initReaderSidebarResize } from "./js/reader/sidebar.js";
 import { loadVoices } from "./js/shared/speech.js";
-import { bindTooltipEvents } from "./js/shared/ui.js";
+import { bindTooltipEvents } from "./js/shared/tooltips.js";
+import { showLibraryLoading, finishLibraryLoading } from "./js/library/loading.js";
 import { escapeHtml } from "./js/shared/utils.js";
 
 initPdfRenderer();
@@ -44,6 +45,14 @@ bindDictionaryEvents();
 loadVoices();
 initReaderSidebarResize();
 window.speechSynthesis.addEventListener?.("voiceschanged", loadVoices);
-loadState().catch((error) => {
-  elements.reader.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
-});
+async function loadInitialLibrary() {
+  showLibraryLoading();
+  try {
+    await loadState();
+    finishLibraryLoading();
+  } catch (error) {
+    finishLibraryLoading(error, loadInitialLibrary);
+    elements.reader.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+loadInitialLibrary();
