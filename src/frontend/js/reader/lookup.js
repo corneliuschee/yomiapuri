@@ -6,6 +6,7 @@ import { state } from "../core/state.js";
 import { eraseHighlightsInSelection, highlightSelection, selectionInsideReader } from "./highlights.js";
 import { turnPage } from "./navigation.js";
 import { escapeHtml } from "../shared/utils.js";
+import { finishMotion, reveal } from "../shared/motion.js";
 
 let hoverLookupTimer;
 
@@ -30,11 +31,13 @@ async function showDictionaryLookupFromSelection() {
 }
 
 async function showDictionaryLookup(term, rect, preview = null, fallback = null) {
+  const opening = elements.dictionaryLookup.classList.contains("hidden");
   const requestId = ++hoverLookupRequest;
   setLookupPreview(preview);
   elements.dictionaryLookup.classList.remove("hidden");
   elements.dictionaryLookup.innerHTML = `<p class="empty">Looking up ${escapeHtml(term)}...</p>`;
   positionLookupPopover(rect);
+  if (opening) reveal(elements.dictionaryLookup);
   try {
     const prefix = state.dictionarySettings?.prefixWildcardSearch ? "&prefix=true" : "";
     const cacheKey = `${term}\u0000${prefix}\u0000${state.knownTermsCount}`;
@@ -570,6 +573,7 @@ function positionLookupPopover(rect) {
 }
 
 function hideDictionaryLookup() {
+  finishMotion(elements.dictionaryLookup);
   elements.dictionaryLookup.classList.add("hidden");
   elements.dictionaryLookup.innerHTML = "";
   hoverLookupLastTerm = "";

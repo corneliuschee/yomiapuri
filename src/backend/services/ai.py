@@ -43,6 +43,11 @@ class AIService:
         await self.client.aclose()
 
     async def stop(self):
+        """Stop only this service's managed subprocess, refusing an active answer.
+
+        Allow ten seconds for termination before killing it. External servers
+        reached through configured endpoints are not owned or terminated here.
+        """
         if self.active:
             raise ValueError('Wait for the current response before stopping the assistant.')
         if self.process and self.process.poll() is None:
@@ -78,6 +83,12 @@ class AIService:
             return False
 
     async def ensure(self, model_id):
+        """Return a healthy chat endpoint, starting a local model if necessary.
+
+        Caller must hold the assistant lock. Reuse a healthy endpoint or switch
+        the managed model, validate local paths, then wait up to 120 seconds for
+        health. Automatic startup is loopback-only; logs go to data/llama.
+        """
         settings = self.store.setting('ai')
         model = next((m for m in settings['models'] if m['id'] == model_id), None)
         if not model:
@@ -114,6 +125,13 @@ class AIService:
         raise ValueError('Local model startup timed out.')
 
     async def events(self, body):
+        """Yield meta/delta/done events for one serialized assistant response.
+
+        Infer intent from the question, append author-reading romanizations,
+        and send at most six history messages plus the current question. There
+        is no book search or page retrieval here. Expected provider failures
+        become an unavailable done payload, while active state resets in finally.
+        """
         question = str(body.get('question', '')).strip()[:2500]
         intent = 'translate' if re.search(r'translat', question, re.I) else 'recap' if re.search(r'recap|summari', question, re.I) else 'explain' if re.search(r'grammar|explain|meaning', question, re.I) else 'ask'
         result = {'intent': intent, 'task': intent, 'question': question, 'answer': '', 'terms': [], 'citations': [],

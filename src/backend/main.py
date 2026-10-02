@@ -26,9 +26,20 @@ from .api import register_routes
 
 
 def create_app(data_dir=DATA):
+    """Build the HTTP app without opening storage until its lifespan starts.
+
+    Pass a temporary directory in tests to isolate all persisted data. Services
+    are shared through ``app.state``; API routes must precede static mounts so
+    unknown API requests return JSON rather than frontend files.
+    """
     data_dir = Path(data_dir)
     @asynccontextmanager
     async def lifespan(app):
+        """Own the shared database, service clients, and assistant idle task.
+
+        Construction order follows service dependencies. Normal shutdown closes
+        the assistant and external-service clients before closing SQLite.
+        """
         store = Store(data_dir)
         app.state.store = store
         app.state.dictionaries = DictionaryService(store)

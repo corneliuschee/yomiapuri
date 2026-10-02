@@ -25,6 +25,11 @@ class MediaService:
         return {'settings': settings, 'voiceModels': [], 'voices': [], 'status': self.status()}
 
     def image(self, expression, reading='', meaning=''):
+        """Return Anki image HTML for a cached local text-based mnemonic.
+
+        Disabled image generation returns an empty string. Enabled generation
+        uses Pillow and a content-derived filename, not a remote image model.
+        """
         from PIL import Image, ImageDraw, ImageFont
         if not self.store.setting('media')['image'].get('enabled'):
             return ''
@@ -43,6 +48,12 @@ class MediaService:
         return f'<img src="{name}">'
 
     def store_files(self, fields, connect):
+        """Upload locally available basename-only image/audio references to Anki.
+
+        Scan reviewed field markup, deduplicate names, and ignore paths/URLs or
+        files absent from the Anki media directory. Existing sound references
+        are supported even though this app no longer generates speech.
+        """
         names = set()
         for value in fields.values():
             names.update(re.findall(r'\[sound:([^\]]+)\]', value))

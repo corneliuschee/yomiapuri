@@ -7,6 +7,11 @@ import sys
 
 
 def main():
+    """Use the project virtualenv, then dispatch server, tests, or private export.
+
+    Server mode binds loopback only. --reload watches backend source; test and
+    export execute separate Python processes and return their exit status.
+    """
     root = Path(__file__).resolve().parent
     os.chdir(root)
     environment = root / '.venv-backend'

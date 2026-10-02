@@ -27,6 +27,7 @@ class NLP:
         self.known_lock = threading.Lock()
 
     def tokenizer(self):
+        """Lazily allocate one Sudachi tokenizer per worker thread."""
         if not hasattr(self.local, 'tokenizer'):
             source = dictionary.Dictionary()
             self.local.tokenizer = source.tokenizer() if hasattr(source, 'tokenizer') else source.create()
@@ -34,11 +35,22 @@ class NLP:
 
     @lru_cache(maxsize=2048)
     def raw(self, text):
+        """Cache structural Sudachi mode-C tokens, independent of learned state.
+
+        Return surface, dictionary/normalized forms, hiragana reading, and POS
+        metadata. Cached dictionaries are shared results; copy before modifying.
+        """
         return tuple({'surface': m.surface(), 'base': m.dictionary_form(), 'dictionaryForm': m.normalized_form(),
                       'reading': hiragana(m.reading_form()), 'pos': m.part_of_speech()[0],
                       'name': '固有名詞' in m.part_of_speech()} for m in self.tokenizer().tokenize(text, tokenizer.Tokenizer.SplitMode.C))
 
     def variants(self, text):
+        """Return ordered unique lookup forms, including inflected lexical heads.
+
+        Normalize width, retain the original query, then add normalized forms,
+        readings, and content-word lemmas. Particles/auxiliaries are excluded
+        from standalone head variants but remain in joined forms.
+        """
         text = normalize(text)
         tokens = self.raw(text)
         forms = [text]
@@ -50,6 +62,12 @@ class NLP:
         return list(dict.fromkeys(forms))
 
     def known(self):
+        """Refresh learned variants only when SQLite's known_terms revision changes.
+
+        Reuse per-term tokenization for unchanged vocabulary, remove deleted
+        terms, and rebuild known-kanji coverage under a lock. This avoids
+        retokenizing books after an Anki vocabulary sync.
+        """
         revision = self.store.revision('known_terms')
         with self.known_lock:
             if revision != self.known_revision:
@@ -65,12 +83,23 @@ class NLP:
 
     @lru_cache(maxsize=4096)
     def rank(self, term, revision):
+        """Cache the best numeric enabled-dictionary rank for a revision.
+
+        Revision participates in the cache key, not the SQL predicate. Noninteger
+        frequency labels are ignored; no comparable rank returns None.
+        """
         rows = self.store.rows('''SELECT f.value FROM dictionary_frequencies f JOIN dictionaries d ON d.id=f.dictionary_id
             WHERE f.term=? AND d.enabled_for_lookup=1''', (term,))
         ranks = [int(r['value']) for r in rows if str(r['value']).isdigit()]
         return min(ranks) if ranks else None
 
     def readability(self, token, protected=()):
+        """Classify a token without adding it to known vocabulary.
+
+        Author ruby/protected names and explicit learned forms override inference.
+        Score 85 requires entirely known kanji, an enabled dictionary match,
+        numeric frequency <=10000, and no proper-name flag; otherwise score 0.
+        """
         base = token.get('dictionaryForm') or token.get('base') or token['surface']
         known = self.known()
         if token.get('authorRuby') or token['surface'] in protected:
@@ -85,6 +114,13 @@ class NLP:
                 'reasons': ['known kanji', 'common frequency', 'dictionary match'] if readable else []}
 
     def tokens(self, text):
+        """Read/cache dictionary-adjusted tokens while retaining author ruby.
+
+        Cache keys include text, tokenizer version, and dictionaries revision,
+        but not vocabulary or display settings. Author markers are atomic;
+        dictionary readings replace only exact surfaces to preserve inflections.
+        A cache miss writes structural tokens, never generated reader HTML.
+        """
         key = hashlib.sha256(('sudachi-v1:' + str(self.store.revision('dictionaries')) + ':' + text).encode()).hexdigest()
         row = self.store.one('SELECT tokens_json FROM python_token_cache WHERE cache_key=?', (key,))
         if row:
@@ -110,6 +146,13 @@ class NLP:
         return result
 
     def render(self, text, protected=(), target='', force=False):
+        """Render escaped lookup spans/ruby with dynamic learned-word visibility.
+
+        Author ruby always keeps its reading; protected occurrences never gain
+        generated ruby. force is for card previews and bypasses learned/inferred
+        hiding, not author protection. target highlights matching surface/base
+        tokens without changing the original text.
+        """
         settings = self.store.setting('reader')
         known = self.known()
         result = []

@@ -20,6 +20,12 @@ CANONICAL_FIELDS = ['Expression', 'Reading', 'WordReading', 'WordReadingHiragana
 
 
 def canonical_field(name):
+    """Infer a semantic field role from a note-type label, or return no match.
+
+    Prefer exact canonical names, then compatible mining-template aliases;
+    exclude known utility fields before applying broad patterns. Explicit user
+    mappings are applied separately by AnkiService.mapping.
+    """
     if name == '例文':
         return 'Sentence'
     key = re.sub(r'[^a-z]', '', name.lower())
@@ -62,6 +68,12 @@ class AnkiService:
         self.client.close()
 
     def connect(self, action, params=None):
+        """Call AnkiConnect v6 and propagate HTTP or action-level failures.
+
+        On connection refusal, optionally launch the configured executable and
+        retry for up to fifteen seconds. Redirect that process's diagnostics to
+        data/logs/anki.log; this does not suppress actual export API errors.
+        """
         settings = self.store.setting('anki')
         payload = {'action': action, 'version': 6, 'params': params or {}}
         try:
@@ -93,6 +105,11 @@ class AnkiService:
         return payload.get('result')
 
     def mapping(self, model, fields):
+        """Map canonical roles to note fields, then apply saved model overrides.
+
+        The result is one-to-one per role, so aliases such as Key and Word can
+        collide. fill_note_key separately satisfies a required empty Key field.
+        """
         settings = self.store.setting('anki')
         explicit = settings.get('modelFieldMaps', {}).get(model, settings.get('fieldMap', {}))
         result = {canonical_field(f): f for f in fields if canonical_field(f)}
@@ -100,6 +117,12 @@ class AnkiService:
         return result
 
     def preview(self, body):
+        """Prepare editable card values from dictionary entries and a sentence.
+
+        Require an active book and note type; query Anki's field names, generate
+        highlighted furigana HTML, apply mappings, and record a preview event.
+        No Anki note is created here. Return canonical values plus actual fields.
+        """
         doc = self.store.document(body.get('documentId'))
         if not doc:
             raise LookupError('Document not found.')
@@ -132,6 +155,17 @@ class AnkiService:
                 'media': self.media.status() if self.media else {}}
 
     def export(self, body):
+        """Send reviewed fields to Anki and finalize a small local SQL transaction.
+
+        Preserve edited definitions; only fill an existing blank Key and missing
+        sentence highlights/media. Journal pending before addNote and created
+        after its result, then commit the card, known-term links, and complete
+        status together. Network calls stay outside the final transaction.
+
+        A repeated explicit requestId returns a completed result or refuses an
+        unresolved export. Omitting it creates a new ID; the journal does not
+        guarantee deduplication across independently submitted requests.
+        """
         doc = self.store.document(body.get('documentId'))
         if not doc:
             raise LookupError('Document not found.')
@@ -203,7 +237,13 @@ class AnkiService:
         return card
 
     def import_terms(self, body):
-        """Import reviewed Anki vocabulary additively, preserving existing note links."""
+        """Import learned vocabulary additively, preserving existing note links.
+
+        Resolve a review preset/deck or explicit query, fetch notes in batches
+        of 75, and strip HTML/ruby/audio markup from mapped vocabulary fields.
+        Only write new terms or new note links after all batches succeed. Anki
+        deletions do not remove local terms; unchanged imports skip term writes.
+        """
         preset = body.get('preset') or self.store.setting('anki').get('vocabularyPreset', 'reviewed-once')
         query = body.get('query') or {'reviewed-once': 'prop:reps>0', 'reviewed': 'rated:365', 'mature': 'prop:ivl>=21', 'all': ''}.get(preset, 'prop:reps>0')
         deck = body.get('deckName') or self.store.setting('anki')['deckName']

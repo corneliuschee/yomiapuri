@@ -10,6 +10,12 @@ from src.backend.services.dictionary import DictionaryService
 
 
 def main():
+    """Write private JSON inspection exports, explicitly loading complete bodies.
+
+    This compatibility export is not a complete filesystem backup: media stays
+    on disk and journals/tombstones are not all included. Settings can contain
+    credentials, so keep the output outside version control and shared folders.
+    """
     output = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DATA / 'exports'
     output.mkdir(parents=True, exist_ok=True)
     store = Store(DATA)

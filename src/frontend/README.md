@@ -12,8 +12,10 @@ The frontend uses native JavaScript modules and CSS. FastAPI serves this directo
 - `js/anki/`: card preview and export.
 - `js/integrations/`: Anki connection and vocabulary sync, dictionaries, AI models, image settings, and Supabase sync.
 - `js/shared/`: formatting, notifications, dialogs, tooltips, and browser speech helpers.
+- `js/shared/motion.js`: optional GSAP entrance fades with bounded work, reduced-motion support, and cleanup on navigation/hiding.
 - `styles.css`: ordered imports for the files in `styles/`.
 - `vendor/pdfjs/`: third-party browser PDF renderer and its license.
+- `vendor/gsap/`: pinned local GSAP browser build; regenerate with `npm run vendor:gsap` after installing dependencies.
 
 ## Editing Guidelines
 
@@ -24,3 +26,22 @@ Keep feature functions and their event handlers together. Export the functions o
 Some reader modules call one another through imported functions. Keep these calls inside functions and initialize features from `app.js`; avoid reading another feature's state or registering listeners while a module is being imported.
 
 The order of imports in `styles.css` preserves the existing cascade. Keep responsive overrides last, and check both desktop and narrow layouts when changing that order.
+
+## Visual Motion
+
+Short opacity fades are applied after elements become visible. They never delay
+API calls, focus, dialog dismissal, or reader navigation. Content stays visible
+if GSAP fails to load. `finishMotion(root)` restores original inline styles before
+elements are hidden/replaced; call it when adding another animated surface.
+Motion stops when the tab is hidden or reduced motion changes.
+
+Library covers animate only for newly seen document IDs, up to twelve visible
+covers, with a maximum 90 ms stagger delay. Filtering, reorder responses, and
+progress refreshes do not replay the entrance. Drag start finishes cover fades.
+Hover/focus treatments use fixed geometry so hit testing and drop calculations
+remain stable. Reader text, scrolling, and page dimensions are not animated.
+
+`styles/motion.css` owns hover/focus treatment and the active navigation underline.
+Keep these enhancements scoped; avoid ongoing animation loops or adding React
+for standalone visual effects. Fade timing is inspired by content-reveal patterns
+such as React Bits, implemented directly with GSAP in the existing vanilla modules.

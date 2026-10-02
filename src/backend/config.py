@@ -13,6 +13,11 @@ MEDIA = DATA / 'media'
 
 
 def defaults():
+    """Return fresh nested defaults to merge with persisted settings on reads.
+
+    Compatibility keys such as ``ml`` and disabled audio settings remain even
+    though their former UI/runtime features are no longer present.
+    """
     return {
         'reader': {'hideInferredReadableFurigana': False, 'showKnownFurigana': False},
         'dictionarySettings': {'prefixWildcardSearch': False},

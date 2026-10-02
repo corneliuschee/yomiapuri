@@ -4,8 +4,11 @@ import { state } from "./state.js";
 import { renderTrash } from "../library/trash.js";
 import { syncReaderModeButtons, updateReaderToolbar } from "../reader/navigation.js";
 import { renderReaderSidePanel } from "../reader/sidebar.js";
+import { finishMotion, reveal } from "../shared/motion.js";
 
 function setPage(pageId) {
+  const changed = !document.getElementById(pageId)?.classList.contains("active");
+  finishMotion();
   elements.pages.forEach((page) => page.classList.toggle("active", page.id === pageId));
   const activeNavPage = pageId === "reader-page" ? "books-page" : pageId;
   elements.navItems.forEach((item) => item.classList.toggle("active", item.dataset.page === activeNavPage));
@@ -24,6 +27,7 @@ function setPage(pageId) {
   elements.pageEyebrow.textContent = labels[pageId]?.[0] ?? "";
   elements.pageTitle.textContent = labels[pageId]?.[1] ?? "";
   if (pageId === "trash-page") renderTrash();
+  if (changed && pageId !== "reader-page") reveal(document.getElementById(pageId));
 }
 
 function setSidebarHidden(hidden, options = {}) {
@@ -36,6 +40,8 @@ function setSidebarHidden(hidden, options = {}) {
     elements.readerSidebarToggle.title = hidden ? "Show sidebar" : "Hide sidebar";
     elements.readerSidebarToggle.setAttribute("aria-label", hidden ? "Show sidebar" : "Hide sidebar");
   }
+  if (hidden) finishMotion(elements.readerSidePanel);
+  else reveal(elements.readerSidePanel);
 }
 
 function bindNavigationEvents() {

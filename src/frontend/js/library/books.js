@@ -9,6 +9,9 @@ import { renderPdfCovers } from "../reader/pdf.js";
 import { renderBookmarks, renderChapters } from "../reader/sidebar.js";
 import { confirmAction, showLibraryNotice } from "../shared/ui.js";
 import { coverMarkup, escapeHtml } from "../shared/utils.js";
+import { finishMotion, reveal } from "../shared/motion.js";
+
+let renderedBookIds = new Set();
 
 function renderDocuments() {
   if (!elements.documentList) return;
@@ -43,6 +46,10 @@ function renderDocuments() {
 
 function renderBooksGrid() {
   if (!elements.booksGrid) return;
+  finishMotion(elements.booksGrid);
+  const newBookIds = new Set(state.documents.filter((item) => !renderedBookIds.has(item.id)).map((item) => item.id));
+  renderedBookIds = new Set(state.documents.map((item) => item.id));
+  const newCovers = [];
   applyLibraryZoom();
   elements.booksGrid.innerHTML = "";
   const visibleDocuments = visibleLibraryDocuments();
@@ -86,8 +93,10 @@ function renderBooksGrid() {
     card.addEventListener("drop", dropBook);
     card.addEventListener("dragend", finishBookDrag);
     elements.booksGrid.append(card);
+    if (newBookIds.has(item.id)) newCovers.push(card.querySelector(".library-cover"));
   }
   renderPdfCovers(elements.booksGrid);
+  reveal(newCovers.filter(Boolean), { stagger: 0.018 });
 }
 
 function applyLibraryZoom() {
@@ -112,6 +121,7 @@ function confirmDeleteBook(item) {
 }
 
 function startBookDrag(event, id) {
+  finishMotion(elements.booksGrid);
   draggedBookId = id;
   libraryDragOverId = "";
   libraryDragInsertAfter = false;

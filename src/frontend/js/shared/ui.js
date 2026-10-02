@@ -1,6 +1,7 @@
 // Notices, confirmation dialogs, and help tooltips.
 import { elements } from "../core/dom.js";
 import { escapeHtml } from "./utils.js";
+import { finishMotion, reveal } from "./motion.js";
 
 let libraryNoticeTimer;
 
@@ -47,9 +48,11 @@ function confirmAction(message, options = {}) {
     elements.confirmDelete.textContent = options.confirmText ?? "Delete";
     elements.confirmDelete.classList.toggle("danger", options.variant !== "restore");
     elements.confirmDialog.classList.remove("hidden");
+    reveal(elements.confirmDialog.querySelector(".confirm-dialog"));
     elements.confirmDelete.focus();
 
     const cleanup = (value) => {
+      finishMotion(elements.confirmDialog);
       elements.confirmDialog.classList.add("hidden");
       elements.confirmCancel.removeEventListener("click", onCancel);
       elements.confirmDelete.removeEventListener("click", onDelete);

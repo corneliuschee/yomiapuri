@@ -22,6 +22,11 @@ def register(app):
 
     @app.post('/api/dictionaries', status_code=201)
     async def import_dictionaries(request: Request, dictionary: list[UploadFile] = File(...), name: str = Form('')):
+        """Import up to twenty uploads sequentially outside the async event loop.
+
+        Each dictionary commits independently: a later invalid file does not
+        roll back earlier successfully imported dictionaries in the request.
+        """
         if len(dictionary) > 20:
             raise ValueError('Import at most 20 dictionaries at once.')
         results = []
@@ -51,6 +56,11 @@ def register(app):
     @app.get('/api/dictionary')
     @app.get('/api/dictionary/lookup')
     def lookup(request: Request, term: str = '', q: str = '', prefix: bool = False):
+        """Expand a normalized query, attach single-token readability, and log it.
+
+        Both dictionary URL aliases share this behavior. Although HTTP GET,
+        this path can write structural token cache rows and a lookup event.
+        """
         term = normalize(term or q)
         result = request.app.state.dictionaries.lookup(term, request.app.state.nlp.variants(term), prefix)
         tokens = request.app.state.nlp.tokens(term)

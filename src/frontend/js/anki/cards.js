@@ -6,6 +6,7 @@ import { state } from "../core/state.js";
 import { refreshActiveDocumentForKnownTerms } from "../reader/document.js";
 import { renderDictionaryLookup } from "../reader/lookup.js";
 import { escapeHtml } from "../shared/utils.js";
+import { finishMotion, reveal } from "../shared/motion.js";
 
 async function openAnkiPreview(candidate, node) {
   const preview = await api("/api/anki/card-preview", {
@@ -27,6 +28,7 @@ async function openAnkiPreview(candidate, node) {
   state.activeCandidateNode = node;
   renderCardPreview(preview);
   elements.cardDialog.classList.remove("hidden");
+  reveal(elements.cardDialog.querySelector(".card-dialog"));
 }
 
 async function exportPreviewDirectly(preview, candidate, node) {
@@ -130,6 +132,7 @@ function renderCardPreview(preview) {
 }
 
 function closeCardPreview() {
+  finishMotion(elements.cardDialog);
   elements.cardDialog.classList.add("hidden");
   state.activeCardPreview = null;
   state.activeCardCandidate = null;

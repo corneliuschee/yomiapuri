@@ -49,6 +49,12 @@ class SyncService:
         return self.status()
 
     def request(self, method, path, retry=True, **kwargs):
+        """Issue an authenticated Supabase request with one token-refresh retry.
+
+        Preserve caller headers across the retry and persist refreshed session
+        credentials locally. Service error payloads become ValueError messages;
+        never include session tokens in public status responses.
+        """
         s = self.settings()
         if not s['supabaseUrl'] or not s['supabaseAnonKey']:
             raise ValueError('Supabase URL and publishable key are required.')
@@ -98,6 +104,12 @@ class SyncService:
             self.request('POST', '/rest/v1/' + table, params={'on_conflict': conflict}, headers={'Prefer': 'resolution=merge-duplicates,return=minimal'}, json=rows[start:start + 100])
 
     def run(self, action):
+        """Serialize user-triggered sync, always pulling before any push.
+
+        Only action='pull' skips push; other route actions share the full merge
+        then upload path. Persist success/error status and release the lock even
+        on failure. Individual record/file operations are not one transaction.
+        """
         if not self.lock.acquire(blocking=False):
             raise FileExistsError('A sync operation is already running.')
         try:
@@ -114,6 +126,14 @@ class SyncService:
             self.lock.release()
 
     def pull(self):
+        """Merge remote source data by timestamps and recorded deletion intent.
+
+        Apply document tombstones before books; compare known-term tombstones
+        before vocabulary writes. Reconstruct newer document bodies through
+        Store, merge progress/annotations/settings, and download missing media
+        with path containment and optional checksum checks. Partial successes
+        remain persisted if a later network operation fails.
+        """
         settings = self.select('app_settings')
         tombstones = next((r['value'] for r in settings if r['key'] == 'documentTombstones'), {})
         for doc_id, deleted_at in tombstones.items():
@@ -187,6 +207,13 @@ class SyncService:
         self.store.settings('sync', {'lastPullAt': now()})
 
     def push(self):
+        """Upload source records/media, excluding local derived indexes and models.
+
+        Publish document deletion intent and remove matching remote source rows.
+        Reconstruct active books one at a time, upload referenced media, then
+        progress, vocabulary, cards, selected settings, and up to 2000 events.
+        The run() entry point must pull first; this is not delta-only transfer.
+        """
         s = self.settings()
         user = s['userId']
         self.upsert('profiles', [{'id': user, 'email': s.get('userEmail', ''), 'updated_at': now()}], 'id')

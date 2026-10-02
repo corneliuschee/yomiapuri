@@ -19,6 +19,10 @@ A local-first Japanese novel reader with smart furigana, dictionary lookup, Anki
 
 The backend is Python with FastAPI. No Node process or JavaScript service is called by the backend.
 
+For developers, the [backend guide](src/backend/README.md) maps every backend
+module to its functionality and explains request flows, SQLite/cache ownership,
+API contracts, testing, and debugging. See also the [frontend guide](src/frontend/README.md).
+
 ```text
 run.py
 src/

@@ -18,6 +18,7 @@ from .common import uploaded
 def register(app):
     @app.post('/api/templates', status_code=201)
     async def template(request: Request, template: UploadFile = File(...)):
+        """Persist field names from JSON or a comma/newline-delimited upload."""
         data = (await uploaded(template)).decode('utf-8-sig')
         try:
             parsed = json.loads(data)
@@ -32,6 +33,7 @@ def register(app):
 
     @app.post('/api/cards', status_code=201)
     def create_card(request: Request, body: dict = Body(...)):
+        """Save a template-based local card; unlike Anki export, make no remote note."""
         s = request.app.state.store
         doc = s.document(body.get('documentId'))
         if not doc:
@@ -50,6 +52,7 @@ def register(app):
 
     @app.get('/api/cards/export')
     def export_cards(request: Request):
+        """Return CSV with the ordered union of all locally saved card fields."""
         cards = [decode(r['payload_json'], {}).get('fields', {}) for r in request.app.state.store.rows('SELECT payload_json FROM cards ORDER BY order_index')]
         fields = list(dict.fromkeys(f for c in cards for f in c))
         output = io.StringIO(newline='')

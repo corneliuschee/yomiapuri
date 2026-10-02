@@ -21,6 +21,7 @@ def hiragana(text):
 
 
 def plain(value):
+    """Flatten supported Yomitan structured definition content into plain text."""
     if isinstance(value, str):
         return value
     if isinstance(value, list):
@@ -31,6 +32,7 @@ def plain(value):
 
 
 def frequency(value):
+    """Extract a displayable frequency from scalar or nested dictionary formats."""
     if isinstance(value, (int, float, str)):
         return str(value)
     if isinstance(value, list):
@@ -66,6 +68,13 @@ class DictionaryService:
                 for r in self.store.rows('SELECT id,name,filename,type,language,format,enabled_for_lookup,selected_for_wordbank,sort_order,entries_count,frequency_count,validation_status,imported_at FROM dictionaries ORDER BY sort_order,rowid')]
 
     def import_file(self, filename, data, name=''):
+        """Parse a Yomitan ZIP or legacy JSON before committing dictionary rows.
+
+        Keep indexed headwords/readings separate from heavy definition payloads.
+        Insert metadata, entries, and frequency rows in one transaction, then
+        invalidate dictionary-dependent caches through a revision bump. Parsing
+        holds the imported rows in memory; lookup does not load whole dictionaries.
+        """
         term_rows, frequency_rows, index = [], [], {}
         if filename.lower().endswith('.zip'):
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -132,6 +141,11 @@ class DictionaryService:
         return {'dictionary': next(d for d in self.metadata() if d['id'] == dictionary_id), 'validation': {'termRows': len(entries), 'frequencyRows': len(frequencies)}}
 
     def settings(self, dictionary_id, patch):
+        """Update lookup/order flags and enforce a single selected term dictionary.
+
+        Frequency-only dictionaries cannot supply Word Bank meanings. Changes
+        bump the dictionary revision and clear exact-match memoization.
+        """
         current = next((d for d in self.metadata() if d['id'] == dictionary_id), None)
         if not current:
             raise LookupError('Dictionary not found.')
@@ -149,10 +163,21 @@ class DictionaryService:
 
     @lru_cache(maxsize=4096)
     def exact(self, term, revision=0):
+        """Return only the highest-priority enabled headword and reading.
+
+        Heavy definitions are not fetched. Callers pass the dictionary revision
+        to segregate memoized results after settings/import changes.
+        """
         return self.store.one('''SELECT e.term,e.reading FROM dictionary_entries e JOIN dictionaries d ON d.id=e.dictionary_id
             WHERE e.term=? AND d.enabled_for_lookup=1 ORDER BY d.sort_order,e.sequence LIMIT 1''', (term,))
 
     def entries(self, term, dictionary_id=None, prefix=False):
+        """Find indexed candidates, then fetch definitions only for those matches.
+
+        Query headword and reading separately (100 candidates each); optional
+        prefix matching uses range predicates. Explicit dictionary_id overrides
+        the enabled-only filter. Deduplicate IDs and equivalent definitions.
+        """
         conditions = ['d.id=?'] if dictionary_id else ['d.enabled_for_lookup=1']
         params = [dictionary_id] if dictionary_id else []
         # Separate branches keep dictionary-scoped OR queries from scanning every entry.
@@ -177,6 +202,12 @@ class DictionaryService:
         return result
 
     def lookup(self, term, variants=(), prefix=False):
+        """Combine up to twenty query variants into definitions and frequencies.
+
+        Exact surface matches precede dictionary priority. Prefix matching also
+        requires its saved setting. Include known-vocabulary/Anki-note metadata;
+        normalization/variant generation beyond NFKC belongs to the caller.
+        """
         term = normalize(term)
         if not term:
             return {'term': '', 'entries': [], 'frequencies': [], 'knownTerm': {'exists': False}}

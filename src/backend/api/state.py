@@ -8,6 +8,12 @@ from ..services.dictionary import normalize
 def register(app):
     @app.get('/api/state')
     def state(request: Request):
+        """Assemble the UI read model without document bodies or dictionary entries.
+
+        Return metadata, settings, progress, saved cards, and vocabulary count;
+        sync status redacts credentials. This is reconstructed from SQLite, not
+        an authoritative mutable in-memory snapshot.
+        """
         s = request.app.state.store
         sync = request.app.state.sync.status()
         return {**{k: s.setting(k) for k in ['reader', 'anki', 'media', 'ai', 'ml', 'dictionarySettings']},

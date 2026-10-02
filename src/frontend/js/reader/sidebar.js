@@ -7,6 +7,7 @@ import { renderPdfCovers } from "./pdf.js";
 import { renderReader } from "./render.js";
 import { renderReaderSearchPanel } from "./search.js";
 import { coverMarkup, escapeHtml } from "../shared/utils.js";
+import { finishMotion, reveal } from "../shared/motion.js";
 
 function renderChapters() {
   elements.chapterList.innerHTML = "";
@@ -191,6 +192,8 @@ function setAssistantPanelHidden(hidden) {
   elements.readerLayout.classList.toggle("chapters-hidden", hidden);
   elements.showChapters?.classList.add("hidden");
   elements.readerAiToggle?.classList.toggle("active", !hidden);
+  if (hidden) finishMotion(elements.assistantPanel);
+  else reveal(elements.assistantPanel);
 }
 
 function initReaderSidebarResize() {
@@ -209,6 +212,7 @@ function setReaderSidebarWidth(width) {
 function startReaderSidebarResize(event) {
   if (!elements.readerLayout || elements.readerLayout.classList.contains("chapters-hidden")) return;
   event.preventDefault();
+  finishMotion(elements.assistantPanel);
   const pointerId = event.pointerId;
   elements.chapterResizeHandle?.setPointerCapture?.(pointerId);
   document.body.classList.add("resizing-reader-sidebar");

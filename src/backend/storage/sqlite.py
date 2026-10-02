@@ -27,6 +27,11 @@ def decode(value, fallback=None):
 
 
 def merge(original, patch):
+    """Recursively merge dictionaries; replace lists and scalar values outright.
+
+    Unspecified keys survive. This is a partial-update helper, not a deletion
+    protocol: setting a value to None stores None rather than removing its key.
+    """
     result = dict(original)
     for key, value in patch.items():
         result[key] = merge(result[key], value) if isinstance(value, dict) and isinstance(result.get(key), dict) else value
@@ -37,6 +42,13 @@ class Store:
     """One serialized writer; bounded queries, no full-state snapshot writes."""
 
     def __init__(self, data_dir):
+        """Open the canonical database and check compatibility before serving.
+
+        Enable WAL, foreign keys, and a five-second busy timeout. Older stores
+        with schema metadata receive a SQLite backup before Python schema
+        initialization. Reject flagged incomplete/newer schemas and failed
+        integrity checks. Schema additions run in place, not via a staged file.
+        """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.data_dir / 'yomiapuri.sqlite'
@@ -95,11 +107,22 @@ class Store:
 
     @contextmanager
     def transaction(self):
+        """Serialize connection access and commit on success or roll back on error.
+
+        Keep network calls and expensive tokenization outside this scope. The
+        reentrant lock permits helper reads, but nested transaction contexts do
+        not create savepoints; use the yielded connection for grouped writes.
+        """
         with self.lock:
             with self.db:
                 yield self.db
 
     def rows(self, sql, args=()):
+        """Fetch all selected rows as dictionaries under the connection lock.
+
+        Callers own query bounds and column selection; this is not a lazy cursor.
+        Bind data through args rather than interpolating it into SQL.
+        """
         with self.lock:
             return [dict(r) for r in self.db.execute(sql, args).fetchall()]
 
@@ -115,6 +138,11 @@ class Store:
         return (self.one('SELECT revision FROM store_revisions WHERE domain=?', (domain,)) or {}).get('revision', 0)
 
     def bump(self, domain, db=None):
+        """Advance a domain's cache revision, optionally inside a caller's commit.
+
+        Pass db for source writes so the mutation and its invalidation become
+        visible together. Without db, this helper owns a short transaction.
+        """
         sql = 'INSERT INTO store_revisions VALUES (?,1,?) ON CONFLICT(domain) DO UPDATE SET revision=revision+1,updated_at=excluded.updated_at'
         if db is None:
             self.write(sql, (domain, now()))
@@ -126,6 +154,7 @@ class Store:
         return merge(defaults().get(key, {}), decode(row['value_json'], {}) if row else {})
 
     def settings(self, key, patch):
+        """Merge and persist one settings group, incrementing its named revision."""
         with self.transaction() as db:
             value = merge(self.setting(key), patch)
             db.execute('INSERT OR REPLACE INTO app_settings VALUES (?,?,?)', (key, encode(value), now()))
@@ -142,6 +171,12 @@ class Store:
                 'coverPath': row['cover_path'], 'sourcePath': row['source_path'], 'createdAt': row['created_at'], 'updatedAt': row['updated_at']}
 
     def document(self, doc_id, body=False, trash=False):
+        """Return one document's metadata, or None when absent from its table.
+
+        Explicit body=True loads full text and chapters from the body table,
+        falling back to legacy columns. Reader windows should use BookService
+        instead; full reconstruction is intended for import, sync, and export.
+        """
         table = 'trash_documents' if trash else 'documents'
         row = self.one(f'SELECT * FROM {table} WHERE id=?', (doc_id,))
         if not row:
@@ -154,6 +189,12 @@ class Store:
         return value
 
     def save_document(self, doc):
+        """Upsert metadata and optionally replace a document's complete body.
+
+        Presence of the text key means body replacement: hash text plus chapters
+        and invalidate stored pages. Metadata-only edits preserve pages and
+        existing order. Both paths advance the documents revision atomically.
+        """
         import hashlib
         with self.transaction() as db:
             order = self.one('SELECT MIN(order_index) AS n FROM documents')['n'] or 0
@@ -173,6 +214,12 @@ class Store:
         return {r['term']: decode(r['meta_json'], {}) for r in self.rows('SELECT term,meta_json FROM known_terms ORDER BY order_index')}
 
     def add_terms(self, terms, metadata=None):
+        """Upsert vocabulary, merge note links, and return only newly added terms.
+
+        Callers normalize terms first. Re-adding a term clears its trash entry
+        and deletion tombstone; existing order is retained. The known_terms
+        revision changes without clearing structural reader token caches.
+        """
         added = []
         with self.transaction() as db:
             count = self.one('SELECT COALESCE(MAX(order_index),0) AS n FROM known_terms')['n']
@@ -193,6 +240,11 @@ class Store:
         return added
 
     def delete_terms(self, terms):
+        """Move existing terms to Trash and record sync deletion intent atomically.
+
+        Unknown terms are ignored. Return removed terms and advance the known
+        vocabulary revision so subsequent rendering recalculates learned state.
+        """
         deleted = []
         with self.transaction() as db:
             for term in dict.fromkeys(terms):

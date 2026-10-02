@@ -36,6 +36,11 @@ def register(app):
 
     @app.get('/api/documents/{doc_id}/ingest-stream')
     def ingest(request: Request, doc_id: str):
+        """Stream cache-check then done/error events around lazy pagination.
+
+        This synchronous generator runs off the event loop. Its progress is a
+        start/end signal, not continuous per-token or per-chapter measurement.
+        """
         def events():
             yield 'event: progress\ndata: ' + encode({'message': 'Checking local book cache', 'progress': 0}) + '\n\n'
             try:
@@ -77,6 +82,11 @@ def register(app):
 
     @app.delete('/api/trash/documents/{doc_id}')
     def permanently_delete_document(request: Request, doc_id: str):
+        """Prune a Trash book's SQL search/page/progress data atomically.
+
+        Keep its sync tombstone. This route does not delete media files from
+        disk or remove exported Anki notes.
+        """
         s = request.app.state.store
         with s.transaction() as db:
             if not db.execute('SELECT 1 FROM trash_documents WHERE id=?', (doc_id,)).fetchone():
@@ -90,6 +100,11 @@ def register(app):
 
     @app.post('/api/documents/{doc_id}/progress')
     def progress(request: Request, doc_id: str, body: dict = Body(...)):
+        """Merge allowed reader state into one row without rewriting book text.
+
+        Clamp zoom/page values and preserve omitted bookmarks/highlights. Pages
+        are zero-based. Save a timestamp for sync without invalidating tokens.
+        """
         s = request.app.state.store
         if not s.document(doc_id):
             raise LookupError('Document not found.')
@@ -107,6 +122,11 @@ def register(app):
 
     @app.delete('/api/trash/documents')
     def purge_books(request: Request):
+        """Remove all Trash books' derived/source SQL rows, retaining tombstones.
+
+        Apply the same database cleanup as single permanent deletion, in one
+        transaction; referenced filesystem assets are not removed here.
+        """
         s = request.app.state.store
         with s.transaction() as db:
             ids = [r['id'] for r in s.documents(True)]

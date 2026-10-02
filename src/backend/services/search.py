@@ -21,6 +21,14 @@ class SearchService:
         return {**status, 'textSearch': status, 'fts': status}
 
     def refresh(self):
+        """Refresh changed books' lexical chunks without embedding any vectors.
+
+        A nonblocking process-local lock rejects overlapping refreshes. Skip
+        matching body-hash/dictionary-revision fingerprints; tokenize outside
+        the write transaction, then replace only the changed book's FTS rows.
+        Recheck active membership before writing and release the lock on error.
+        Persist the revisions captured at start so concurrent edits remain stale.
+        """
         if not self.lock.acquire(blocking=False):
             raise FileExistsError('Text index refresh is already running.')
         try:
@@ -63,6 +71,13 @@ class SearchService:
             self.lock.release()
 
     def search(self, query, document_id='', limit=30):
+        """Return exact substrings first, followed by deduplicated FTS/BM25 hits.
+
+        Quote expanded query forms for MATCH and restrict results to active
+        documents, optionally one book. Citations use zero-based pages. This is
+        lexical search, not vector retrieval, and has no read-progress/spoiler
+        filter; do not feed it into reader AI as spoiler-safe context unchanged.
+        """
         query = str(query or '').strip()
         if not query:
             return {'query': query, 'results': []}

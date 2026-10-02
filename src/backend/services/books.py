@@ -25,10 +25,17 @@ def marker_text(text):
 
 
 def blocks_text(blocks):
+    """Flatten nested text blocks, excluding images and navigation-only links."""
     return '\n'.join(b.get('text', blocks_text(b.get('blocks', []))) for b in blocks if b.get('type') not in {'image', 'link'})
 
 
 def sentences(text):
+    """Yield trimmed passages without splitting inside Japanese dialogue quotes.
+
+    Outer closing quotes and unquoted sentence punctuation/newlines end a
+    passage. Used by pagination and search; changing it can change page/chunk
+    boundaries, not just display formatting.
+    """
     # Keep quoted dialogue intact, but begin/end a line at its outer boundaries.
     depth, line = 0, ''
     for c in text:
@@ -56,6 +63,13 @@ class BookService:
         self.lock = threading.RLock()
 
     def import_file(self, filename, data, title=''):
+        """Extract an EPUB/PDF/UTF-8 TXT and persist its source and body.
+
+        Reject active-library duplicates by hash or filename. Assets are written
+        under media/<document id> before SQLite persistence, so file writes are
+        not part of the SQL transaction. Return metadata; defer pagination until
+        the reader or search index needs it. PDF cover generation is best effort.
+        """
         filename = Path(filename.replace('\\', '/')).name
         kind = Path(filename).suffix.lower().lstrip('.')
         if kind not in {'epub', 'pdf', 'txt'}:
@@ -123,6 +137,13 @@ class BookService:
         return self.store.document(doc_id)
 
     def epub(self, data, doc_id, folder):
+        """Convert EPUB spine content into chapters and return title/author/cover.
+
+        Extract images to hashed filenames and retain local navigation links.
+        Encode author ruby as internal RUBY markers before flattening HTML so
+        later tokenization cannot replace the author's readings. Reject archives
+        whose declared uncompressed size exceeds 512 MB.
+        """
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             if sum(i.file_size for i in archive.infolist()) > 512 * 1024 * 1024:
                 raise ValueError('Book archive is too large after decompression.')
@@ -206,6 +227,13 @@ class BookService:
             return title, author, cover or next(iter(images.values()), ''), chapters
 
     def ensure_pages(self, doc_id):
+        """Create missing pages once while preserving existing page identifiers.
+
+        A service lock serializes pagination. Repair missing chapter/ruby
+        metadata without repagination; otherwise load the body and group text
+        near 850 characters, with separate image/PDF pages and zero-based indices.
+        Existing bookmarks/progress depend on retaining these boundaries.
+        """
         with self.lock:
             metadata = self.store.document(doc_id)
             if not metadata:
@@ -263,6 +291,13 @@ class BookService:
         return self.store.rows('SELECT page_index,chapter_id,chapter_title FROM document_pages WHERE document_id=? ORDER BY page_index', (doc_id,))
 
     def window(self, doc_id, start=0, limit=8):
+        """Render a bounded zero-based window using current vocabulary/settings.
+
+        Clamp the page count to 1..24 and preserve legacy stored boundaries.
+        Protect author-ruby names across the document; render large headings
+        only on a chapter's first non-image-only page. Return pages/start/total;
+        text rendering may populate structural token caches in SQLite.
+        """
         self.ensure_pages(doc_id)
         document = self.store.document(doc_id)
         rows = self.store.rows('SELECT * FROM document_pages WHERE document_id=? ORDER BY page_index LIMIT ? OFFSET ?', (doc_id, min(24, max(1, limit)), max(0, start)))
@@ -297,6 +332,13 @@ class BookService:
         return {'pages': result, 'start': start, 'total': len(self.page_rows(doc_id))}
 
     def response(self, doc_id, page=None):
+        """Build the reader response with an eight-page window and placeholders.
+
+        Use saved progress unless a zero-based page override is supplied. The
+        pages array represents the whole book but only the nearby window has
+        HTML; other entries are marked unloaded. Compatibility candidate lists
+        remain empty and do not trigger mining or analytics work.
+        """
         doc = self.store.document(doc_id)
         if not doc:
             raise LookupError('Document not found.')
@@ -312,6 +354,13 @@ class BookService:
                 'pages': [window.get(r['page_index'], {'chapterId': r['chapter_id'], 'html': '', 'unloaded': True}) for r in rows]}
 
     def trash(self, doc_id, restore=False):
+        """Move metadata/body between active and Trash tables in one transaction.
+
+        Deletion records a sync tombstone; restoration removes it. Progress is
+        retained, but active-page foreign-key cascades can remove derived pages.
+        Search rows stay stored and are hidden by active-document joins until
+        permanent deletion. Both directions bump the documents revision.
+        """
         source, target = ('trash_documents', 'documents') if restore else ('documents', 'trash_documents')
         body_source, body_target = ('trash_document_bodies', 'document_bodies') if restore else ('document_bodies', 'trash_document_bodies')
         with self.store.transaction() as db:

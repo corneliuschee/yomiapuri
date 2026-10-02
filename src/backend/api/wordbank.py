@@ -18,6 +18,12 @@ from .common import uploaded
 def register(app):
     @app.get('/api/known-terms')
     def known_terms(request: Request, offset: int = 0, limit: int = 100, q: str = '', sort: str = 'added', dictionaryId: str = ''):
+        """Serve legacy vocabulary browsing despite removal of the Word Bank UI.
+
+        Filter/sort known terms in memory, then load dictionary meanings only
+        for the requested slice. Reading-order labels currently sort strings,
+        not phonetic readings. Normal Anki sync does not require this endpoint.
+        """
         s, dictionaries = request.app.state.store, request.app.state.dictionaries
         metadata = s.known()
         all_terms = list(metadata)
@@ -35,6 +41,11 @@ def register(app):
 
     @app.post('/api/known-terms')
     async def add_terms(request: Request):
+        """Normalize/deduplicate JSON or uploaded vocabulary and log new additions.
+
+        The compatibility upload field is terms. Run source writes in a worker
+        thread; adding known vocabulary does not retokenize document bodies.
+        """
         if 'multipart/form-data' in request.headers.get('content-type', ''):
             form = await request.form()
             file = form.get('terms')
@@ -65,6 +76,7 @@ def register(app):
 
     @app.post('/api/trash/known-terms/restore')
     def restore_terms(request: Request, body: dict = Body(...)):
+        """Restore only requested Trash terms, preserving their saved note metadata."""
         s = request.app.state.store
         terms = [normalize(t) for t in body.get('terms', [])]
         metadata = {}
