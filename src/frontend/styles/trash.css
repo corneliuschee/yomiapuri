@@ -86,13 +86,61 @@
 .trash-book {
   cursor: default;
   position: relative;
+  padding: 24px 8px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  align-self: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.trash-book .library-actions {
+  flex-wrap: wrap;
+}
+
+.trash-book .library-actions button {
+  padding: 4px 6px;
+}
+
+.trash-book.selected {
+  border-color: var(--accent);
 }
 
 .trash-preview {
   cursor: default;
 }
 
-.trash-book.selected .library-cover {
+.trash-book .book-select {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.trash-book .book-select::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.trash-book .book-select svg {
+  display: none;
+}
+
+.trash-book .book-select:hover::before {
   border-color: var(--accent);
 }
 
@@ -101,10 +149,9 @@
   opacity: 1;
 }
 
-.trash-book.selected .book-select {
+.trash-book.selected .book-select::before {
   background: var(--accent);
   border-color: var(--accent);
-  color: #111;
 }
 
 .page-number {

@@ -7,6 +7,103 @@ import { stripReaderSearchMarkup } from "./search.js";
 import { renderBookmarks, renderChapters } from "./sidebar.js";
 import { transparentColor } from "../shared/utils.js";
 
+const paintedHighlights = new Set();
+let highlightStyles;
+
+// Paint only base text: selecting an entire ruby element also paints its reading.
+function paintSavedHighlights() {
+  if (!window.CSS?.highlights || !window.Highlight) return;
+  for (const name of paintedHighlights) CSS.highlights.delete(name);
+  paintedHighlights.clear();
+  const groups = new Map();
+  for (const mark of elements.reader.querySelectorAll(".reader-highlight")) {
+    const id = mark.dataset.highlightId;
+    const key = id || mark;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(mark);
+  }
+  const rules = [];
+  const bands = [];
+  const runs = new Map();
+  const textWalker = document.createTreeWalker(elements.reader, NodeFilter.SHOW_TEXT);
+  let run = 0;
+  let previousColor = null;
+  while (textWalker.nextNode()) {
+    const node = textWalker.currentNode;
+    if (!node.nodeValue || node.parentElement.closest("rt, rp")) continue;
+    const color = node.parentElement.closest(".reader-highlight")?.style.backgroundColor || null;
+    if (!color || color !== previousColor) run += 1;
+    if (color) runs.set(node, run);
+    previousColor = color;
+  }
+  for (const marks of groups.values()) {
+    const ranges = [];
+    for (const mark of marks) {
+      const walker = document.createTreeWalker(mark, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) => node.parentElement.closest("rt, rp")
+          ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+      });
+      while (walker.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(walker.currentNode);
+        ranges.push(range);
+      }
+    }
+    const name = `saved-reader-highlight-${paintedHighlights.size}`;
+    const color = marks[0].style.backgroundColor;
+    if (!color) continue;
+    if (!marks[0].closest(".pdf-text-layer")) {
+      for (const range of ranges) {
+        for (const rect of range.getClientRects()) {
+          if (rect.width && rect.height) bands.push({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, color, run: runs.get(range.startContainer) });
+        }
+      }
+      continue;
+    }
+    CSS.highlights.set(name, new Highlight(...ranges));
+    paintedHighlights.add(name);
+    rules.push(`::highlight(${name}) { background-color: ${color}; }`);
+  }
+  highlightStyles.textContent = rules.join("\n");
+  paintHighlightBands(bands);
+}
+
+// Merge adjacent base-text rectangles, using their shared vertical area so ruby
+// readings and font-weight differences cannot create steps in the painted band.
+function paintHighlightBands(rects) {
+  const lines = [];
+  rects.sort((a, b) => a.left - b.left || a.top - b.top);
+  for (const rect of rects) {
+    const line = lines.find((item) => item.color === rect.color && item.run === rect.run
+      && Math.min(item.bottom, rect.bottom) - Math.max(item.top, rect.top)
+        > Math.min(item.bottom - item.top, rect.bottom - rect.top) * 0.5);
+    if (line) {
+      line.left = Math.min(line.left, rect.left);
+      line.right = Math.max(line.right, rect.right);
+      line.top = Math.max(line.top, rect.top);
+      line.bottom = Math.min(line.bottom, rect.bottom);
+    } else lines.push({ ...rect });
+  }
+  const reader = elements.reader;
+  for (const reading of reader.querySelectorAll("rt")) {
+    const rect = reading.getBoundingClientRect();
+    for (const line of lines) {
+      if (rect.right > line.left && rect.left < line.right
+        && rect.bottom > line.top && rect.bottom < (line.top + line.bottom) / 2) {
+        line.top = rect.bottom;
+      }
+    }
+  }
+  const box = reader.getBoundingClientRect();
+  reader.style.backgroundImage = lines.length
+    ? lines.map((line) => `linear-gradient(${line.color}, ${line.color})`).join(",") : "none";
+  reader.style.backgroundSize = lines.map((line) => `${line.right - line.left}px ${line.bottom - line.top}px`).join(",");
+  reader.style.backgroundPosition = lines.map((line) => `${line.left - box.left + reader.scrollLeft}px ${line.top - box.top + reader.scrollTop}px`).join(",");
+  reader.style.backgroundRepeat = "no-repeat";
+  reader.style.backgroundOrigin = "border-box";
+  reader.style.backgroundAttachment = "local";
+}
+
 function normalizeHighlights(value) {
   return {
     pages: value?.pages && typeof value.pages === "object" ? value.pages : {},
@@ -115,7 +212,8 @@ function highlightSelection() {
     return;
   }
   pushHighlightUndo();
-  for (const segment of segments.reverse()) wrapTextSegment(segment);
+  const id = crypto.randomUUID();
+  for (const segment of segments.reverse()) wrapTextSegment(segment, id);
   selection.removeAllRanges();
   captureCurrentReaderHtml();
   saveProgress();
@@ -124,9 +222,9 @@ function highlightSelection() {
 function textSegmentsInRange(range) {
   const walker = document.createTreeWalker(elements.reader, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
-      if (!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
       const parent = node.parentElement;
-      if (!parent || parent.closest(".reader-highlight") || parent.closest("rt")) return NodeFilter.FILTER_REJECT;
+      if (!parent || parent.closest(".reader-highlight") || parent.closest("rt, rp")) return NodeFilter.FILTER_REJECT;
       return range.intersectsNode(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
     }
   });
@@ -135,18 +233,18 @@ function textSegmentsInRange(range) {
     const node = walker.currentNode;
     const start = node === range.startContainer ? range.startOffset : 0;
     const end = node === range.endContainer ? range.endOffset : node.nodeValue.length;
-    if (start < end && node.nodeValue.slice(start, end).trim()) segments.push({ node, start, end });
+    if (start < end) segments.push({ node, start, end });
   }
   return segments;
 }
 
-function wrapTextSegment({ node, start, end }) {
+function wrapTextSegment({ node, start, end }, id) {
   const range = document.createRange();
   range.setStart(node, start);
   range.setEnd(node, end);
   const mark = document.createElement("span");
   mark.className = "reader-highlight";
-  mark.dataset.highlightId = crypto.randomUUID();
+  mark.dataset.highlightId = id;
   mark.style.backgroundColor = transparentColor(state.highlightColor);
   mark.append(range.extractContents());
   range.insertNode(mark);
@@ -178,7 +276,16 @@ function eraseHighlightsInSelection() {
 }
 
 function unwrapHighlight(mark) {
+  const id = mark.dataset.highlightId;
+  const marks = id
+    ? [...elements.reader.querySelectorAll(".reader-highlight")].filter((item) => item.dataset.highlightId === id)
+    : [mark];
+  for (const item of marks) unwrapHighlightSegment(item);
+}
+
+function unwrapHighlightSegment(mark) {
   const parent = mark.parentNode;
+  if (!parent) return;
   while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
   mark.remove();
   parent.normalize();
@@ -210,6 +317,23 @@ function setReaderToolMode(mode) {
 }
 
 function bindHighlightEvents() {
+  document.addEventListener("mouseup", (event) => {
+    if (!elements.reader.contains(event.target) && !event.shiftKey && state.highlightMode === "highlight") {
+      highlightSelection();
+    }
+  });
+  if (window.CSS?.highlights && window.Highlight) {
+    highlightStyles = document.createElement("style");
+    document.head.append(highlightStyles);
+    elements.reader.classList.add("native-saved-highlights");
+    new MutationObserver(paintSavedHighlights).observe(elements.reader, {
+      childList: true, subtree: true, characterData: true
+    });
+    new ResizeObserver(paintSavedHighlights).observe(elements.reader);
+    document.fonts?.addEventListener("loadingdone", paintSavedHighlights);
+    elements.reader.addEventListener("load", paintSavedHighlights, true);
+    paintSavedHighlights();
+  }
   elements.selectTool.addEventListener("click", () => {
     setReaderToolMode("select");
   });

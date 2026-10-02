@@ -35,9 +35,7 @@ function renderTrashBooks() {
     card.className = `library-book trash-book${state.selectedTrashDocuments.has(item.id) ? " selected" : ""}`;
     card.dataset.documentId = item.id;
     card.innerHTML = `
-      <button class="word-select book-select" type="button" aria-label="Select ${escapeHtml(item.title)}">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 4.5 6.4 11.5 2.5 7.7"/></svg>
-      </button>
+      <button class="book-select" type="button" aria-label="Select ${escapeHtml(item.title)}" aria-pressed="${state.selectedTrashDocuments.has(item.id)}"></button>
       <div class="library-open trash-preview">
         ${coverMarkup(item, "library-cover")}
         <strong>${escapeHtml(item.title)}</strong>
@@ -71,6 +69,7 @@ function toggleTrashDocumentSelection(id) {
   else state.selectedTrashDocuments.add(id);
   const card = elements.trashBooks.querySelector(`[data-document-id="${cssEscape(id)}"]`);
   card?.classList.toggle("selected", state.selectedTrashDocuments.has(id));
+  card?.querySelector(".book-select")?.setAttribute("aria-pressed", String(state.selectedTrashDocuments.has(id)));
   updateTrashActionButtons();
 }
 

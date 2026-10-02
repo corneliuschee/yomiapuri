@@ -270,7 +270,7 @@
   z-index: 2;
 }
 
-.pdf-text-layer span {
+.pdf-text-layer > span {
   color: rgba(0, 0, 0, 0.01);
   cursor: text;
   line-height: 1;
