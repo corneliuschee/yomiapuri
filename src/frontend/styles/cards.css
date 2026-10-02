@@ -1,44 +1,9 @@
-.drawer {
-  background: var(--bar);
-  border-top: 1px solid var(--line);
-  max-height: 30vh;
-  overflow: auto;
-  padding: 10px 14px;
-}
-
-.drawer summary {
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.drawer-subhead {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-
-.candidate-card,
 .page-card,
 .dictionary-row {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 14px;
-}
-
-.candidate-card {
-  display: grid;
-  gap: 8px;
-}
-
-.candidate-actions {
-  justify-content: start;
-}
-
-.candidate-actions input {
-  min-width: 260px;
 }
 
 .mapping-status {

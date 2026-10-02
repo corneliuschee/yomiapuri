@@ -27,15 +27,13 @@
   .target-grid,
   .card-field-row,
   .dictionary-controls,
-  .cache-controls,
   .dictionary-manager-row {
     grid-template-columns: 1fr;
   }
 
   .reader-actions,
   .reader-footer,
-  .import-row,
-  .candidate-actions {
+  .import-row {
     align-items: stretch;
     flex-direction: column;
   }
@@ -48,8 +46,7 @@
     max-height: 260px;
   }
 
-  .import-row input[type="text"],
-  .candidate-actions input {
+  .import-row input[type="text"] {
     min-width: 0;
     width: 100%;
   }

@@ -40,7 +40,6 @@ const state = {
   libraryZoom: 140,
   libraryQuery: "",
   dictionaryLookupCache: new Map(),
-  trashTab: "books",
   selectedTrashDocuments: new Set(),
   currentPage: 0,
   voices: [],

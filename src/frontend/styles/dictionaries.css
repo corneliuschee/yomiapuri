@@ -11,56 +11,6 @@
   margin-bottom: 8px;
 }
 
-.dictionary-help {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.4;
-  margin: 0 0 14px;
-}
-
-.cache-controls {
-  align-items: end;
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(220px, 1fr) auto;
-}
-
-.cache-controls label {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-}
-
-.cache-controls select {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.cache-status {
-  color: var(--muted);
-  display: grid;
-  font-size: 12px;
-  gap: 3px;
-  line-height: 1.45;
-  margin-top: 10px;
-  min-width: 0;
-}
-
-.cache-status strong,
-.cache-status span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.cache-status.ready {
-  color: var(--text);
-}
-
-.cache-status.stale {
-  color: var(--muted);
-}
-
 .toggle-row {
   align-items: center;
   display: flex;

@@ -90,7 +90,6 @@ try {
   const authorRubyNameHtml = authorRubyNameData.pages[0]?.html ?? "";
   assert(authorRubyNameHtml.includes('class="author-ruby" data-author-ruby="true" data-base="\u5468" data-reading="\u3042\u307e\u306d"'), "Reader should preserve author-provided name ruby.");
   assert(!authorRubyNameHtml.includes('<ruby data-base="\u5468"'), "Reader should not add generated ruby to later bare occurrences of author-ruby names.");
-  await assertVocabularyUi();
   const mediaProviders = await getJson("/api/media/providers");
   assert(mediaProviders.status.audio.enabled === false, "Removed TTS must not be enabled.");
   const mediaTest = await postJson("/api/media/test-image", { expression: "\u56f3\u66f8\u9928", meaning: "library" });
@@ -331,13 +330,6 @@ async function writeAuthorRubyNameDocumentFixture() {
   const fixturePath = path.join(dataDir, "author-ruby-name.txt");
   await fs.writeFile(fixturePath, "[[RUBY:%E5%91%A8|%E3%81%82%E3%81%BE%E3%81%AD]]\u306f\u6c17\u4ed8\u3044\u305f\u3002\u5468\u306e\u69d8\u5b50\u3092\u6307\u6458\u3057\u305f\u3002", "utf8");
   return path.relative(rootDir, fixturePath);
-}
-
-async function assertVocabularyUi() {
-  const page = await (await fetch(baseUrl)).text();
-  assert(!page.includes('id="wordbank-page"'), "Word Bank page should be removed.");
-  assert(!page.includes('id="voice-model-form"'), "TTS controls should be removed.");
-  assert(page.includes('>Sync Anki</button>'), "Integrations should expose vocabulary sync.");
 }
 
 async function assertDocumentCacheCreated(documentId) {

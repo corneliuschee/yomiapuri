@@ -31,6 +31,17 @@ Some reader modules call one another through imported functions. Keep these call
 
 The order of imports in `styles.css` preserves the existing cascade. Keep responsive overrides last, and check both desktop and narrow layouts when changing that order.
 
+## Tests
+
+Tests live outside the served frontend directory:
+
+- `python run.py test`: backend/API behavior and retired UI checks, including Word Bank and local TTS removal.
+- `node scripts/smoke-test.js`: end-to-end API checks against a disposable local database, including dictionary imports, reader rendering, and persistence.
+- `node scripts/highlight-layout-test.js`: lightweight reader highlight geometry checks, including ruby gaps; no browser needed.
+- `node scripts/integrations-layout-test.js`: real browser checks for file-picker focus and scrolling at mobile/desktop widths; serves only frontend fixtures and never accesses user data. Requires Playwright and an installed browser. Set `PLAYWRIGHT_MODULE` to an existing Playwright package path if needed, and `PLAYWRIGHT_CHANNEL` to `msedge` or `chrome` to use that installed browser.
+
+Keep layout regressions separate from API checks: successful imports alone cannot detect focus/scrolling bugs. Before deleting a CSS selector, check HTML, JavaScript-generated markup, and backend-generated reader HTML, not just the static page shell.
+
 ## Visual Motion
 
 Short opacity fades are applied after elements become visible. They never delay

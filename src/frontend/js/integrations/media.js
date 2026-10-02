@@ -36,7 +36,6 @@ function renderMediaStatus(result = state.mediaProviders) {
 async function saveMediaSettings(event, { updateStatus = true } = {}) {
   event?.preventDefault();
   if (!elements.mediaSettingsForm) return;
-  if (elements.saveMediaSettings) elements.saveMediaSettings.disabled = true;
   try {
     const result = await api("/api/media/settings", {
       method: "POST",
@@ -54,8 +53,6 @@ async function saveMediaSettings(event, { updateStatus = true } = {}) {
     await loadModelFields();
   } catch (error) {
     elements.mediaPreview.textContent = error.message;
-  } finally {
-    if (elements.saveMediaSettings) elements.saveMediaSettings.disabled = false;
   }
 }
 
