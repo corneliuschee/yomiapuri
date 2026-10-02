@@ -237,17 +237,35 @@
   align-content: start;
 }
 
+/* The rename input occupies the same title + gap + progress space as a book. */
+#books-grid .library-book {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#books-grid .library-open {
+  grid-template-rows: auto 20px 18px;
+}
+
+#books-grid .library-actions button {
+  min-width: 0;
+  padding: 0 4px;
+}
+
 .library-book.editing .library-cover {
   width: 100%;
 }
 
 .library-rename-form {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 46px 28px;
   gap: 8px;
   min-width: 0;
 }
 
 .library-rename-form input {
+  height: 46px;
+  min-height: 0;
   min-width: 0;
   width: 100%;
 }

@@ -3,7 +3,7 @@
 @import url("./styles/shell.css");
 @import url("./styles/reader-sidebar.css");
 @import url("./styles/page-layout.css");
-@import url("./styles/library.css");
+@import url("./styles/library.css?v=stable-edit-1");
 @import url("./styles/reader-layout.css");
 @import url("./styles/assistant.css?v=chat-ui-1");
 @import url("./styles/reader-content.css?v=stable-highlights-1");
