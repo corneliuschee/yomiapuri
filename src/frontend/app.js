@@ -7,6 +7,7 @@ import { bindAiEvents } from "./js/integrations/ai.js";
 import { bindAnkiEvents } from "./js/integrations/anki.js";
 import { bindDictionaryEvents } from "./js/integrations/dictionaries.js";
 import { bindMediaEvents } from "./js/integrations/media.js";
+import { bindIntegrationNavigation } from "./js/integrations/navigation.js";
 import { bindSyncEvents } from "./js/integrations/sync.js";
 import { bindLibraryEvents } from "./js/library/books.js";
 import { bindTrashEvents } from "./js/library/trash.js";
@@ -25,6 +26,7 @@ import { escapeHtml } from "./js/shared/utils.js";
 
 initPdfRenderer();
 bindNavigationEvents();
+bindIntegrationNavigation();
 bindAssistantEvents();
 bindReaderSidebarEvents();
 bindLibraryEvents();

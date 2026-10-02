@@ -286,3 +286,317 @@
   margin-top: 4px;
 }
 
+/* Scope settings presentation so reader dialogs and shared forms stay unchanged. */
+#integrations-page {
+  align-content: start;
+  scrollbar-gutter: stable;
+  scroll-padding-top: 68px;
+}
+
+.integration-nav {
+  align-items: center;
+  background: var(--app-bg);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  min-height: 52px;
+  padding: 8px max(24px, calc((100% - 1052px) / 2));
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.integration-nav a {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 32px;
+  text-decoration: none;
+  transition: color 140ms ease;
+}
+
+.integration-nav a:hover,
+.integration-nav a:focus-visible {
+  color: var(--text);
+}
+
+.integration-nav a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+#integrations-page .settings-grid {
+  gap: 0;
+  margin-inline: auto;
+  max-width: 1100px;
+  padding: 0 24px 32px;
+  width: 100%;
+}
+
+#integrations-page .integration-section {
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  display: grid;
+  gap: 32px;
+  grid-template-columns: 220px minmax(0, 1fr);
+  padding: 32px 0;
+}
+
+#integrations-page .integration-section:last-child {
+  border-bottom: 0;
+}
+
+#integrations-page .integration-section:focus {
+  outline: none;
+}
+
+#integrations-page .integration-notice {
+  height: auto;
+  line-height: 1.5;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding-block: 6px;
+}
+
+#integrations-page .page-card-head {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 12px;
+  justify-content: flex-start;
+  margin: 0;
+  min-width: 0;
+}
+
+#integrations-page .page-card-head h2 {
+  font-size: 17px;
+  line-height: 24px;
+  margin-bottom: 8px;
+}
+
+#integrations-page .page-card-head p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+#integrations-page .status {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.integration-body {
+  min-width: 0;
+}
+
+#integrations-page .stack {
+  gap: 16px;
+}
+
+#integrations-page label {
+  color: var(--text);
+  min-width: 0;
+}
+
+#integrations-page input:not([type="checkbox"]):not([type="file"]),
+#integrations-page select {
+  background: var(--bar);
+  min-height: 38px;
+  min-width: 0;
+  width: 100%;
+}
+
+#integrations-page input[type="checkbox"] {
+  accent-color: var(--accent);
+  flex: 0 0 16px;
+  height: 16px;
+  min-height: 16px;
+  width: 16px;
+}
+
+#integrations-page :is(input, select, button, .file-button):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+#integrations-page button,
+#integrations-page .file-button {
+  min-width: 0;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+#integrations-page .stack > button {
+  justify-self: start;
+}
+
+#integrations-page .integration-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #190b05;
+  font-weight: 600;
+}
+
+#integrations-page .integration-primary:hover:not(:disabled) {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+}
+
+#integrations-page .button-row,
+#integrations-page .target-save-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.integration-action {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+#integrations-page #anki-import-form,
+#integrations-page #dictionary-form,
+#integrations-page .sync-transfer-actions {
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+}
+
+#integrations-page .anki-connected-area {
+  margin-top: 4px;
+}
+
+#integrations-page .ai-model-form {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+#integrations-page .dictionary-controls {
+  align-items: start;
+  display: grid;
+  gap: 4px;
+  margin-bottom: 20px;
+}
+
+#integrations-page .meta-box {
+  background: transparent;
+  border: 0;
+  border-left: 2px solid var(--line-soft);
+  border-radius: 0;
+  margin-bottom: 16px;
+  padding: 4px 0 4px 12px;
+}
+
+#integrations-page #sync-summary {
+  min-height: 0;
+}
+
+#integrations-page .import-context {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+#integrations-page .file-button {
+  border-style: dashed;
+  min-height: 60px;
+  padding: 12px;
+  position: relative;
+  text-align: center;
+}
+
+/* A viewport-positioned hidden input makes picker focus scroll the entire app. */
+#dictionary-file {
+  border: 0;
+  cursor: pointer;
+  height: 100%;
+  inset: 0;
+  min-height: 0;
+  padding: 0;
+  width: 100%;
+}
+
+#integrations-page .voice-model-row {
+  background: var(--bar);
+  flex-wrap: wrap;
+  padding: 12px;
+}
+
+#integrations-page .voice-model-row > div {
+  flex: 1 1 200px;
+}
+
+#integrations-page .dictionary-manager-row {
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  grid-template-columns: 28px 20px minmax(100px, 1fr) auto;
+  padding-block: 12px;
+}
+
+#integrations-page .dictionary-badge,
+#integrations-page .dictionary-count,
+#integrations-page .dictionary-language {
+  grid-column: 3;
+  justify-self: start;
+}
+
+#integrations-page .dictionary-count {
+  grid-column: 4;
+  grid-row: 1;
+}
+
+#integrations-page .dictionary-language {
+  max-width: 100%;
+}
+
+@media (max-width: 760px) {
+  #integrations-page .integration-section {
+    gap: 20px;
+    grid-template-columns: minmax(0, 1fr);
+    padding-block: 24px;
+  }
+
+  #integrations-page .page-card-head {
+    gap: 8px;
+  }
+
+  #integrations-page .settings-grid {
+    padding-inline: 20px;
+  }
+
+  .integration-nav {
+    gap: 0 16px;
+    padding-inline: 20px;
+  }
+
+  #integrations-page .ai-runtime-row {
+    align-items: start;
+    flex-wrap: wrap;
+  }
+
+  #integrations-page .dictionary-manager-row {
+    grid-template-columns: 28px 20px minmax(0, 1fr);
+  }
+
+  #integrations-page .dictionary-count {
+    grid-column: 3;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 380px) {
+  .integration-nav {
+    gap: 0 12px;
+    padding-inline: 16px;
+  }
+
+  #integrations-page .settings-grid {
+    padding-inline: 16px;
+  }
+
+  #integrations-page .dictionary-count {
+    grid-column: 3;
+    grid-row: auto;
+  }
+}
+

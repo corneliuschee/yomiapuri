@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Yomiアプリ</title>
-    <link rel="stylesheet" href="/styles.css?v=stable-edit-1" />
+    <link rel="stylesheet" href="/styles.css?v=settings-upload-2" />
   </head>
   <body>
     <div id="shell" class="shell">
@@ -193,202 +193,217 @@
         </section>
 
         <section id="integrations-page" class="page">
+          <nav class="integration-nav" aria-label="Integration sections">
+            <a href="#integration-anki">Anki</a>
+            <a href="#integration-media">Media</a>
+            <a href="#integration-ai">AI models</a>
+            <a href="#integration-dictionary">Dictionary</a>
+            <a href="#integration-sync">Sync</a>
+          </nav>
           <div id="settings-grid" class="settings-grid">
-            <section class="page-card">
+            <section id="integration-anki" class="page-card integration-section" aria-labelledby="integration-anki-title">
               <div class="page-card-head">
                 <div>
-                  <h2>Anki</h2>
+                  <h2 id="integration-anki-title">Anki</h2>
                   <p>Use Anki Desktop with AnkiConnect. Sync Anki Desktop to AnkiWeb after export.</p>
                 </div>
                 <span id="anki-status" class="status">Not connected</span>
               </div>
-              <form id="anki-settings-form" class="stack">
-                <label>
-                  AnkiConnect URL
-                  <input name="connectUrl" type="url" placeholder="http://127.0.0.1:8765" />
-                </label>
-                <label class="toggle-row anki-auto-launch-row">
-                  <input id="anki-auto-launch" type="checkbox" />
-                  Open Anki automatically when needed
-                </label>
-                <label class="anki-path-row">
-                  Anki executable
-                  <input id="anki-executable-path" type="text" placeholder="Detecting Anki..." />
-                </label>
-                <div class="button-row">
-                  <button id="connect-anki" type="button">Connect</button>
-                </div>
-                <div id="anki-connected-area" class="anki-connected-area hidden">
-                  <div class="target-grid">
-                    <div class="target-column">
-                      <label>
-                        Deck
-                        <select id="deck-select" name="deckName"></select>
-                      </label>
-                      <div class="target-save-row">
-                        <button id="save-deck" type="button">Save deck</button>
-                        <span id="selected-deck-label" class="saved-target-label">Current Selected Deck: None</span>
+              <div class="integration-body">
+                <form id="anki-settings-form" class="stack">
+                  <label>
+                    AnkiConnect URL
+                    <input name="connectUrl" type="url" placeholder="http://127.0.0.1:8765" />
+                  </label>
+                  <label class="toggle-row anki-auto-launch-row">
+                    <input id="anki-auto-launch" type="checkbox" />
+                    Open Anki automatically when needed
+                  </label>
+                  <label class="anki-path-row">
+                    Anki executable
+                    <input id="anki-executable-path" type="text" placeholder="Detecting Anki..." />
+                  </label>
+                  <div class="button-row">
+                    <button id="connect-anki" class="integration-primary" type="button">Connect</button>
+                  </div>
+                  <div id="anki-connected-area" class="anki-connected-area hidden">
+                    <div class="target-grid">
+                      <div class="target-column">
+                        <label>
+                          Deck
+                          <select id="deck-select" name="deckName"></select>
+                        </label>
+                        <div class="target-save-row">
+                          <button id="save-deck" type="button">Save deck</button>
+                          <span id="selected-deck-label" class="saved-target-label">Current Selected Deck: None</span>
+                        </div>
                       </div>
-                    </div>
-                    <div class="target-column">
-                      <label>
-                        Note type
-                        <select id="model-select" name="modelName"></select>
-                      </label>
-                      <div class="target-save-row">
-                        <button id="save-note" type="button">Save note</button>
-                        <span id="selected-note-label" class="saved-target-label">Current Selected Note: None</span>
+                      <div class="target-column">
+                        <label>
+                          Note type
+                          <select id="model-select" name="modelName"></select>
+                        </label>
+                        <div class="target-save-row">
+                          <button id="save-note" type="button">Save note</button>
+                          <span id="selected-note-label" class="saved-target-label">Current Selected Note: None</span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              </form>
-              <div id="anki-field-status" class="mapping-status meta-box hidden">Connect to Anki to inspect note fields.</div>
-              <form id="anki-import-form" class="stack">
-                <label>
-                  Reviewed vocabulary import
-                  <select name="preset">
-                    <option value="reviewed-once">Cards reviewed at least once</option>
-                    <option value="reviewed">Cards reviewed in the last year</option>
-                    <option value="mature">Mature cards only</option>
-                    <option value="all">All cards in selected deck</option>
-                  </select>
-                </label>
-                <p id="anki-import-deck" class="import-context">Importing from: No deck selected</p>
-                <button id="anki-import-button" type="submit">Sync Anki</button>
-              </form>
-              <p id="anki-vocabulary-status" class="import-context" role="status" aria-live="polite"></p>
-              <div id="anki-import-notice" class="library-notice integration-notice" role="status" aria-live="polite"></div>
+                </form>
+                <div id="anki-field-status" class="mapping-status meta-box hidden">Connect to Anki to inspect note fields.</div>
+                <form id="anki-import-form" class="stack">
+                  <label>
+                    Reviewed vocabulary import
+                    <select name="preset">
+                      <option value="reviewed-once">Cards reviewed at least once</option>
+                      <option value="reviewed">Cards reviewed in the last year</option>
+                      <option value="mature">Mature cards only</option>
+                      <option value="all">All cards in selected deck</option>
+                    </select>
+                  </label>
+                  <p id="anki-import-deck" class="import-context">Importing from: No deck selected</p>
+                  <button id="anki-import-button" type="submit">Sync Anki</button>
+                </form>
+                <p id="anki-vocabulary-status" class="import-context" role="status" aria-live="polite"></p>
+                <div id="anki-import-notice" class="library-notice integration-notice" role="status" aria-live="polite"></div>
+              </div>
             </section>
 
-            <section class="page-card">
+            <section id="integration-media" class="page-card integration-section" aria-labelledby="integration-media-title">
               <div class="page-card-head">
                 <div>
-                  <h2>Media</h2>
+                  <h2 id="integration-media-title">Media</h2>
                   <p>Generate local mnemonic images for Anki fields.</p>
                 </div>
                 <span class="status-with-help"><span id="media-status" class="status">Not loaded</span><span class="help-dot" tabindex="0" data-tooltip="Off means local image generation is disabled. Changes save automatically when you edit these controls.">?</span></span>
               </div>
-              <form id="media-settings-form" class="stack media-settings-form">
-                <label class="toggle-row">
-                  <input id="media-image-enabled" name="imageEnabled" type="checkbox" />
-                  Local mnemonic image
-                  <span class="help-dot" tabindex="0" data-tooltip="When enabled, Anki exports generate a small local SVG mnemonic image and fill image fields like Picture or Image.">?</span>
-                </label>
-                <div class="button-row">
-                  <button id="test-media-image" type="button">Test image</button><span class="help-dot" tabindex="0" data-tooltip="Generates a sample mnemonic image using the saved image setting. It does not use a paid AI image API.">?</span>
-                </div>
-              </form>
-              <div id="media-preview" class="media-preview meta-box">Local image generation is disabled by default.</div>
+              <div class="integration-body">
+                <form id="media-settings-form" class="stack media-settings-form">
+                  <label class="toggle-row">
+                    <input id="media-image-enabled" name="imageEnabled" type="checkbox" />
+                    Local mnemonic image
+                    <span class="help-dot" tabindex="0" data-tooltip="When enabled, Anki exports generate a small local SVG mnemonic image and fill image fields like Picture or Image.">?</span>
+                  </label>
+                  <div class="button-row">
+                    <button id="test-media-image" type="button">Test image</button><span class="help-dot" tabindex="0" data-tooltip="Generates a sample mnemonic image using the saved image setting. It does not use a paid AI image API.">?</span>
+                  </div>
+                </form>
+                <div id="media-preview" class="media-preview meta-box">Local image generation is disabled by default.</div>
+              </div>
             </section>
 
-            <section class="page-card">
+            <section id="integration-ai" class="page-card integration-section" aria-labelledby="integration-ai-title">
               <div class="page-card-head">
                 <div>
-                  <h2>AI models</h2>
+                  <h2 id="integration-ai-title">AI models</h2>
                   <p>Manage local reader assistant models. Reader text stays on this computer.</p>
                 </div>
                 <span class="status-with-help"><span id="ai-status" class="status">Not loaded</span><span class="help-dot" tabindex="0" data-tooltip="Local means the app uses a model or runtime on this computer. No reader text is sent to a cloud API.">?</span></span>
               </div>
-              <form id="ai-model-form" class="stack ai-model-form">
-                <label>
-                  Import assistant model
-                  <input id="ai-model-url" name="url" type="url" placeholder="https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-HF" />
-                </label>
-                <div class="button-row">
-                  <button id="import-ai-model" type="submit">Import model</button><span class="help-dot" tabindex="0" data-tooltip="Registers model metadata for local use. Large model files are kept outside Git and should be provided as GGUF for llama.cpp.">?</span>
+              <div class="integration-body">
+                <form id="ai-model-form" class="stack ai-model-form">
+                  <label>
+                    Import assistant model
+                    <input id="ai-model-url" name="url" type="url" placeholder="https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-HF" />
+                  </label>
+                  <div class="button-row">
+                    <button id="import-ai-model" type="submit">Import model</button><span class="help-dot" tabindex="0" data-tooltip="Registers model metadata for local use. Large model files are kept outside Git and should be provided as GGUF for llama.cpp.">?</span>
+                  </div>
+                  <div id="ai-model-list" class="voice-model-list"></div>
+                </form>
+                <div class="ai-runtime-row">
+                  <span id="ai-preview">Runtime: checking</span>
+                  <button id="stop-ai-runtime" type="button">Stop runtime</button>
                 </div>
-                <div id="ai-model-list" class="voice-model-list"></div>
-              </form>
-              <div class="ai-runtime-row">
-                <span id="ai-preview">Runtime: checking</span>
-                <button id="stop-ai-runtime" type="button">Stop runtime</button>
               </div>
             </section>
 
 
-            <section class="page-card">
+            <section id="integration-dictionary" class="page-card integration-section" aria-labelledby="integration-dictionary-title">
               <div class="page-card-head">
                 <div>
-                  <h2>Dictionary</h2>
+                  <h2 id="integration-dictionary-title">Dictionary</h2>
                   <p>Manage reader lookup dictionaries and frequency dictionaries.</p>
                 </div>
               </div>
-              <div class="dictionary-controls">
-                <label class="toggle-row">
-                  <input id="dictionary-prefix-toggle" type="checkbox" />
-                  Prefix wildcard lookup
-                </label>
-                <label class="toggle-row">
-                  <input id="instant-anki-toggle" type="checkbox" />
-                  Instant Anki export
-                </label>
-                <label class="toggle-row" title="Hide generated furigana for vocabulary the app predicts is readable from your known vocabulary, known kanji, and enabled frequency dictionaries. Author-provided ruby stays visible.">
-                  <input id="hide-inferred-furigana" type="checkbox" />
-                  Hide inferred readable furigana
-                </label>
+              <div class="integration-body">
+                <div class="dictionary-controls">
+                  <label class="toggle-row">
+                    <input id="dictionary-prefix-toggle" type="checkbox" />
+                    Prefix wildcard lookup
+                  </label>
+                  <label class="toggle-row">
+                    <input id="instant-anki-toggle" type="checkbox" />
+                    Instant Anki export
+                  </label>
+                  <label class="toggle-row" title="Hide generated furigana for vocabulary the app predicts is readable from your known vocabulary, known kanji, and enabled frequency dictionaries. Author-provided ruby stays visible.">
+                    <input id="hide-inferred-furigana" type="checkbox" />
+                    Hide inferred readable furigana
+                  </label>
+                </div>
+                <form id="dictionary-form" class="stack" novalidate>
+                  <label class="file-button wide">
+                    <input id="dictionary-file" name="dictionary" type="file" accept=".zip,.json" multiple required />
+                    Choose dictionary ZIP or JSON
+                  </label>
+                  <div id="dictionary-attachment" class="file-attachment hidden" aria-live="polite"></div>
+                  <button id="dictionary-import-button" type="submit">Import dictionary</button>
+                </form>
+                <div id="dictionary-notice" class="library-notice integration-notice" role="status" aria-live="polite"></div>
+                <div id="dictionary-list" class="dictionary-list"></div>
               </div>
-              <p class="dictionary-help">Switches control reader lookup dictionaries and inferred furigana behavior. Order controls lookup priority and frequency badge order.</p>
-              <form id="dictionary-form" class="stack" novalidate>
-                <input name="name" type="text" placeholder="Dictionary name" />
-                <label class="file-button wide">
-                  <input id="dictionary-file" name="dictionary" type="file" accept=".zip,.json" multiple required />
-                  Choose dictionary ZIP or JSON
-                </label>
-                <div id="dictionary-attachment" class="file-attachment hidden" aria-live="polite"></div>
-                <button id="dictionary-import-button" type="submit">Import dictionary</button>
-              </form>
-              <div id="dictionary-notice" class="library-notice integration-notice" role="status" aria-live="polite"></div>
-              <div id="dictionary-list" class="dictionary-list"></div>
             </section>
 
-            <section class="page-card">
+            <section id="integration-sync" class="page-card integration-section" aria-labelledby="integration-sync-title">
               <div class="page-card-head">
                 <div>
-                  <h2>Sync</h2>
+                  <h2 id="integration-sync-title">Sync</h2>
                   <p>Optional Supabase source-data sync for books, progress, known vocabulary, and settings.</p>
                 </div>
                 <span id="sync-status" class="status">Offline</span>
               </div>
-              <form id="sync-settings-form" class="stack sync-settings-form">
-                <label>
-                  Supabase URL
-                  <input id="sync-url" name="supabaseUrl" type="url" placeholder="https://project.supabase.co" />
-                </label>
-                <label>
-                  Supabase publishable key
-                  <input id="sync-anon-key" name="supabaseAnonKey" type="password" autocomplete="off" placeholder="sb_publishable_..." />
-                </label>
-                <label>
-                  Device name
-                  <input id="sync-device-name" name="deviceName" type="text" placeholder="Desktop" />
-                </label>
-                <label class="toggle-row">
-                  <input id="sync-enabled" name="enabled" type="checkbox" />
-                  Enable sync
-                </label>
-                <div class="two-col">
+              <div class="integration-body">
+                <form id="sync-settings-form" class="stack sync-settings-form">
                   <label>
-                    Email
-                    <input id="sync-email" name="email" type="email" autocomplete="email" />
+                    Supabase URL
+                    <input id="sync-url" name="supabaseUrl" type="url" placeholder="https://project.supabase.co" />
                   </label>
                   <label>
-                    Password
-                    <input id="sync-password" name="password" type="password" autocomplete="current-password" />
+                    Supabase publishable key
+                    <input id="sync-anon-key" name="supabaseAnonKey" type="password" autocomplete="off" placeholder="sb_publishable_..." />
                   </label>
-                </div>
-                <div class="button-row">
-                  <button id="sync-save-settings" type="button">Save sync settings</button>
-                  <button id="sync-sign-in" type="button">Sign in</button>
-                  <button id="sync-sign-out" type="button">Sign out</button>
-                </div>
-                <div class="button-row">
-                  <button id="sync-push" type="button">Push local data</button><span class="help-dot" tabindex="0" data-tooltip="Uploads this device's local books, progress, highlights, bookmarks, known vocabulary, cards, settings, and media metadata to Supabase.">?</span>
-                  <button id="sync-pull" type="button">Pull remote data</button><span class="help-dot" tabindex="0" data-tooltip="Downloads Supabase data into this device. Use this on a new device or after another device has pushed changes.">?</span>
-                  <button id="sync-now" type="button">Sync now</button><span class="help-dot" tabindex="0" data-tooltip="Runs a push, then a pull. Use this for normal day-to-day two-way syncing. Same-book edits use newest timestamp conflict rules.">?</span>
-                </div>
-              </form>
-              <div id="sync-summary" class="meta-box">Sync is optional and disabled by default.</div>
+                  <label>
+                    Device name
+                    <input id="sync-device-name" name="deviceName" type="text" placeholder="Desktop" />
+                  </label>
+                  <label class="toggle-row">
+                    <input id="sync-enabled" name="enabled" type="checkbox" />
+                    Enable sync
+                  </label>
+                  <div class="two-col">
+                    <label>
+                      Email
+                      <input id="sync-email" name="email" type="email" autocomplete="email" />
+                    </label>
+                    <label>
+                      Password
+                      <input id="sync-password" name="password" type="password" autocomplete="current-password" />
+                    </label>
+                  </div>
+                  <div class="button-row">
+                    <button id="sync-save-settings" type="button">Save sync settings</button>
+                    <button id="sync-sign-in" type="button">Sign in</button>
+                    <button id="sync-sign-out" type="button">Sign out</button>
+                  </div>
+                  <div class="button-row sync-transfer-actions">
+                    <span class="integration-action"><button id="sync-push" type="button">Push local data</button><span class="help-dot" tabindex="0" data-tooltip="Uploads this device's local books, progress, highlights, bookmarks, known vocabulary, cards, settings, and media metadata to Supabase.">?</span></span>
+                    <span class="integration-action"><button id="sync-pull" type="button">Pull remote data</button><span class="help-dot" tabindex="0" data-tooltip="Downloads Supabase data into this device. Use this on a new device or after another device has pushed changes.">?</span></span>
+                    <span class="integration-action"><button id="sync-now" type="button">Sync now</button><span class="help-dot" tabindex="0" data-tooltip="Runs a push, then a pull. Use this for normal day-to-day two-way syncing. Same-book edits use newest timestamp conflict rules.">?</span></span>
+                  </div>
+                </form>
+                <div id="sync-summary" class="meta-box">Sync is optional and disabled by default.</div>
+              </div>
             </section>
           </div>
         </section>
@@ -435,6 +450,6 @@
         "/js/reader/assistant.js": "/js/reader/assistant.js?v=chat-ui-1"
       } }
     </script>
-    <script src="/app.js?v=ui-refinements-1" type="module"></script>
+    <script src="/app.js?v=settings-layout-1" type="module"></script>
   </body>
 </html>
