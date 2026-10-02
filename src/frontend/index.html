@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Yomiアプリ</title>
-    <link rel="stylesheet" href="/styles.css?v=ui-refinements-1" />
+    <link rel="stylesheet" href="/styles.css?v=chat-ui-1" />
   </head>
   <body>
     <div id="shell" class="shell">
@@ -139,17 +139,17 @@
               </div>
               <div id="assistant-panel" class="assistant-panel panel-list active">
                 <p class="assistant-panel-placeholder">Ask about grammar, vocabulary, or story recap</p>
-                <div id="reader-assistant-answer" class="reader-assistant-answer"></div>
+                <div id="reader-assistant-answer" class="reader-assistant-answer" role="log" aria-label="Conversation" aria-live="polite"></div>
                 <form id="reader-assistant-form" class="reader-assistant-form">
-                  <textarea id="reader-assistant-question" rows="3" placeholder="Message the assistant"></textarea>
+                  <textarea id="reader-assistant-question" rows="2" aria-label="Message the assistant" placeholder="Message the assistant"></textarea>
                   <div class="assistant-composer-actions">
                     <div class="assistant-composer-left">
-                      <span id="reader-assistant-context">Message only</span>
+                      <span id="reader-assistant-context">Local</span>
                     </div>
                     <select id="reader-assistant-model" aria-label="Assistant model">
                       <option value="sugoi-14b-ultra-q4-k-m">Sugoi 14B Ultra Q4_K_M</option>
                     </select>
-                    <button id="reader-assistant-submit" class="assistant-send-button" type="submit" aria-label="Send">↑</button>
+                    <button id="reader-assistant-submit" class="assistant-send-button" type="submit" aria-label="Send" disabled><span class="chat-icon chat-icon-send" aria-hidden="true"></span></button>
                   </div>
                 </form>
               </div>
@@ -431,7 +431,8 @@
     <script type="importmap">
       { "imports": {
         "/js/reader/highlights.js": "/js/reader/highlights.js?v=continuous-4",
-        "/js/shared/ui.js": "/js/shared/ui.js?v=ui-refinements-1"
+        "/js/shared/ui.js": "/js/shared/ui.js?v=ui-refinements-1",
+        "/js/reader/assistant.js": "/js/reader/assistant.js?v=chat-ui-1"
       } }
     </script>
     <script src="/app.js?v=ui-refinements-1" type="module"></script>

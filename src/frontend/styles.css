@@ -5,7 +5,7 @@
 @import url("./styles/page-layout.css");
 @import url("./styles/library.css");
 @import url("./styles/reader-layout.css");
-@import url("./styles/assistant.css");
+@import url("./styles/assistant.css?v=chat-ui-1");
 @import url("./styles/reader-content.css?v=stable-highlights-1");
 @import url("./styles/dialogs.css");
 @import url("./styles/reader-tools.css?v=continuous-highlights-1");

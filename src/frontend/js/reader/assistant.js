@@ -9,6 +9,20 @@ let readerAssistantTimer = null;
 let readerAssistantMessageId = 0;
 
 let readerAssistantHistory = [];
+let readerAssistantBusy = false;
+
+function resizeAssistantComposer() {
+  const input = elements.readerAssistantQuestion;
+  if (!input || !input.getClientRects().length) return;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(160, Math.max(52, input.scrollHeight))}px`;
+}
+
+function syncAssistantComposer() {
+  elements.readerAssistantSubmit.disabled = readerAssistantBusy || !elements.readerAssistantQuestion.value.trim();
+  elements.readerAssistantModel.disabled = readerAssistantBusy;
+  elements.readerAssistantAnswer.setAttribute("aria-busy", String(readerAssistantBusy));
+}
 
 function selectedReaderText() {
   const selection = window.getSelection();
@@ -28,6 +42,7 @@ function currentReaderPageText() {
 
 async function askReaderAssistant(event) {
   event.preventDefault();
+  if (readerAssistantBusy) return;
   if (!state.activeDocumentId) {
     elements.readerAssistantAnswer.innerHTML = `<p class="empty">Open a book before using the assistant.</p>`;
     return;
@@ -38,14 +53,17 @@ async function askReaderAssistant(event) {
     elements.readerAssistantQuestion?.focus();
     return;
   }
-  if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = "Message only";
-  elements.readerAssistantSubmit.disabled = true;
+  if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = "Generating...";
+  readerAssistantBusy = true;
+  syncAssistantComposer();
   clearReaderAssistantEmpty();
   appendReaderAssistantMessage("user", question, "You");
   const pendingId = appendReaderAssistantMessage("assistant", "Thinking...", "Assistant", "0.0s");
+  document.getElementById(pendingId)?.classList.add("is-pending");
   const startedAt = performance.now();
   startReaderAssistantTimer(pendingId, startedAt);
   elements.readerAssistantQuestion.value = "";
+  resizeAssistantComposer();
   try {
     const payload = {
       documentId: state.activeDocumentId,
@@ -71,10 +89,12 @@ async function askReaderAssistant(event) {
     rememberReaderAssistantTurn(question, result.answer ?? "");
   } catch (error) {
     replaceReaderAssistantMessage(pendingId, "assistant", error.message, "Assistant", elapsedLabel(startedAt));
+    document.getElementById(pendingId)?.classList.add("is-error");
   } finally {
     stopReaderAssistantTimer();
-    elements.readerAssistantSubmit.disabled = false;
-    if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = "Message only";
+    readerAssistantBusy = false;
+    syncAssistantComposer();
+    if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = "Local";
     elements.readerAssistantQuestion?.focus();
   }
 }
@@ -135,18 +155,21 @@ function appendReaderAssistantMessage(role, text, label, elapsed = "") {
 }
 
 function replaceReaderAssistantMessage(id, role, text, label, elapsed = "", extraHtml = "") {
+  const follow = assistantIsNearBottom();
   const node = document.getElementById(id);
   const html = readerAssistantMessageHtml({ id, role, text, label, elapsed, extraHtml });
   if (node) node.outerHTML = html;
   else elements.readerAssistantAnswer.insertAdjacentHTML("beforeend", html);
-  scrollAssistantToBottom();
+  if (follow) scrollAssistantToBottom();
 }
 
 function updateReaderAssistantMessageText(id, text) {
   const node = document.querySelector(`#${CSS.escape(id)} .assistant-message-body`);
   if (!node) return;
+  const follow = assistantIsNearBottom();
+  node.closest(".assistant-message")?.classList.remove("is-pending");
   node.innerHTML = escapeHtml(text ?? "").replace(/\n/g, "<br>");
-  scrollAssistantToBottom();
+  if (follow) scrollAssistantToBottom();
 }
 
 function readerAssistantMessageHtml({ id, role, text, label, elapsed = "", extraHtml = "" }) {
@@ -168,7 +191,7 @@ function startReaderAssistantTimer(messageId, startedAt) {
     const node = document.querySelector(`#${CSS.escape(messageId)} .assistant-elapsed`);
     const label = elapsedLabel(startedAt);
     if (node) node.textContent = label;
-    if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = label;
+    if (elements.readerAssistantContext) elements.readerAssistantContext.textContent = `Generating ${label}`;
   }, 100);
 }
 
@@ -186,6 +209,11 @@ function scrollAssistantToBottom() {
   elements.readerAssistantAnswer.scrollTop = elements.readerAssistantAnswer.scrollHeight;
 }
 
+function assistantIsNearBottom() {
+  const log = elements.readerAssistantAnswer;
+  return log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+}
+
 function rememberReaderAssistantTurn(question = "", answer = "") {
   const next = [
     ...readerAssistantHistory,
@@ -198,6 +226,10 @@ function rememberReaderAssistantTurn(question = "", answer = "") {
 function renderReaderAssistantAnswer(result = {}, pendingId = "", elapsed = "") {
   const citations = result.citations ?? [];
   const extraHtml = `
+    <div class="assistant-message-actions">
+      <button type="button" class="assistant-copy" aria-label="Copy response"><span class="chat-icon chat-icon-copy" aria-hidden="true"></span></button>
+      <span class="assistant-copy-feedback" role="status"></span>
+    </div>
     ${result.includeCitations && citations.length ? `
       <section class="assistant-citations">
         <h4>Local citations</h4>
@@ -213,6 +245,32 @@ function resetReaderAssistantHistory() {
 }
 
 function bindAssistantEvents() {
+  syncAssistantComposer();
+  elements.readerAssistantQuestion?.addEventListener("input", () => {
+    resizeAssistantComposer();
+    syncAssistantComposer();
+  });
+  let composerWidth = 0;
+  new ResizeObserver(([entry]) => {
+    if (entry.contentRect.width !== composerWidth) {
+      composerWidth = entry.contentRect.width;
+      resizeAssistantComposer();
+    }
+  }).observe(elements.readerAssistantForm);
+  elements.readerAssistantAnswer?.addEventListener("click", async (event) => {
+    const button = event.target.closest(".assistant-copy");
+    if (!button) return;
+    const message = button.closest(".assistant-message");
+    const feedback = message.querySelector(".assistant-copy-feedback");
+    try {
+      await navigator.clipboard.writeText(message.querySelector(".assistant-message-body").innerText);
+      feedback.textContent = "Copied";
+    } catch {
+      feedback.textContent = "Copy unavailable";
+    }
+    clearTimeout(button.copyFeedbackTimer);
+    button.copyFeedbackTimer = setTimeout(() => { feedback.textContent = ""; }, 2000);
+  });
   elements.readerAssistantForm?.addEventListener("submit", askReaderAssistant);
   elements.readerAssistantQuestion?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;

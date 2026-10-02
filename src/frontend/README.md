@@ -19,6 +19,7 @@ The frontend uses native JavaScript modules and CSS. FastAPI serves this directo
 - `styles/refinements.css`: tooltip sizing, static loading placeholders, and shared dialog spacing.
 - `vendor/pdfjs/`: third-party browser PDF renderer and its license.
 - `vendor/gsap/`: pinned local GSAP browser build; regenerate with `npm run vendor:gsap` after installing dependencies.
+- `vendor/lucide/`: local copy/send SVG icons and licenses, with no runtime dependency.
 
 ## Editing Guidelines
 
@@ -48,3 +49,9 @@ remain stable. Reader text, scrolling, and page dimensions are not animated.
 Keep these enhancements scoped; avoid ongoing animation loops or adding React
 for standalone visual effects. Fade timing is inspired by content-reveal patterns
 such as React Bits, implemented directly with GSAP in the existing vanilla modules.
+
+The assistant uses plain escaped text, distinct user bubbles, and unboxed replies.
+Its input grows to a bounded height; streaming only follows the bottom while the
+reader is already near it. Response copying uses the browser clipboard API and
+reports failures without changing the reply. No AI prompts or backend API shapes
+are changed by this presentation layer.
