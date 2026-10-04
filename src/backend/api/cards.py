@@ -1,25 +1,24 @@
-"""Register cards endpoints while preserving frontend request and response contracts."""
+"""Import card field templates, save local cards, and download them as CSV."""
 
 import csv
-import hashlib
 import io
 import json
 import re
 import uuid
 
-from fastapi import Body, File, Request, UploadFile, Form
-from fastapi.responses import Response, StreamingResponse
-from starlette.concurrency import run_in_threadpool
+from fastapi import Body, File, Request, UploadFile
+from fastapi.responses import Response
 
-from ..storage.sqlite import decode, encode, merge, now
+from ..storage.sqlite import decode, encode, now
 from ..services.dictionary import normalize
-from .common import uploaded
+from .uploads import read_upload
 
 def register(app):
+    """Add local card/template endpoints; Anki export lives in api/anki.py."""
     @app.post('/api/templates', status_code=201)
     async def template(request: Request, template: UploadFile = File(...)):
-        """Persist field names from JSON or a comma/newline-delimited upload."""
-        data = (await uploaded(template)).decode('utf-8-sig')
+        """Save field names from a JSON list or a comma/newline-separated file."""
+        data = (await read_upload(template)).decode('utf-8-sig')
         try:
             parsed = json.loads(data)
             fields = parsed.get('fields', []) if isinstance(parsed, dict) else parsed
@@ -33,7 +32,7 @@ def register(app):
 
     @app.post('/api/cards', status_code=201)
     def create_card(request: Request, body: dict = Body(...)):
-        """Save a template-based local card; unlike Anki export, make no remote note."""
+        """Save a card using a local template's fields without contacting Anki."""
         s = request.app.state.store
         doc = s.document(body.get('documentId'))
         if not doc:
@@ -52,7 +51,7 @@ def register(app):
 
     @app.get('/api/cards/export')
     def export_cards(request: Request):
-        """Return CSV with the ordered union of all locally saved card fields."""
+        """Download saved cards as CSV, including every field found in the cards."""
         cards = [decode(r['payload_json'], {}).get('fields', {}) for r in request.app.state.store.rows('SELECT payload_json FROM cards ORDER BY order_index')]
         fields = list(dict.fromkeys(f for c in cards for f in c))
         output = io.StringIO(newline='')

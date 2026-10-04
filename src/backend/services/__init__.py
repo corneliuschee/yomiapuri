@@ -1,1 +1,1 @@
-"""Domain services independent of the web framework."""
+"""Feature logic for books, dictionaries, Anki, images, AI, search, and sync."""

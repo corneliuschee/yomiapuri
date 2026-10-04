@@ -31,7 +31,6 @@ with `ai.available=false`; book ingestion has an explicit `error` event.
 | --- | --- |
 | GET `/api/state` | UI settings, metadata-only documents/Trash, known-term count, progress, cards, templates, dictionary metadata, redacted sync status |
 | PATCH or POST `/api/reader/settings` | `showKnownFurigana`, `hideInferredReadableFurigana`; returns `reader` |
-| POST `/api/reader/readable-suggestion/dismiss` | `term`; logs a compatibility event and returns dismissed status |
 
 The state response excludes book bodies and dictionary entries, but is still a
 local/private endpoint, not a sanitized public account API.
@@ -84,7 +83,7 @@ Each upload is limited to 60 MB. Archive services separately reject declared
 uncompressed sizes over 512 MB. Multi-dictionary import commits each dictionary
 independently. Lookup GET can write a token cache row and learning event.
 
-## Anki and Media: `api/integrations.py`
+## Anki: `api/anki.py`
 
 | Method/path | Inputs and result |
 | --- | --- |
@@ -93,29 +92,36 @@ independently. Lookup GET can write a token cache row and learning event.
 | GET `/api/anki/model-fields` | Optional `modelName`; live fields and mapping |
 | POST `/api/anki/card-preview` | `documentId,expression`, optional sentence/surface/base/reading/meaning/deck/model; canonical values, mapped values, entries |
 | POST `/api/anki/export-card` | Reviewed `fields`, `documentId,expression`, deck/model or saved defaults; optional `requestId,fieldMapUpdates`; 201 saved card/Anki note ID |
-| POST `/api/anki/sync-vocabulary` or `/api/anki/import` | Optional `preset,deckName,query`; imported/added/total/syncedAt |
+| POST `/api/anki/sync-vocabulary` | Optional `preset,deckName,query`; imported/added/total/syncedAt |
 | POST `/api/anki/open-known-term` | `term`; opens Anki browser by linked note IDs or term |
+
+Read [export flow](flows.md#card-preview-and-export) before adding retries. A
+preview's `values` become the reviewed export's `fields`. Use actual Anki field
+names, which can differ from the app's standard names such as Expression.
+
+## Images and Card Media: `api/media.py`
+
+| Method/path | Inputs and result |
+| --- | --- |
 | GET `/api/media/providers` | Image settings/status; audio disabled |
 | POST `/api/media/settings` | `image` settings; audio forcibly disabled |
 | POST `/api/media/test-image` | Optional `expression,reading,meaning`; image HTML/status |
 
-Read [export flow](flows.md#card-preview-and-export) before adding retries. A
-preview's `values` are the edited export's `fields`; these are not interchangeable
-with canonical role names unless the actual Anki note type uses those names.
-
-## Internal Vocabulary Compatibility: `api/wordbank.py`
+## Internal Known Vocabulary: `api/vocabulary.py`
 
 | Method/path | Inputs and result |
 | --- | --- |
 | GET `/api/known-terms` | `offset,limit,q,sort,dictionaryId`; legacy paged term/meaning response |
 | POST `/api/known-terms` | JSON `term`/`terms`, or multipart `terms` file; additive counts |
 | DELETE `/api/known-terms` | `term`/`terms`, or `all:true`; removed counts |
-| POST `/api/known-terms/sync-anki` | Legacy alias using default Anki vocabulary sync |
 | POST `/api/trash/known-terms/restore` | `terms`; restore saved metadata |
 | DELETE `/api/trash/known-terms` | `terms` or `all:true`; purge Trash entries, retain tombstones |
 
 These routes remain even though the Word Bank page was removed. Their presence
-is not a request to reintroduce that UI.
+does not require that UI. Anki sync uses `/api/anki/sync-vocabulary`; the unused
+`/api/anki/import` and `/api/known-terms/sync-anki` aliases were removed. The old
+`/api/reader/readable-suggestion/dismiss` endpoint was also removed with no current
+frontend caller.
 
 ## Local Cards/Templates: `api/cards.py`
 

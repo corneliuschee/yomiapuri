@@ -1,6 +1,5 @@
-"""Perform indexed dictionary lookup, frequency lookup, and dictionary imports."""
+"""Import dictionaries and use SQLite indexes to find words and frequency ranks."""
 
-import hashlib
 import io
 import json
 import re
@@ -21,7 +20,7 @@ def hiragana(text):
 
 
 def plain(value):
-    """Flatten supported Yomitan structured definition content into plain text."""
+    """Turn a Yomitan definition's nested lists and objects into plain text."""
     if isinstance(value, str):
         return value
     if isinstance(value, list):
@@ -32,7 +31,7 @@ def plain(value):
 
 
 def frequency(value):
-    """Extract a displayable frequency from scalar or nested dictionary formats."""
+    """Read a frequency label from a number, string, or nested dictionary entry."""
     if isinstance(value, (int, float, str)):
         return str(value)
     if isinstance(value, list):
@@ -68,12 +67,12 @@ class DictionaryService:
                 for r in self.store.rows('SELECT id,name,filename,type,language,format,enabled_for_lookup,selected_for_wordbank,sort_order,entries_count,frequency_count,validation_status,imported_at FROM dictionaries ORDER BY sort_order,rowid')]
 
     def import_file(self, filename, data, name=''):
-        """Parse a Yomitan ZIP or legacy JSON before committing dictionary rows.
+        """Read a Yomitan ZIP or JSON dictionary, then save it in one transaction.
 
-        Keep indexed headwords/readings separate from heavy definition payloads.
-        Insert metadata, entries, and frequency rows in one transaction, then
-        invalidate dictionary-dependent caches through a revision bump. Parsing
-        holds the imported rows in memory; lookup does not load whole dictionaries.
+        Read the file before holding the database lock. Store words/readings
+        separately from large definitions so lookups load only matched entries.
+        Update the dictionary change counter for caches. Import holds the new
+        entries in memory temporarily; later lookups do not load the whole file.
         """
         term_rows, frequency_rows, index = [], [], {}
         if filename.lower().endswith('.zip'):
@@ -141,10 +140,10 @@ class DictionaryService:
         return {'dictionary': next(d for d in self.metadata() if d['id'] == dictionary_id), 'validation': {'termRows': len(entries), 'frequencyRows': len(frequencies)}}
 
     def settings(self, dictionary_id, patch):
-        """Update lookup/order flags and enforce a single selected term dictionary.
+        """Change dictionary order/use and allow only one preferred meaning source.
 
-        Frequency-only dictionaries cannot supply Word Bank meanings. Changes
-        bump the dictionary revision and clear exact-match memoization.
+        A frequency-only dictionary cannot provide meanings for known words.
+        Update the change counter and clear cached exact matches.
         """
         current = next((d for d in self.metadata() if d['id'] == dictionary_id), None)
         if not current:
@@ -163,20 +162,20 @@ class DictionaryService:
 
     @lru_cache(maxsize=4096)
     def exact(self, term, revision=0):
-        """Return only the highest-priority enabled headword and reading.
+        """Find a word and reading in the first matching enabled dictionary.
 
-        Heavy definitions are not fetched. Callers pass the dictionary revision
-        to segregate memoized results after settings/import changes.
+        Do not load definitions. The dictionary change counter is part of the
+        cache key, so imports and settings changes get fresh results.
         """
         return self.store.one('''SELECT e.term,e.reading FROM dictionary_entries e JOIN dictionaries d ON d.id=e.dictionary_id
             WHERE e.term=? AND d.enabled_for_lookup=1 ORDER BY d.sort_order,e.sequence LIMIT 1''', (term,))
 
     def entries(self, term, dictionary_id=None, prefix=False):
-        """Find indexed candidates, then fetch definitions only for those matches.
+        """Find matching words/readings first, then load only their definitions.
 
-        Query headword and reading separately (100 candidates each); optional
-        prefix matching uses range predicates. Explicit dictionary_id overrides
-        the enabled-only filter. Deduplicate IDs and equivalent definitions.
+        Search words and readings separately, up to 100 matches each. Prefix
+        search uses an indexed range rather than scanning every entry. A supplied
+        dictionary_id can select a disabled dictionary too. Remove duplicates.
         """
         conditions = ['d.id=?'] if dictionary_id else ['d.enabled_for_lookup=1']
         params = [dictionary_id] if dictionary_id else []
@@ -202,11 +201,12 @@ class DictionaryService:
         return result
 
     def lookup(self, term, variants=(), prefix=False):
-        """Combine up to twenty query variants into definitions and frequencies.
+        """Look up a word and up to twenty combined forms, with frequency labels.
 
-        Exact surface matches precede dictionary priority. Prefix matching also
-        requires its saved setting. Include known-vocabulary/Anki-note metadata;
-        normalization/variant generation beyond NFKC belongs to the caller.
+        Put exact written matches first, then respect dictionary order. Prefix
+        search must also be enabled in settings. Include known-word/Anki links.
+        The caller supplies base forms/readings; this method only standardizes
+        character width and other equivalent Unicode forms (NFKC).
         """
         term = normalize(term)
         if not term:

@@ -1,9 +1,8 @@
-"""Import novels and render bounded reader page windows with author ruby."""
+"""Import books, prepare reader pages, preserve author furigana, and manage Trash."""
 
 import hashlib
 import html
 import io
-import json
 import posixpath
 import re
 import threading
@@ -25,16 +24,16 @@ def marker_text(text):
 
 
 def blocks_text(blocks):
-    """Flatten nested text blocks, excluding images and navigation-only links."""
+    """Join text from chapter blocks, leaving out images and navigation links."""
     return '\n'.join(b.get('text', blocks_text(b.get('blocks', []))) for b in blocks if b.get('type') not in {'image', 'link'})
 
 
 def sentences(text):
-    """Yield trimmed passages without splitting inside Japanese dialogue quotes.
+    """Split passages without breaking dialogue inside Japanese quotation marks.
 
-    Outer closing quotes and unquoted sentence punctuation/newlines end a
-    passage. Used by pagination and search; changing it can change page/chunk
-    boundaries, not just display formatting.
+    A closing outer quote, or punctuation/newlines outside quotes, ends a
+    passage. Both page preparation and search use this, so changing it can
+    change where saved pages and search excerpts start and end.
     """
     # Keep quoted dialogue intact, but begin/end a line at its outer boundaries.
     depth, line = 0, ''
@@ -63,12 +62,12 @@ class BookService:
         self.lock = threading.RLock()
 
     def import_file(self, filename, data, title=''):
-        """Extract an EPUB/PDF/UTF-8 TXT and persist its source and body.
+        """Read an EPUB, PDF, or UTF-8 TXT and save the book's text and files.
 
-        Reject active-library duplicates by hash or filename. Assets are written
-        under media/<document id> before SQLite persistence, so file writes are
-        not part of the SQL transaction. Return metadata; defer pagination until
-        the reader or search index needs it. PDF cover generation is best effort.
+        Reject a file already in the library by its name or content hash. Save
+        files under media/<document id> before saving SQLite rows; those files
+        cannot be rolled back with SQL. Return book details and prepare pages
+        later when needed. A missing PDF cover does not prevent import.
         """
         filename = Path(filename.replace('\\', '/')).name
         kind = Path(filename).suffix.lower().lstrip('.')
@@ -137,12 +136,12 @@ class BookService:
         return self.store.document(doc_id)
 
     def epub(self, data, doc_id, folder):
-        """Convert EPUB spine content into chapters and return title/author/cover.
+        """Read an EPUB in its specified chapter order, keeping links and images.
 
-        Extract images to hashed filenames and retain local navigation links.
-        Encode author ruby as internal RUBY markers before flattening HTML so
-        later tokenization cannot replace the author's readings. Reject archives
-        whose declared uncompressed size exceeds 512 MB.
+        Return the title, author, cover, and chapters. Store author furigana as
+        RUBY markers before removing HTML so text analysis cannot replace it.
+        Save images with content-based filenames. Reject ZIPs whose declared
+        uncompressed contents exceed 512 MB.
         """
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             if sum(i.file_size for i in archive.infolist()) > 512 * 1024 * 1024:
@@ -227,12 +226,12 @@ class BookService:
             return title, author, cover or next(iter(images.values()), ''), chapters
 
     def ensure_pages(self, doc_id):
-        """Create missing pages once while preserving existing page identifiers.
+        """Prepare pages once, keeping the numbers of pages already saved.
 
-        A service lock serializes pagination. Repair missing chapter/ruby
-        metadata without repagination; otherwise load the body and group text
-        near 850 characters, with separate image/PDF pages and zero-based indices.
-        Existing bookmarks/progress depend on retaining these boundaries.
+        Only one request prepares pages at a time. Repair missing chapter or
+        furigana details without splitting the book again, because bookmarks
+        depend on existing page boundaries. New text pages hold about 850
+        characters; image/PDF pages are separate. Page numbers start at zero.
         """
         with self.lock:
             metadata = self.store.document(doc_id)
@@ -291,12 +290,12 @@ class BookService:
         return self.store.rows('SELECT page_index,chapter_id,chapter_title FROM document_pages WHERE document_id=? ORDER BY page_index', (doc_id,))
 
     def window(self, doc_id, start=0, limit=8):
-        """Render a bounded zero-based window using current vocabulary/settings.
+        """Render a small set of pages with the latest known words and settings.
 
-        Clamp the page count to 1..24 and preserve legacy stored boundaries.
-        Protect author-ruby names across the document; render large headings
-        only on a chapter's first non-image-only page. Return pages/start/total;
-        text rendering may populate structural token caches in SQLite.
+        start counts from zero; limit is restricted to 1..24. Keep older page
+        boundaries and protect names with author readings across the book.
+        Show a large chapter heading only on its first page containing text.
+        Return pages/start/total. Rendering may save new word tokens in SQLite.
         """
         self.ensure_pages(doc_id)
         document = self.store.document(doc_id)
@@ -332,12 +331,11 @@ class BookService:
         return {'pages': result, 'start': start, 'total': len(self.page_rows(doc_id))}
 
     def response(self, doc_id, page=None):
-        """Build the reader response with an eight-page window and placeholders.
+        """Build the book response, rendering only eight pages near the reader.
 
-        Use saved progress unless a zero-based page override is supplied. The
-        pages array represents the whole book but only the nearby window has
-        HTML; other entries are marked unloaded. Compatibility candidate lists
-        remain empty and do not trigger mining or analytics work.
+        Use the saved position unless page is supplied (counting from zero).
+        Include a placeholder for every other page, marked unloaded. Keep the
+        old candidate-list fields empty; no mining or analytics runs here.
         """
         doc = self.store.document(doc_id)
         if not doc:
@@ -354,12 +352,12 @@ class BookService:
                 'pages': [window.get(r['page_index'], {'chapterId': r['chapter_id'], 'html': '', 'unloaded': True}) for r in rows]}
 
     def trash(self, doc_id, restore=False):
-        """Move metadata/body between active and Trash tables in one transaction.
+        """Move a book into or out of Trash as one database change.
 
-        Deletion records a sync tombstone; restoration removes it. Progress is
-        retained, but active-page foreign-key cascades can remove derived pages.
-        Search rows stay stored and are hidden by active-document joins until
-        permanent deletion. Both directions bump the documents revision.
+        Record deletions for device sync; remove that record on restore. Keep
+        progress, though SQLite may remove generated pages when the active book
+        row is deleted. Keep search rows until permanent deletion, but searches
+        exclude Trash books. Update the books change counter in either direction.
         """
         source, target = ('trash_documents', 'documents') if restore else ('documents', 'trash_documents')
         body_source, body_target = ('trash_document_bodies', 'document_bodies') if restore else ('document_bodies', 'trash_document_bodies')
@@ -377,3 +375,25 @@ class BookService:
                 db.execute('INSERT OR REPLACE INTO document_tombstones(document_id,deleted_at) VALUES (?,?)', (doc_id, now()))
             self.store.bump('documents', db)
         return self.store.document(doc_id, trash=not restore)
+
+    def delete_permanently(self, doc_id=None):
+        """Delete one Trash book, or empty Trash, and return the number removed.
+
+        Remove its pages, progress, and search rows in the same database change.
+        Keep deletion records for sync so another device cannot restore the book
+        by mistake. Media files and exported Anki notes stay where they are.
+        """
+        with self.store.transaction() as db:
+            if doc_id is not None:
+                if not db.execute('SELECT 1 FROM trash_documents WHERE id=?', (doc_id,)).fetchone():
+                    raise LookupError('Document not found in Trash.')
+                ids = [doc_id]
+            else:
+                ids = [row['id'] for row in db.execute('SELECT id FROM trash_documents')]
+            for deleted_id in ids:
+                db.execute('DELETE FROM python_search_fts WHERE chunk_id IN (SELECT id FROM python_search_chunks WHERE document_id=?)', (deleted_id,))
+                for table in ['python_search_chunks', 'python_index_documents', 'document_pages', 'trash_document_bodies', 'reading_progress']:
+                    db.execute(f'DELETE FROM {table} WHERE document_id=?', (deleted_id,))
+                db.execute('DELETE FROM trash_documents WHERE id=?', (deleted_id,))
+            self.store.bump('documents', db)
+        return len(ids)

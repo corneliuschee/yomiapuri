@@ -6,7 +6,7 @@
 
 ```text
 POST /api/documents (multipart book)
-  -> uploaded(): limit file size
+  -> api/uploads.py read_upload(): limit file size
   -> worker thread: BookService.import_file()
   -> extract source, chapters, images, author ruby
   -> Store.save_document(): metadata + full body, bump documents revision
@@ -106,7 +106,7 @@ Fetching completes before vocabulary writes, so an interrupted fetch does not
 partially import terms. Presets currently mean `prop:reps>0` (reviewed once),
 `rated:365` (reviewed), `prop:ivl>=21` (mature), or unrestricted (all).
 
-The standalone Word Bank page is gone. `api/wordbank.py` and the SQL tables still
+The standalone Word Bank page is gone. `api/vocabulary.py` and the SQL tables still
 support compatibility operations and learned-state behavior.
 
 ## Card Preview and Export

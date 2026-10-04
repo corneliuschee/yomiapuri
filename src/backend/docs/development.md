@@ -56,6 +56,7 @@ Focused example:
 Relevant test files:
 
 - [tests/test_backend.py](../../../tests/test_backend.py): isolated backend regressions and fixtures.
+- [tests/test_uploads.py](../../../tests/test_uploads.py): upload size limits and missing-file handling.
 - [tests/api_contract.json](../../../tests/api_contract.json): expected registered method/path pairs.
 - [scripts/smoke-test.js](../../../scripts/smoke-test.js): integration checks over HTTP.
 

@@ -1,21 +1,9 @@
-"""Register sync endpoints while preserving frontend request and response contracts."""
+"""Handle Supabase sign-in, settings, and user-requested uploads/downloads."""
 
-import csv
-import hashlib
-import io
-import json
-import re
-import uuid
-
-from fastapi import Body, File, Request, UploadFile, Form
-from fastapi.responses import Response, StreamingResponse
-from starlette.concurrency import run_in_threadpool
-
-from ..storage.sqlite import decode, encode, merge, now
-from ..services.dictionary import normalize
-from .common import uploaded
+from fastapi import Body, Request
 
 def register(app):
+    """Add account and sync actions; the sync service does the network work."""
     @app.get('/api/sync/status')
     def sync_status(request: Request):
         return request.app.state.sync.status()

@@ -1,1 +1,1 @@
-"""SQLite persistence and schema definitions."""
+"""SQLite tables and the code that reads and saves local app data."""

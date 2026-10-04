@@ -1,24 +1,17 @@
-"""Register documents endpoints while preserving frontend request and response contracts."""
-
-import csv
-import hashlib
-import io
-import json
-import re
-import uuid
+"""Import books, load reader pages, save progress, and manage book Trash."""
 
 from fastapi import Body, File, Request, UploadFile, Form
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from ..storage.sqlite import decode, encode, merge, now
-from ..services.dictionary import normalize
-from .common import uploaded
+from ..storage.sqlite import encode, merge, now
+from .uploads import read_upload
 
 def register(app):
+    """Add library and reader endpoints before the frontend file routes."""
     @app.post('/api/documents', status_code=201)
     async def import_document(request: Request, book: UploadFile = File(...), title: str = Form('')):
-        data = await uploaded(book)
+        data = await read_upload(book)
         result = await run_in_threadpool(request.app.state.books.import_file, book.filename or 'book.txt', data, title)
         return {'document': result}
 
@@ -36,10 +29,10 @@ def register(app):
 
     @app.get('/api/documents/{doc_id}/ingest-stream')
     def ingest(request: Request, doc_id: str):
-        """Stream cache-check then done/error events around lazy pagination.
+        """Tell the reader when page preparation starts and when it finishes.
 
-        This synchronous generator runs off the event loop. Its progress is a
-        start/end signal, not continuous per-token or per-chapter measurement.
+        The generator runs in a worker thread. Progress has a start and an end;
+        it does not measure individual chapters or tokens as they are processed.
         """
         def events():
             yield 'event: progress\ndata: ' + encode({'message': 'Checking local book cache', 'progress': 0}) + '\n\n'
@@ -82,28 +75,17 @@ def register(app):
 
     @app.delete('/api/trash/documents/{doc_id}')
     def permanently_delete_document(request: Request, doc_id: str):
-        """Prune a Trash book's SQL search/page/progress data atomically.
-
-        Keep its sync tombstone. This route does not delete media files from
-        disk or remove exported Anki notes.
-        """
-        s = request.app.state.store
-        with s.transaction() as db:
-            if not db.execute('SELECT 1 FROM trash_documents WHERE id=?', (doc_id,)).fetchone():
-                raise LookupError('Document not found in Trash.')
-            db.execute('DELETE FROM python_search_fts WHERE chunk_id IN (SELECT id FROM python_search_chunks WHERE document_id=?)', (doc_id,))
-            for table in ['python_search_chunks', 'python_index_documents', 'document_pages', 'trash_document_bodies', 'reading_progress']:
-                db.execute(f'DELETE FROM {table} WHERE document_id=?', (doc_id,))
-            db.execute('DELETE FROM trash_documents WHERE id=?', (doc_id,))
-            s.bump('documents', db)
+        """Delete one book from Trash through the shared book cleanup method."""
+        request.app.state.books.delete_permanently(doc_id)
         return {'deleted': True}
 
     @app.post('/api/documents/{doc_id}/progress')
     def progress(request: Request, doc_id: str, body: dict = Body(...)):
-        """Merge allowed reader state into one row without rewriting book text.
+        """Save changed reading settings and position in this book's progress row.
 
-        Clamp zoom/page values and preserve omitted bookmarks/highlights. Pages
-        are zero-based. Save a timestamp for sync without invalidating tokens.
+        Keep bookmarks/highlights that the request leaves out. Limit zoom and
+        page values to their allowed ranges; page 0 is the first page. Record the
+        save time for sync without discarding cached text tokens.
         """
         s = request.app.state.store
         if not s.document(doc_id):
@@ -122,18 +104,5 @@ def register(app):
 
     @app.delete('/api/trash/documents')
     def purge_books(request: Request):
-        """Remove all Trash books' derived/source SQL rows, retaining tombstones.
-
-        Apply the same database cleanup as single permanent deletion, in one
-        transaction; referenced filesystem assets are not removed here.
-        """
-        s = request.app.state.store
-        with s.transaction() as db:
-            ids = [r['id'] for r in s.documents(True)]
-            for doc_id in ids:
-                db.execute('DELETE FROM python_search_fts WHERE chunk_id IN (SELECT id FROM python_search_chunks WHERE document_id=?)', (doc_id,))
-                for table in ['python_search_chunks', 'python_index_documents', 'document_pages', 'trash_document_bodies', 'reading_progress']:
-                    db.execute(f'DELETE FROM {table} WHERE document_id=?', (doc_id,))
-                db.execute('DELETE FROM trash_documents WHERE id=?', (doc_id,))
-            s.bump('documents', db)
-        return {'deleted': len(ids)}
+        """Empty book Trash using the same cleanup as deleting a single book."""
+        return {'deleted': request.app.state.books.delete_permanently()}

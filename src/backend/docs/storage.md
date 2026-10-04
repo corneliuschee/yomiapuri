@@ -53,8 +53,9 @@ Derived, rebuildable tables:
 | `python_search_fts` | FTS5 unique token strings and unindexed chunk IDs |
 | `python_index_documents` | Per-book fingerprint of the indexed baseline |
 
-`migration_runs`, `python_meanings`, and `card_tombstones` exist in schema but are
-not active end-to-end workflows in this backend. Older databases can also retain
+`migration_runs` and `card_tombstones` exist in schema but are not active
+end-to-end workflows in this backend. The unused `python_meanings` table is no
+longer created; an existing copy is left untouched. Older databases can retain
 tables/files from previous implementations. Their presence does not mean current
 services use them; do not delete them merely because this guide does not list a
 consumer. `python_learning_events` persists actions but does not imply a learning
@@ -135,9 +136,10 @@ retained. The active-document foreign key can cascade-delete derived pages;
 restore regenerates missing pages as needed. FTS rows/fingerprints remain stored
 but search joins active documents, hiding Trash immediately.
 
-Permanent deletion prunes the target's FTS rows, chunks, fingerprint, pages,
+`BookService.delete_permanently()` handles both single-book deletion and emptying
+Trash. Permanent deletion prunes the target's FTS rows, chunks, fingerprint, pages,
 Trash body/metadata, and progress in SQL. It retains sync deletion intent. The
-current routes do not delete filesystem assets or exported Anki notes. Local
+service does not delete filesystem assets or exported Anki notes. Local
 card records are not removed by this SQL cleanup either. Restoring a book may
 reuse retained lexical rows if its fingerprint still matches.
 

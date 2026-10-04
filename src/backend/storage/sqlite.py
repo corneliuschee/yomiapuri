@@ -1,4 +1,4 @@
-"""Provide canonical SQLite storage, schema checks, targeted writes, and revisions."""
+"""Open SQLite, check its tables, and read/save the app's local data."""
 
 import json
 import sqlite3
@@ -27,10 +27,10 @@ def decode(value, fallback=None):
 
 
 def merge(original, patch):
-    """Recursively merge dictionaries; replace lists and scalar values outright.
+    """Apply a partial update while keeping keys that were not supplied.
 
-    Unspecified keys survive. This is a partial-update helper, not a deletion
-    protocol: setting a value to None stores None rather than removing its key.
+    Nested dictionaries are merged too; lists and other values are replaced.
+    A value of None is saved as None, not treated as a request to delete a key.
     """
     result = dict(original)
     for key, value in patch.items():
@@ -39,15 +39,15 @@ def merge(original, patch):
 
 
 class Store:
-    """One serialized writer; bounded queries, no full-state snapshot writes."""
+    """Share one locked database connection and save only the rows that change."""
 
     def __init__(self, data_dir):
-        """Open the canonical database and check compatibility before serving.
+        """Open the database and check it before accepting app requests.
 
-        Enable WAL, foreign keys, and a five-second busy timeout. Older stores
-        with schema metadata receive a SQLite backup before Python schema
-        initialization. Reject flagged incomplete/newer schemas and failed
-        integrity checks. Schema additions run in place, not via a staged file.
+        Enable SQLite's write-ahead log (WAL) and wait up to five seconds for a
+        busy database. Back up databases from the earlier backend before adding
+        Python tables. Refuse databases marked as incomplete, newer than we
+        support, or damaged. Table changes happen in the opened database.
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -82,7 +82,6 @@ class Store:
             if name not in columns:
                 self.db.execute(f'ALTER TABLE dictionaries ADD COLUMN {name} {spec}')
         self.db.executescript('''
-            CREATE TABLE IF NOT EXISTS python_meanings(dictionary_id TEXT NOT NULL, term TEXT NOT NULL, revision INTEGER NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(dictionary_id,term));
             CREATE TABLE IF NOT EXISTS python_learning_events(id TEXT PRIMARY KEY, type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS python_token_cache(cache_key TEXT PRIMARY KEY, tokens_json TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS python_search_chunks(id TEXT PRIMARY KEY, document_id TEXT NOT NULL,
@@ -107,28 +106,31 @@ class Store:
 
     @contextmanager
     def transaction(self):
-        """Serialize connection access and commit on success or roll back on error.
+        """Save a group of SQL changes together, or undo them all on failure.
 
-        Keep network calls and expensive tokenization outside this scope. The
-        reentrant lock permits helper reads, but nested transaction contexts do
-        not create savepoints; use the yielded connection for grouped writes.
+        Other threads wait while this block uses the connection. Keep network
+        requests and text analysis outside it. Use the returned connection for
+        all grouped writes; nesting these blocks does not create separate undo
+        points (SQLite savepoints).
         """
         with self.lock:
             with self.db:
                 yield self.db
 
     def rows(self, sql, args=()):
-        """Fetch all selected rows as dictionaries under the connection lock.
+        """Return matching rows as dictionaries while holding the database lock.
 
-        Callers own query bounds and column selection; this is not a lazy cursor.
-        Bind data through args rather than interpolating it into SQL.
+        This loads every selected row. Use SQL LIMIT and choose columns when
+        needed. Pass values in args rather than putting them into the SQL text.
         """
         with self.lock:
             return [dict(r) for r in self.db.execute(sql, args).fetchall()]
 
     def one(self, sql, args=()):
-        rows = self.rows(sql, args)
-        return rows[0] if rows else None
+        """Return the first matching row, or None, without loading the rest."""
+        with self.lock:
+            row = self.db.execute(sql, args).fetchone()
+            return dict(row) if row is not None else None
 
     def write(self, sql, args=()):
         with self.transaction() as db:
@@ -138,10 +140,10 @@ class Store:
         return (self.one('SELECT revision FROM store_revisions WHERE domain=?', (domain,)) or {}).get('revision', 0)
 
     def bump(self, domain, db=None):
-        """Advance a domain's cache revision, optionally inside a caller's commit.
+        """Increase a change counter so caches know their saved data is outdated.
 
-        Pass db for source writes so the mutation and its invalidation become
-        visible together. Without db, this helper owns a short transaction.
+        Pass db to save this counter with the data change in the same transaction.
+        Without db, the counter update gets its own short transaction.
         """
         sql = 'INSERT INTO store_revisions VALUES (?,1,?) ON CONFLICT(domain) DO UPDATE SET revision=revision+1,updated_at=excluded.updated_at'
         if db is None:
@@ -154,7 +156,7 @@ class Store:
         return merge(defaults().get(key, {}), decode(row['value_json'], {}) if row else {})
 
     def settings(self, key, patch):
-        """Merge and persist one settings group, incrementing its named revision."""
+        """Save changed settings in one group and increase its change counter."""
         with self.transaction() as db:
             value = merge(self.setting(key), patch)
             db.execute('INSERT OR REPLACE INTO app_settings VALUES (?,?,?)', (key, encode(value), now()))
@@ -171,11 +173,11 @@ class Store:
                 'coverPath': row['cover_path'], 'sourcePath': row['source_path'], 'createdAt': row['created_at'], 'updatedAt': row['updated_at']}
 
     def document(self, doc_id, body=False, trash=False):
-        """Return one document's metadata, or None when absent from its table.
+        """Return one book's details, or None if the book is not in this table.
 
-        Explicit body=True loads full text and chapters from the body table,
-        falling back to legacy columns. Reader windows should use BookService
-        instead; full reconstruction is intended for import, sync, and export.
+        body=True also loads all text and chapters, including older storage
+        formats. Use BookService for reader pages; full-book reads are for
+        import, sync, and export rather than ordinary page navigation.
         """
         table = 'trash_documents' if trash else 'documents'
         row = self.one(f'SELECT * FROM {table} WHERE id=?', (doc_id,))
@@ -189,11 +191,11 @@ class Store:
         return value
 
     def save_document(self, doc):
-        """Upsert metadata and optionally replace a document's complete body.
+        """Add or update a book and, when supplied, replace its complete text.
 
-        Presence of the text key means body replacement: hash text plus chapters
-        and invalidate stored pages. Metadata-only edits preserve pages and
-        existing order. Both paths advance the documents revision atomically.
+        A text key replaces the body and clears saved pages. Title/detail edits
+        alone keep those pages and the book's order. Save the documents change
+        counter in the same transaction so caches can detect either change.
         """
         import hashlib
         with self.transaction() as db:
@@ -214,11 +216,11 @@ class Store:
         return {r['term']: decode(r['meta_json'], {}) for r in self.rows('SELECT term,meta_json FROM known_terms ORDER BY order_index')}
 
     def add_terms(self, terms, metadata=None):
-        """Upsert vocabulary, merge note links, and return only newly added terms.
+        """Save known words and Anki note links; return the words that are new.
 
-        Callers normalize terms first. Re-adding a term clears its trash entry
-        and deletion tombstone; existing order is retained. The known_terms
-        revision changes without clearing structural reader token caches.
+        Callers clean up word forms first. Re-adding a deleted word removes its
+        Trash/deletion records. Existing words keep their order. Update the
+        known-word change counter without clearing saved book tokens.
         """
         added = []
         with self.transaction() as db:
@@ -240,10 +242,10 @@ class Store:
         return added
 
     def delete_terms(self, terms):
-        """Move existing terms to Trash and record sync deletion intent atomically.
+        """Move known words to Trash and save deletion records for device sync.
 
-        Unknown terms are ignored. Return removed terms and advance the known
-        vocabulary revision so subsequent rendering recalculates learned state.
+        Ignore words that are not stored. Return the removed words and update
+        the change counter so the reader checks known-word status again.
         """
         deleted = []
         with self.transaction() as db:

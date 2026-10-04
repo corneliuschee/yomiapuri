@@ -1,11 +1,9 @@
-"""Generate mnemonic images and transfer existing card media to Anki."""
+"""Create word/reading images for cards and copy local card media into Anki."""
 
 import base64
 import hashlib
 import re
 from pathlib import Path
-
-
 
 
 class MediaService:
@@ -25,10 +23,10 @@ class MediaService:
         return {'settings': settings, 'voiceModels': [], 'voices': [], 'status': self.status()}
 
     def image(self, expression, reading='', meaning=''):
-        """Return Anki image HTML for a cached local text-based mnemonic.
+        """Draw a word, reading, and meaning as an image and return its HTML tag.
 
-        Disabled image generation returns an empty string. Enabled generation
-        uses Pillow and a content-derived filename, not a remote image model.
+        Return an empty string when images are disabled. Use Pillow, not an AI
+        image model. Reuse an existing file when the text has not changed.
         """
         from PIL import Image, ImageDraw, ImageFont
         if not self.store.setting('media')['image'].get('enabled'):
@@ -48,11 +46,11 @@ class MediaService:
         return f'<img src="{name}">'
 
     def store_files(self, fields, connect):
-        """Upload locally available basename-only image/audio references to Anki.
+        """Copy local images/audio named in the reviewed card fields into Anki.
 
-        Scan reviewed field markup, deduplicate names, and ignore paths/URLs or
-        files absent from the Anki media directory. Existing sound references
-        are supported even though this app no longer generates speech.
+        Copy each filename once. Ignore paths, URLs, and files missing from the
+        app's Anki media folder. Existing sound files still work even though
+        the app no longer generates speech.
         """
         names = set()
         for value in fields.values():

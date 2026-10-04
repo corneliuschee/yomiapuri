@@ -20,18 +20,26 @@ A local-first Japanese novel reader with smart furigana, dictionary lookup, Anki
 The backend is Python with FastAPI. No Node process or JavaScript service is called by the backend.
 
 For developers, the [backend guide](src/backend/README.md) maps every backend
-module to its functionality and explains request flows, SQLite/cache ownership,
-API contracts, testing, and debugging. See also the [frontend guide](src/frontend/README.md).
+file to its feature, walks through startup and a reader request, and explains
+where to make changes. It includes testing instructions and a plain-English
+glossary. See also the [frontend guide](src/frontend/README.md).
 
 ```text
 run.py
 src/
   backend/
-    main.py              FastAPI application and service lifecycle
+    main.py              Builds FastAPI; opens/closes shared services
+    __main__.py          Alternate start: python -m src.backend
     config.py            Paths and settings defaults
-    api/                 HTTP endpoints grouped by domain
+    api/                 URLs and request handling, grouped by feature
+      uploads.py         Shared upload size check (formerly common.py)
+      documents.py       Library, reader pages, progress, and Trash
+      vocabulary.py      Internal known words, not a Word Bank page
+      anki.py            Anki connection, card export, vocabulary sync
+      media.py           Image settings and image previews
+      ...                Dictionary, AI, search, sync, state, local cards
     services/            Books, NLP, dictionaries, search, Anki, AI, media, sync
-    storage/             SQLite persistence and schema
+    storage/             SQLite reads/writes and table definitions
   frontend/
     index.html           Page shell, forms, and dialogs
     app.js               Startup and event registration
@@ -43,7 +51,7 @@ tests/                   Python regression tests and API contract
 scripts/                 Export utility and HTTP smoke test
 ```
 
-SQLite remains the canonical local store, with WAL enabled. Dictionary definitions are fetched for matching entries rather than loaded wholesale at startup. Reader pages and token caches are stored locally in SQLite. Known-vocabulary changes update rendering without re-tokenizing the entire library.
+SQLite is the main local store, with write-ahead logging (WAL) enabled. Dictionary definitions load only for matching entries, not all at startup. Reader pages and word-token caches are stored locally in SQLite. Known-vocabulary changes update furigana display without splitting the entire library into words again.
 
 Japanese tokenization uses **SudachiPy**, replacing Kuromoji. Token boundaries can differ from older versions. Text search uses deduplicated surfaces, base forms, and readings, with exact substring matches ranked first.
 
@@ -126,7 +134,7 @@ In-book search remains available in the reader sidebar. The local FTS5/BM25 serv
 
 Run the migrations under `supabase/migrations` in your Supabase project, then configure its URL and publishable key in Integrations and sign in.
 
-Sync transfers books and referenced source media, progress, annotations, Word Bank, cards, templates, settings, and learning events. It does not upload SQLite files, local dictionary contents, model files, or search indexes. Push merges remote records first. Deletion metadata prevents deleted records from being silently reintroduced.
+Sync transfers books and referenced source media, progress, annotations, known vocabulary, cards, templates, settings, and learning events. It does not upload SQLite files, local dictionary contents, model files, or search indexes. Push merges remote records first. Deletion metadata prevents deleted records from being silently reintroduced.
 
 Sync is user-triggered; merely starting the app does not upload your library. Credentials stay in local settings and are not included in the browser state response.
 
@@ -145,7 +153,7 @@ npm install
 npm test
 ```
 
-Tests cover reader reopening, author ruby, chapter navigation, dictionary lookup, Word Bank, progress, incremental search, trash, Anki exports, sync contracts, and the previous API route inventory. Live Anki, model quality, and a real Supabase project require separate integration checks.
+Tests cover reader reopening, author ruby, chapter navigation, dictionary lookup, known vocabulary, progress, incremental search, Trash, upload limits, Anki exports, sync behavior, and the current API route list. Live Anki, model quality, and a real Supabase project require separate integration checks.
 
 Every Python module includes a docstring explaining its purpose.
 

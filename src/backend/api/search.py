@@ -1,21 +1,9 @@
-"""Register search endpoints while preserving frontend request and response contracts."""
+"""Report search status, refresh the text index, and search indexed book text."""
 
-import csv
-import hashlib
-import io
-import json
-import re
-import uuid
-
-from fastapi import Body, File, Request, UploadFile, Form
-from fastapi.responses import Response, StreamingResponse
-from starlette.concurrency import run_in_threadpool
-
-from ..storage.sqlite import decode, encode, merge, now
-from ..services.dictionary import normalize
-from .common import uploaded
+from fastapi import Body, Request
 
 def register(app):
+    """Add the SQLite text-search endpoints."""
     @app.get('/api/ml/index/status')
     def search_status(request: Request):
         return request.app.state.search.status()

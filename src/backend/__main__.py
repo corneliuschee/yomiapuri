@@ -1,4 +1,4 @@
-"""Start the local FastAPI server with the configured port."""
+"""Start the server with ``python -m src.backend``; PORT defaults to 3000."""
 
 import os
 

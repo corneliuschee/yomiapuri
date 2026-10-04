@@ -1,6 +1,7 @@
 """Isolated native backend regressions. Never opens the user's data directory."""
 
 import json
+import sqlite3
 import tempfile
 import unittest
 import re
@@ -129,6 +130,49 @@ class BackendTests(unittest.TestCase):
         self.assertIsNotNone(s.one('SELECT id FROM python_search_chunks WHERE document_id=?', (second,)))
         self.assertIsNotNone(s.one('SELECT document_id FROM document_tombstones WHERE document_id=?', (first,)))
 
+    def test_empty_trash_leaves_active_books_and_search_untouched(self):
+        removed = [self.book('First book.', 'first.txt'), self.book('Second book.', 'second.txt')]
+        active = self.book('Active book.', 'active.txt')
+        self.assertEqual(self.client.post('/api/search/index/refresh').status_code, 200)
+        for doc in removed:
+            self.client.post('/api/documents/' + doc + '/progress', json={'page': 0, 'bookmarks': [{'page': 0}]})
+            self.assertEqual(self.client.delete('/api/documents/' + doc).status_code, 200)
+        self.assertEqual(self.client.delete('/api/trash/documents/' + active).status_code, 404)
+        self.assertEqual(self.client.delete('/api/trash/documents/missing').status_code, 404)
+        response = self.client.delete('/api/trash/documents')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {'deleted': 2})
+        s = self.app.state.store
+        for doc in removed:
+            for table, key in [('trash_documents', 'id'), ('trash_document_bodies', 'document_id'),
+                               ('document_pages', 'document_id'), ('reading_progress', 'document_id'),
+                               ('python_search_chunks', 'document_id'), ('python_index_documents', 'document_id')]:
+                self.assertIsNone(s.one(f'SELECT 1 FROM {table} WHERE {key}=?', (doc,)))
+            self.assertIsNotNone(s.one('SELECT 1 FROM document_tombstones WHERE document_id=?', (doc,)))
+        self.assertIsNone(s.one('SELECT 1 FROM python_search_fts WHERE chunk_id NOT IN (SELECT id FROM python_search_chunks)'))
+        self.assertEqual(self.client.post('/api/search/fts', json={'query': 'Active'}).json()['results'][0]['documentId'], active)
+        self.assertEqual(self.client.get('/api/documents/' + active).status_code, 200)
+        self.assertEqual(self.client.delete('/api/trash/documents').json(), {'deleted': 0})
+
+    def test_failed_permanent_delete_rolls_back_search_cleanup(self):
+        doc = self.book('Rollback example.')
+        self.client.post('/api/search/index/refresh')
+        self.client.delete('/api/documents/' + doc)
+        s = self.app.state.store
+        before = s.rows('SELECT * FROM python_search_fts')
+        revision = s.revision('documents')
+        s.write("CREATE TRIGGER reject_trash_delete BEFORE DELETE ON trash_documents BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+        try:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'test failure'):
+                self.app.state.books.delete_permanently(doc)
+            self.assertIsNotNone(s.document(doc, body=True, trash=True))
+            self.assertEqual(s.rows('SELECT * FROM python_search_fts'), before)
+            self.assertIsNotNone(s.one('SELECT id FROM python_search_chunks WHERE document_id=?', (doc,)))
+            self.assertIsNotNone(s.one('SELECT document_id FROM python_index_documents WHERE document_id=?', (doc,)))
+            self.assertEqual(s.revision('documents'), revision)
+        finally:
+            s.write('DROP TRIGGER reject_trash_delete')
+
     def test_anki_auto_launch_keeps_diagnostics_in_own_log(self):
         executable = Path(self.directory.name) / 'anki.exe'
         executable.touch()
@@ -236,11 +280,13 @@ class BackendTests(unittest.TestCase):
                 journal = self.app.state.store.one('SELECT status FROM anki_export_journal WHERE id=?', (exported['id'],))
                 self.assertEqual(journal['status'], 'complete')
 
-    def test_all_legacy_routes_are_registered(self):
+    def test_documented_routes_are_registered(self):
         expected = json.loads(Path(__file__).with_name('api_contract.json').read_text())
         actual = {(method, re.sub(r'\{[^}]+\}', ':id', route.path))
-                  for route in self.app.routes if hasattr(route, 'methods') for method in route.methods}
-        self.assertFalse(set(map(tuple, expected)) - actual)
+                  for route in self.app.routes if hasattr(route, 'methods')
+                  and route.path.startswith('/api/') and route.path != '/api/{missing:path}'
+                  for method in route.methods}
+        self.assertEqual(set(map(tuple, expected)), actual)
 
     def test_anki_vocabulary_sync_is_additive_and_idempotent(self):
         store = self.app.state.store

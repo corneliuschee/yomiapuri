@@ -1,18 +1,18 @@
-"""Register state endpoints while preserving frontend request and response contracts."""
+"""Supply the frontend's initial data and save reader display settings."""
 
 from fastapi import Body, Request
 
 from ..storage.sqlite import decode
-from ..services.dictionary import normalize
 
 def register(app):
+    """Add the initial-data and reader-settings endpoints to the app."""
     @app.get('/api/state')
     def state(request: Request):
-        """Assemble the UI read model without document bodies or dictionary entries.
+        """Read the information the frontend needs to display its pages.
 
-        Return metadata, settings, progress, saved cards, and vocabulary count;
-        sync status redacts credentials. This is reconstructed from SQLite, not
-        an authoritative mutable in-memory snapshot.
+        Include book details, progress, settings, cards, and vocabulary count.
+        Leave out book text, dictionary definitions, and sync credentials.
+        SQLite remains the source for this response.
         """
         s = request.app.state.store
         sync = request.app.state.sync.status()
@@ -28,11 +28,3 @@ def register(app):
     def reader_settings(request: Request, body: dict = Body(...)):
         allowed = {'hideInferredReadableFurigana', 'showKnownFurigana'}
         return {'reader': request.app.state.store.settings('reader', {k: bool(v) for k, v in body.items() if k in allowed})}
-
-    @app.post('/api/reader/readable-suggestion/dismiss')
-    def dismiss(request: Request, body: dict = Body(...)):
-        term = normalize(body.get('term'))
-        if not term:
-            raise ValueError('No vocabulary selected.')
-        request.app.state.store.event('reader.readable-suggestion-dismissed', body)
-        return {'dismissed': True, 'term': term}

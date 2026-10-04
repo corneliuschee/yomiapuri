@@ -1,4 +1,4 @@
-"""Tokenize Japanese with Sudachi and apply dictionary and Word Bank readings."""
+"""Split Japanese into words, look up readings, and show furigana when needed."""
 
 import hashlib
 import html
@@ -17,6 +17,8 @@ RUBY = re.compile(r'\[\[RUBY:([^|]+)\|([^\]]+)\]\]')
 
 
 class NLP:
+    """Use Sudachi for word boundaries and SQLite for dictionaries/known words."""
+
     def __init__(self, store, dictionaries):
         self.store, self.dictionaries = store, dictionaries
         self.local = threading.local()
@@ -27,7 +29,7 @@ class NLP:
         self.known_lock = threading.Lock()
 
     def tokenizer(self):
-        """Lazily allocate one Sudachi tokenizer per worker thread."""
+        """Create a Sudachi word splitter when this worker thread first needs it."""
         if not hasattr(self.local, 'tokenizer'):
             source = dictionary.Dictionary()
             self.local.tokenizer = source.tokenizer() if hasattr(source, 'tokenizer') else source.create()
@@ -35,21 +37,22 @@ class NLP:
 
     @lru_cache(maxsize=2048)
     def raw(self, text):
-        """Cache structural Sudachi mode-C tokens, independent of learned state.
+        """Split text with Sudachi's longer-word mode (C) and cache the result.
 
-        Return surface, dictionary/normalized forms, hiragana reading, and POS
-        metadata. Cached dictionaries are shared results; copy before modifying.
+        Each token stores its written text, base forms, hiragana reading, and
+        part of speech. Known-word status is not included. Copy these cached
+        dictionaries before changing them because other requests reuse them.
         """
         return tuple({'surface': m.surface(), 'base': m.dictionary_form(), 'dictionaryForm': m.normalized_form(),
                       'reading': hiragana(m.reading_form()), 'pos': m.part_of_speech()[0],
                       'name': '固有名詞' in m.part_of_speech()} for m in self.tokenizer().tokenize(text, tokenizer.Tokenizer.SplitMode.C))
 
     def variants(self, text):
-        """Return ordered unique lookup forms, including inflected lexical heads.
+        """Return alternative spellings, readings, and base forms for a lookup.
 
-        Normalize width, retain the original query, then add normalized forms,
-        readings, and content-word lemmas. Particles/auxiliaries are excluded
-        from standalone head variants but remain in joined forms.
+        Standardize character width, then use Sudachi to find dictionary forms
+        such as a verb's plain form. Keep the cleaned query first and remove
+        duplicates. Do not search particles or auxiliary verbs on their own.
         """
         text = normalize(text)
         tokens = self.raw(text)
@@ -62,11 +65,11 @@ class NLP:
         return list(dict.fromkeys(forms))
 
     def known(self):
-        """Refresh learned variants only when SQLite's known_terms revision changes.
+        """Refresh the known-word forms only when the stored vocabulary changes.
 
-        Reuse per-term tokenization for unchanged vocabulary, remove deleted
-        terms, and rebuild known-kanji coverage under a lock. This avoids
-        retokenizing books after an Anki vocabulary sync.
+        Reuse forms for unchanged words, remove deleted words, and recalculate
+        which kanji appear in known words. A lock keeps requests from doing this
+        together. Syncing Anki words does not require splitting book text again.
         """
         revision = self.store.revision('known_terms')
         with self.known_lock:
@@ -83,10 +86,10 @@ class NLP:
 
     @lru_cache(maxsize=4096)
     def rank(self, term, revision):
-        """Cache the best numeric enabled-dictionary rank for a revision.
+        """Return the lowest frequency rank from enabled dictionaries, or None.
 
-        Revision participates in the cache key, not the SQL predicate. Noninteger
-        frequency labels are ignored; no comparable rank returns None.
+        Ignore labels that are not whole numbers. Including the dictionary
+        change counter in the cache key prevents reuse of outdated results.
         """
         rows = self.store.rows('''SELECT f.value FROM dictionary_frequencies f JOIN dictionaries d ON d.id=f.dictionary_id
             WHERE f.term=? AND d.enabled_for_lookup=1''', (term,))
@@ -94,11 +97,11 @@ class NLP:
         return min(ranks) if ranks else None
 
     def readability(self, token, protected=()):
-        """Classify a token without adding it to known vocabulary.
+        """Estimate whether a word is readable without adding it to known words.
 
-        Author ruby/protected names and explicit learned forms override inference.
-        Score 85 requires entirely known kanji, an enabled dictionary match,
-        numeric frequency <=10000, and no proper-name flag; otherwise score 0.
+        Known words and author-provided readings take priority. A guess scores
+        85 only when all kanji are known, a dictionary matches, frequency rank
+        is at most 10000, and the word is not a proper name. Other guesses score 0.
         """
         base = token.get('dictionaryForm') or token.get('base') or token['surface']
         known = self.known()
@@ -114,12 +117,12 @@ class NLP:
                 'reasons': ['known kanji', 'common frequency', 'dictionary match'] if readable else []}
 
     def tokens(self, text):
-        """Read/cache dictionary-adjusted tokens while retaining author ruby.
+        """Load or create word tokens, preserving readings supplied by the author.
 
-        Cache keys include text, tokenizer version, and dictionaries revision,
-        but not vocabulary or display settings. Author markers are atomic;
-        dictionary readings replace only exact surfaces to preserve inflections.
-        A cache miss writes structural tokens, never generated reader HTML.
+        Cache by text, tokenizer version, and dictionary change counter, not by
+        known words or display settings. Keep author-marked words together.
+        Replace a reading only when the dictionary spelling matches the written
+        word, so verb endings keep their contextual reading. Save tokens, not HTML.
         """
         key = hashlib.sha256(('sudachi-v1:' + str(self.store.revision('dictionaries')) + ':' + text).encode()).hexdigest()
         row = self.store.one('SELECT tokens_json FROM python_token_cache WHERE cache_key=?', (key,))
@@ -146,12 +149,12 @@ class NLP:
         return result
 
     def render(self, text, protected=(), target='', force=False):
-        """Render escaped lookup spans/ruby with dynamic learned-word visibility.
+        """Build safe reader HTML with clickable words and the requested furigana.
 
-        Author ruby always keeps its reading; protected occurrences never gain
-        generated ruby. force is for card previews and bypasses learned/inferred
-        hiding, not author protection. target highlights matching surface/base
-        tokens without changing the original text.
+        Always keep the author's readings. Do not generate conflicting readings
+        for protected names elsewhere. force shows generated furigana in card
+        previews even for known words, but still respects author readings.
+        target highlights matching words without changing the sentence text.
         """
         settings = self.store.setting('reader')
         known = self.known()

@@ -1,4 +1,4 @@
-"""Synchronize source records and media with Supabase on explicit user requests."""
+"""Upload/download books, study data, and media through user-requested Supabase sync."""
 
 import os
 import hashlib
@@ -49,11 +49,11 @@ class SyncService:
         return self.status()
 
     def request(self, method, path, retry=True, **kwargs):
-        """Issue an authenticated Supabase request with one token-refresh retry.
+        """Call Supabase using the saved account and retry once if login expires.
 
-        Preserve caller headers across the retry and persist refreshed session
-        credentials locally. Service error payloads become ValueError messages;
-        never include session tokens in public status responses.
+        Keep the request's extra headers and save renewed login tokens locally.
+        Report Supabase error messages as ValueError. Public status responses
+        must not expose the stored login tokens.
         """
         s = self.settings()
         if not s['supabaseUrl'] or not s['supabaseAnonKey']:
@@ -104,11 +104,11 @@ class SyncService:
             self.request('POST', '/rest/v1/' + table, params={'on_conflict': conflict}, headers={'Prefer': 'resolution=merge-duplicates,return=minimal'}, json=rows[start:start + 100])
 
     def run(self, action):
-        """Serialize user-triggered sync, always pulling before any push.
+        """Run one sync at a time, downloading changes before any upload.
 
-        Only action='pull' skips push; other route actions share the full merge
-        then upload path. Persist success/error status and release the lock even
-        on failure. Individual record/file operations are not one transaction.
+        action='pull' only downloads. Other actions merge downloaded changes and
+        then upload. Save the result/error and release the lock even on failure.
+        The whole sync is not one transaction; earlier successful changes remain.
         """
         if not self.lock.acquire(blocking=False):
             raise FileExistsError('A sync operation is already running.')
@@ -126,13 +126,12 @@ class SyncService:
             self.lock.release()
 
     def pull(self):
-        """Merge remote source data by timestamps and recorded deletion intent.
+        """Download source data and resolve changes using saved dates/deletions.
 
-        Apply document tombstones before books; compare known-term tombstones
-        before vocabulary writes. Reconstruct newer document bodies through
-        Store, merge progress/annotations/settings, and download missing media
-        with path containment and optional checksum checks. Partial successes
-        remain persisted if a later network operation fails.
+        Apply book deletion records before books, and check word deletion records
+        before saving words. Save newer books, progress, annotations, and settings.
+        Download missing media only inside the media folder, checking file hashes
+        when supplied. Keep completed changes if a later network request fails.
         """
         settings = self.select('app_settings')
         tombstones = next((r['value'] for r in settings if r['key'] == 'documentTombstones'), {})
@@ -207,12 +206,12 @@ class SyncService:
         self.store.settings('sync', {'lastPullAt': now()})
 
     def push(self):
-        """Upload source records/media, excluding local derived indexes and models.
+        """Upload source data and media, never local search caches or AI models.
 
-        Publish document deletion intent and remove matching remote source rows.
-        Reconstruct active books one at a time, upload referenced media, then
-        progress, vocabulary, cards, selected settings, and up to 2000 events.
-        The run() entry point must pull first; this is not delta-only transfer.
+        Send book deletion records and remove matching remote rows. Load books
+        one at a time, then upload their media, progress, words, cards, selected
+        settings, and up to 2000 events. Call through run() so downloads happen
+        first. This sends more than just the records changed since the last sync.
         """
         s = self.settings()
         user = s['userId']

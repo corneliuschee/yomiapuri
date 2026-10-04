@@ -145,10 +145,6 @@
   ],
   [
     "POST",
-    "/api/anki/import"
-  ],
-  [
-    "POST",
     "/api/anki/card-preview"
   ],
   [
@@ -178,10 +174,6 @@
   [
     "POST",
     "/api/reader/settings"
-  ],
-  [
-    "POST",
-    "/api/reader/readable-suggestion/dismiss"
   ],
   [
     "GET",
@@ -226,10 +218,6 @@
   [
     "DELETE",
     "/api/known-terms"
-  ],
-  [
-    "POST",
-    "/api/known-terms/sync-anki"
   ],
   [
     "POST",

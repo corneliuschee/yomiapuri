@@ -1,4 +1,4 @@
-"""Register integrations endpoints while preserving frontend request and response contracts."""
+"""Connect to Anki, preview and export cards, and sync learned vocabulary."""
 
 from fastapi import Body, Request
 
@@ -6,6 +6,7 @@ from ..storage.sqlite import encode
 from ..services.dictionary import normalize
 
 def register(app):
+    """Add Anki connection, card, and learned-vocabulary endpoints."""
     @app.post('/api/anki/settings')
     def anki_settings(request: Request, body: dict = Body(...)):
         return request.app.state.store.settings('anki', body)
@@ -31,7 +32,6 @@ def register(app):
     def export_card(request: Request, body: dict = Body(...)):
         return request.app.state.anki.export(body)
 
-    @app.post('/api/anki/import')
     @app.post('/api/anki/sync-vocabulary')
     def import_anki(request: Request, body: dict = Body(...)):
         return request.app.state.anki.import_terms(body)
@@ -44,17 +44,3 @@ def register(app):
         query = ' OR '.join(f'nid:{int(i)}' for i in ids) if ids else encode(term)
         result = request.app.state.anki.connect('guiBrowse', {'query': query})
         return {'opened': True, 'noteIds': result}
-
-    @app.get('/api/media/providers')
-    def media_providers(request: Request):
-        return request.app.state.media.providers()
-
-    @app.post('/api/media/settings')
-    def media_settings(request: Request, body: dict = Body(...)):
-        settings = request.app.state.store.settings('media', {'image': body.get('image', {}), 'audio': {'enabled': False}})
-        return {'settings': settings, 'providers': request.app.state.media.providers()}
-
-    @app.post('/api/media/test-image')
-    def test_image(request: Request, body: dict = Body(default={})):
-        media = request.app.state.media
-        return {'value': media.image(body.get('expression') or '図書館', body.get('reading', ''), body.get('meaning', '')), 'status': media.status()}

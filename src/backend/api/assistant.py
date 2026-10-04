@@ -1,21 +1,13 @@
-"""Register assistant endpoints while preserving frontend request and response contracts."""
+"""Manage local AI models/settings and return reader chat answers."""
 
-import csv
 import hashlib
-import io
-import json
 import re
-import uuid
 
-from fastapi import Body, File, Request, UploadFile, Form
-from fastapi.responses import Response, StreamingResponse
-from starlette.concurrency import run_in_threadpool
-
-from ..storage.sqlite import decode, encode, merge, now
-from ..services.dictionary import normalize
-from .common import uploaded
+from fastapi import Body, Request
+from fastapi.responses import StreamingResponse
 
 def register(app):
+    """Add model controls and both streamed and complete chat responses."""
     @app.get('/api/ai/providers')
     def ai_providers(request: Request):
         settings = request.app.state.store.setting('ai')

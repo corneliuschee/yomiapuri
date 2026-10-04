@@ -1,4 +1,4 @@
-"""Create the application explicitly to control database lifetime."""
+"""Build the FastAPI app and open/close its shared services with the server."""
 
 from contextlib import asynccontextmanager
 import asyncio
@@ -26,19 +26,19 @@ from .api import register_routes
 
 
 def create_app(data_dir=DATA):
-    """Build the HTTP app without opening storage until its lifespan starts.
+    """Build the app's routes and error handlers; open storage on server startup.
 
-    Pass a temporary directory in tests to isolate all persisted data. Services
-    are shared through ``app.state``; API routes must precede static mounts so
-    unknown API requests return JSON rather than frontend files.
+    Tests pass a temporary folder so they never use the user's data. Routes get
+    shared services from ``app.state``. Register API routes before frontend file
+    serving so unknown API requests get a JSON error.
     """
     data_dir = Path(data_dir)
     @asynccontextmanager
     async def lifespan(app):
-        """Own the shared database, service clients, and assistant idle task.
+        """Open SQLite and feature services at startup, then close them on exit.
 
-        Construction order follows service dependencies. Normal shutdown closes
-        the assistant and external-service clients before closing SQLite.
+        Create services in dependency order: for example, books need NLP, which
+        needs dictionaries. Stop AI and close network clients before SQLite.
         """
         store = Store(data_dir)
         app.state.store = store

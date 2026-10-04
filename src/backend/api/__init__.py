@@ -1,8 +1,9 @@
-"""Register native FastAPI route groups in a predictable order."""
+"""Add each feature's HTTP endpoints to the app in the order listed below."""
 
-from . import assistant, search, integrations, state, documents, wordbank, dictionaries, sync, cards
+from . import assistant, search, anki, media, state, documents, vocabulary, dictionaries, sync, cards
 
 
 def register_routes(app):
-    for module in [assistant, search, integrations, state, documents, wordbank, dictionaries, sync, cards]:
+    """Call each module's register(app) function once during app creation."""
+    for module in [assistant, search, anki, media, state, documents, vocabulary, dictionaries, sync, cards]:
         module.register(app)

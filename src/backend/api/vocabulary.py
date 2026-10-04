@@ -1,28 +1,23 @@
-"""Register wordbank endpoints while preserving frontend request and response contracts."""
+"""Read, import, delete, and restore the known words used to hide furigana."""
 
-import csv
-import hashlib
-import io
-import json
 import re
-import uuid
 
-from fastapi import Body, File, Request, UploadFile, Form
-from fastapi.responses import Response, StreamingResponse
+from fastapi import Body, Request
 from starlette.concurrency import run_in_threadpool
 
-from ..storage.sqlite import decode, encode, merge, now
+from ..storage.sqlite import decode
 from ..services.dictionary import normalize
-from .common import uploaded
+from .uploads import read_upload
 
 def register(app):
+    """Add known-word import, browsing, deletion, and Trash endpoints."""
     @app.get('/api/known-terms')
     def known_terms(request: Request, offset: int = 0, limit: int = 100, q: str = '', sort: str = 'added', dictionaryId: str = ''):
-        """Serve legacy vocabulary browsing despite removal of the Word Bank UI.
+        """Return a page of known words, optionally with dictionary meanings.
 
-        Filter/sort known terms in memory, then load dictionary meanings only
-        for the requested slice. Reading-order labels currently sort strings,
-        not phonetic readings. Normal Anki sync does not require this endpoint.
+        The Word Bank screen is gone, but this API still supports vocabulary
+        inspection. Filter and sort words first; fetch meanings only for the
+        requested page. The gojuon sort options currently compare written text.
         """
         s, dictionaries = request.app.state.store, request.app.state.dictionaries
         metadata = s.known()
@@ -41,15 +36,15 @@ def register(app):
 
     @app.post('/api/known-terms')
     async def add_terms(request: Request):
-        """Normalize/deduplicate JSON or uploaded vocabulary and log new additions.
+        """Add unique words from JSON or a text file uploaded as ``terms``.
 
-        The compatibility upload field is terms. Run source writes in a worker
-        thread; adding known vocabulary does not retokenize document bodies.
+        Clean spelling/spacing before saving and record which words are new.
+        Save in a worker thread. Existing books keep their cached tokens.
         """
         if 'multipart/form-data' in request.headers.get('content-type', ''):
             form = await request.form()
             file = form.get('terms')
-            text = (await uploaded(file)).decode('utf-8-sig')
+            text = (await read_upload(file)).decode('utf-8-sig')
             terms = re.split(r'[\r\n,\t]+', text)
         else:
             body = await request.json()
@@ -70,13 +65,9 @@ def register(app):
         removed = s.delete_terms([normalize(t) for t in terms])
         return {'deleted': len(removed), 'removed': len(removed), 'total': len(s.known())}
 
-    @app.post('/api/known-terms/sync-anki')
-    def sync_anki(request: Request):
-        return request.app.state.anki.import_terms({})
-
     @app.post('/api/trash/known-terms/restore')
     def restore_terms(request: Request, body: dict = Body(...)):
-        """Restore only requested Trash terms, preserving their saved note metadata."""
+        """Restore the selected words from Trash with their saved Anki note links."""
         s = request.app.state.store
         terms = [normalize(t) for t in body.get('terms', [])]
         metadata = {}

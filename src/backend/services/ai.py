@@ -1,4 +1,4 @@
-"""Manage the local llama.cpp process and stream reader-assistant responses."""
+"""Start/stop the local llama.cpp model and send chat answers to the reader."""
 
 import asyncio
 import json
@@ -43,10 +43,10 @@ class AIService:
         await self.client.aclose()
 
     async def stop(self):
-        """Stop only this service's managed subprocess, refusing an active answer.
+        """Stop a model started by this app, but not while it is answering.
 
-        Allow ten seconds for termination before killing it. External servers
-        reached through configured endpoints are not owned or terminated here.
+        Wait ten seconds for a normal shutdown before forcing it to stop.
+        Never stop model servers that were started outside this app.
         """
         if self.active:
             raise ValueError('Wait for the current response before stopping the assistant.')
@@ -83,11 +83,12 @@ class AIService:
             return False
 
     async def ensure(self, model_id):
-        """Return a healthy chat endpoint, starting a local model if necessary.
+        """Find a working chat server, starting the selected local model if needed.
 
-        Caller must hold the assistant lock. Reuse a healthy endpoint or switch
-        the managed model, validate local paths, then wait up to 120 seconds for
-        health. Automatic startup is loopback-only; logs go to data/llama.
+        The caller must hold the assistant lock. Reuse a working server or switch
+        the model this app started. Check file paths and wait up to 120 seconds
+        for startup. Auto-start is allowed only for a local address. Model logs
+        go to data/llama.
         """
         settings = self.store.setting('ai')
         model = next((m for m in settings['models'] if m['id'] == model_id), None)
@@ -125,12 +126,12 @@ class AIService:
         raise ValueError('Local model startup timed out.')
 
     async def events(self, body):
-        """Yield meta/delta/done events for one serialized assistant response.
+        """Send response details, answer pieces, and a final result to the reader.
 
-        Infer intent from the question, append author-reading romanizations,
-        and send at most six history messages plus the current question. There
-        is no book search or page retrieval here. Expected provider failures
-        become an unavailable done payload, while active state resets in finally.
+        Only one answer runs at a time. Choose a task from the question and add
+        romanized author-provided names. Send at most six earlier messages plus
+        this question. This does not search books or fetch page text. Model
+        failures produce a final unavailable result; always clear the busy flag.
         """
         question = str(body.get('question', '')).strip()[:2500]
         intent = 'translate' if re.search(r'translat', question, re.I) else 'recap' if re.search(r'recap|summari', question, re.I) else 'explain' if re.search(r'grammar|explain|meaning', question, re.I) else 'ask'

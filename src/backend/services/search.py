@@ -1,4 +1,4 @@
-"""Maintain incremental SQLite FTS book search."""
+"""Search book text with SQLite FTS5 and refresh only changed books' search rows."""
 
 import hashlib
 import threading
@@ -21,13 +21,14 @@ class SearchService:
         return {**status, 'textSearch': status, 'fts': status}
 
     def refresh(self):
-        """Refresh changed books' lexical chunks without embedding any vectors.
+        """Update search excerpts for changed books; skip unchanged books.
 
-        A nonblocking process-local lock rejects overlapping refreshes. Skip
-        matching body-hash/dictionary-revision fingerprints; tokenize outside
-        the write transaction, then replace only the changed book's FTS rows.
-        Recheck active membership before writing and release the lock on error.
-        Persist the revisions captured at start so concurrent edits remain stale.
+        Reject a second refresh while one is running. Compare each book's text
+        hash and dictionary change counter with the saved values. Split text
+        outside the write transaction, then replace only that book's search rows
+        if it is still in the library. Always release the lock. Save the starting
+        counters so edits made during refresh still show as needing an update.
+        No embedding model or vectors are involved.
         """
         if not self.lock.acquire(blocking=False):
             raise FileExistsError('Text index refresh is already running.')
@@ -71,12 +72,12 @@ class SearchService:
             self.lock.release()
 
     def search(self, query, document_id='', limit=30):
-        """Return exact substrings first, followed by deduplicated FTS/BM25 hits.
+        """Return exact text matches first, then SQLite's ranked word matches.
 
-        Quote expanded query forms for MATCH and restrict results to active
-        documents, optionally one book. Citations use zero-based pages. This is
-        lexical search, not vector retrieval, and has no read-progress/spoiler
-        filter; do not feed it into reader AI as spoiler-safe context unchanged.
+        Escape query forms for FTS5 MATCH and remove duplicate results. Search
+        only library books, optionally just one. BM25 is SQLite's word-match
+        ranking function; this is not vector search. Page numbers start at zero.
+        Unread pages are allowed, so these results are not spoiler-safe AI input.
         """
         query = str(query or '').strip()
         if not query:

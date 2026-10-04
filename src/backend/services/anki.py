@@ -1,4 +1,4 @@
-"""Integrate AnkiConnect, prepare reviewed cards, and journal exports."""
+"""Talk to AnkiConnect, build card previews, track exports, and sync known words."""
 
 import html
 import re
@@ -20,11 +20,11 @@ CANONICAL_FIELDS = ['Expression', 'Reading', 'WordReading', 'WordReadingHiragana
 
 
 def canonical_field(name):
-    """Infer a semantic field role from a note-type label, or return no match.
+    """Guess whether an Anki field holds a word, reading, meaning, or other value.
 
-    Prefer exact canonical names, then compatible mining-template aliases;
-    exclude known utility fields before applying broad patterns. Explicit user
-    mappings are applied separately by AnkiService.mapping.
+    Try standard names first, then names used by common card templates. Skip
+    known utility fields. Return an empty string when nothing matches. Saved
+    user choices are applied separately by AnkiService.mapping.
     """
     if name == '例文':
         return 'Sentence'
@@ -68,11 +68,11 @@ class AnkiService:
         self.client.close()
 
     def connect(self, action, params=None):
-        """Call AnkiConnect v6 and propagate HTTP or action-level failures.
+        """Send an AnkiConnect request and report connection or action errors.
 
-        On connection refusal, optionally launch the configured executable and
-        retry for up to fifteen seconds. Redirect that process's diagnostics to
-        data/logs/anki.log; this does not suppress actual export API errors.
+        If Anki is closed and auto-launch is enabled, start the configured program
+        and retry for up to fifteen seconds. Write Anki's own log messages to
+        data/logs/anki.log. Real request errors still reach the caller.
         """
         settings = self.store.setting('anki')
         payload = {'action': action, 'version': 6, 'params': params or {}}
@@ -105,10 +105,10 @@ class AnkiService:
         return payload.get('result')
 
     def mapping(self, model, fields):
-        """Map canonical roles to note fields, then apply saved model overrides.
+        """Match standard card values to Anki's field names, then use saved choices.
 
-        The result is one-to-one per role, so aliases such as Key and Word can
-        collide. fill_note_key separately satisfies a required empty Key field.
+        Each value has one destination, so both Key and Word cannot map to the
+        same value here. fill_note_key fills a required empty Key separately.
         """
         settings = self.store.setting('anki')
         explicit = settings.get('modelFieldMaps', {}).get(model, settings.get('fieldMap', {}))
@@ -119,9 +119,10 @@ class AnkiService:
     def preview(self, body):
         """Prepare editable card values from dictionary entries and a sentence.
 
-        Require an active book and note type; query Anki's field names, generate
-        highlighted furigana HTML, apply mappings, and record a preview event.
-        No Anki note is created here. Return canonical values plus actual fields.
+        Require a book in the library and an Anki note type. Read its field names,
+        prepare sentence furigana/highlighting, and record that a preview opened.
+        Return both standard values and the matching Anki fields. Do not create
+        an Anki note yet.
         """
         doc = self.store.document(body.get('documentId'))
         if not doc:
@@ -155,16 +156,17 @@ class AnkiService:
                 'media': self.media.status() if self.media else {}}
 
     def export(self, body):
-        """Send reviewed fields to Anki and finalize a small local SQL transaction.
+        """Export the user's reviewed fields and save the result in SQLite.
 
-        Preserve edited definitions; only fill an existing blank Key and missing
-        sentence highlights/media. Journal pending before addNote and created
-        after its result, then commit the card, known-term links, and complete
-        status together. Network calls stay outside the final transaction.
+        Keep edited definitions; only fill a blank existing Key and missing
+        sentence highlights/media. Record 'pending' before contacting Anki and
+        'created' after receiving its note ID. Then save the card, known-word
+        links, and 'complete' status together. Do not hold a database transaction
+        open during network calls.
 
-        A repeated explicit requestId returns a completed result or refuses an
-        unresolved export. Omitting it creates a new ID; the journal does not
-        guarantee deduplication across independently submitted requests.
+        Reusing a requestId returns the saved completed result, or refuses to
+        repeat an export whose outcome is uncertain. Without requestId, each
+        call is a separate export; this log cannot identify duplicate requests.
         """
         doc = self.store.document(body.get('documentId'))
         if not doc:
@@ -218,7 +220,7 @@ class AnkiService:
         # Journal the remote result before finalizing so failures cannot silently duplicate a note.
         self.store.write('UPDATE anki_export_journal SET status=?,result_json=?,updated_at=? WHERE id=?', ('created', encode(card), now(), key))
         with self.store.transaction() as db:
-            db.execute('INSERT INTO cards VALUES (?,?,?,?)', (key, -int(__import__('time').time() * 1000), encode(card), now()))
+            db.execute('INSERT INTO cards VALUES (?,?,?,?)', (key, -int(time.time() * 1000), encode(card), now()))
             term = normalize(body.get('dictionaryForm') or expression)
             old = self.store.one('SELECT meta_json FROM known_terms WHERE term=?', (term,))
             meta = decode(old['meta_json'], {}) if old else {'addedAt': now()}
@@ -237,12 +239,12 @@ class AnkiService:
         return card
 
     def import_terms(self, body):
-        """Import learned vocabulary additively, preserving existing note links.
+        """Add learned words from Anki without deleting existing local words.
 
-        Resolve a review preset/deck or explicit query, fetch notes in batches
-        of 75, and strip HTML/ruby/audio markup from mapped vocabulary fields.
-        Only write new terms or new note links after all batches succeed. Anki
-        deletions do not remove local terms; unchanged imports skip term writes.
+        Use the selected review filter/deck or a supplied Anki query. Read notes
+        in batches of 75 and remove HTML, furigana, and audio tags from word fields.
+        Save only new words/note links, after every batch succeeds. Removing a
+        note in Anki does not remove the app's copy of the learned word.
         """
         preset = body.get('preset') or self.store.setting('anki').get('vocabularyPreset', 'reviewed-once')
         query = body.get('query') or {'reviewed-once': 'prop:reps>0', 'reviewed': 'rated:365', 'mature': 'prop:ivl>=21', 'all': ''}.get(preset, 'prop:reps>0')

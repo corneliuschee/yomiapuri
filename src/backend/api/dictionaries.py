@@ -1,37 +1,29 @@
-"""Register dictionaries endpoints while preserving frontend request and response contracts."""
-
-import csv
-import hashlib
-import io
-import json
-import re
-import uuid
+"""Import and manage dictionaries, then look up words for the reader."""
 
 from fastapi import Body, File, Request, UploadFile, Form
-from fastapi.responses import Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from ..storage.sqlite import decode, encode, merge, now
 from ..services.dictionary import normalize
-from .common import uploaded
+from .uploads import read_upload
 
 def register(app):
+    """Add dictionary import/settings, deletion, and word-lookup endpoints."""
     @app.get('/api/dictionaries')
     def dictionaries(request: Request):
         return {'dictionaries': request.app.state.dictionaries.metadata(), 'settings': request.app.state.store.setting('dictionarySettings')}
 
     @app.post('/api/dictionaries', status_code=201)
     async def import_dictionaries(request: Request, dictionary: list[UploadFile] = File(...), name: str = Form('')):
-        """Import up to twenty uploads sequentially outside the async event loop.
+        """Import up to twenty files, one at a time, in a worker thread.
 
-        Each dictionary commits independently: a later invalid file does not
-        roll back earlier successfully imported dictionaries in the request.
+        Save each successful dictionary immediately. If a later file fails,
+        dictionaries already imported by this request stay saved.
         """
         if len(dictionary) > 20:
             raise ValueError('Import at most 20 dictionaries at once.')
         results = []
         for file in dictionary:
-            data = await uploaded(file)
+            data = await read_upload(file)
             results.append(await run_in_threadpool(request.app.state.dictionaries.import_file, file.filename or 'dictionary.json', data, name if len(dictionary) == 1 else ''))
         return {'dictionary': results[0]['dictionary'], 'dictionaries': [r['dictionary'] for r in results],
                 'validations': [r['validation'] for r in results]}
@@ -56,10 +48,10 @@ def register(app):
     @app.get('/api/dictionary')
     @app.get('/api/dictionary/lookup')
     def lookup(request: Request, term: str = '', q: str = '', prefix: bool = False):
-        """Expand a normalized query, attach single-token readability, and log it.
+        """Look up a word and its base forms, then add its readability result.
 
-        Both dictionary URL aliases share this behavior. Although HTTP GET,
-        this path can write structural token cache rows and a lookup event.
+        Both dictionary URLs call this function. A lookup may save new tokens
+        in the cache and records a lookup event, even though it is a GET request.
         """
         term = normalize(term or q)
         result = request.app.state.dictionaries.lookup(term, request.app.state.nlp.variants(term), prefix)

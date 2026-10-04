@@ -1,4 +1,4 @@
-"""Resolve application paths and supply persisted-setting defaults."""
+"""Load .env, locate the data/frontend folders, and define default settings."""
 
 import os
 from pathlib import Path
@@ -13,10 +13,10 @@ MEDIA = DATA / 'media'
 
 
 def defaults():
-    """Return fresh nested defaults to merge with persisted settings on reads.
+    """Return a new set of defaults to fill gaps in saved settings.
 
-    Compatibility keys such as ``ml`` and disabled audio settings remain even
-    though their former UI/runtime features are no longer present.
+    Keep the old ``ml`` and disabled audio keys because existing settings and
+    API responses still use them. This does not start those removed features.
     """
     return {
         'reader': {'hideInferredReadableFurigana': False, 'showKnownFurigana': False},
